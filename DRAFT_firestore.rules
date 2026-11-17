@@ -1,0 +1,167 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidRating(val) {
+      return val is number && val >= 100 && val <= 4000;
+    }
+
+    function isValidUserPublicProfile(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'username',
+          'country',
+          'rapidRating',
+          'blitzRating',
+          'bulletRating',
+          'puzzleRating',
+          'leaguePoints',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'username',
+          'country',
+          'bio',
+          'rapidRating',
+          'blitzRating',
+          'bulletRating',
+          'puzzleRating',
+          'leaguePoints',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && data.username is string
+        && data.username.size() >= 2
+        && data.username.size() <= 30
+        && data.username.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.country is string
+        && data.country.size() >= 2
+        && data.country.size() <= 8
+        && data.country.matches('^[A-Z]{2,8}$')
+        && (!('bio' in data) || (data.bio is string && data.bio.size() <= 240))
+        && isValidRating(data.rapidRating)
+        && isValidRating(data.blitzRating)
+        && isValidRating(data.bulletRating)
+        && isValidRating(data.puzzleRating)
+        && data.leaguePoints is number
+        && data.leaguePoints >= 0
+        && data.leaguePoints <= 1000000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateAccount(data) {
+      return data.keys().hasAll(['ownerId', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'email', 'createdAt', 'updatedAt'])
+        && data.ownerId is string
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && data.email is string
+        && data.email.size() >= 6
+        && data.email.size() <= 254
+        && data.email == request.auth.token.email
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if false;
+
+      allow create: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUserPublicProfile(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUserPublicProfile(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'username',
+            'country',
+            'bio',
+            'rapidRating',
+            'blitzRating',
+            'bulletRating',
+            'puzzleRating',
+            'leaguePoints',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if false;
+
+      match /private/{docId} {
+        allow get: if isOwner(userId)
+          && isValidId(userId)
+          && docId == 'account'
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && get(/databases/$(database)/documents/users/$(userId)).data.ownerId == request.auth.uid;
+        allow list: if false;
+
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && docId == 'account'
+          && isValidUserPrivateAccount(incoming())
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && existsAfter(/databases/$(database)/documents/users/$(userId))
+          && getAfter(/databases/$(database)/documents/users/$(userId)).data.ownerId == request.auth.uid;
+
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && docId == 'account'
+          && isValidUserPrivateAccount(incoming())
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt'])
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && get(/databases/$(database)/documents/users/$(userId)).data.ownerId == request.auth.uid;
+
+        allow delete: if false;
+      }
+    }
+  }
+}

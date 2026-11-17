@@ -1,0 +1,293 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidRating(val) {
+      return val is number && val >= 100 && val <= 4000;
+    }
+
+    function isValidUserPublicProfile(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'username',
+          'country',
+          'rapidRating',
+          'blitzRating',
+          'bulletRating',
+          'puzzleRating',
+          'leaguePoints',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'username',
+          'country',
+          'bio',
+          'rapidRating',
+          'blitzRating',
+          'bulletRating',
+          'puzzleRating',
+          'leaguePoints',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && data.username is string
+        && data.username.size() >= 2
+        && data.username.size() <= 30
+        && data.username.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.country is string
+        && data.country.size() >= 2
+        && data.country.size() <= 8
+        && data.country.matches('^[A-Z]{2,8}$')
+        && (!('bio' in data) || (data.bio is string && data.bio.size() <= 240))
+        && isValidRating(data.rapidRating)
+        && isValidRating(data.blitzRating)
+        && isValidRating(data.bulletRating)
+        && isValidRating(data.puzzleRating)
+        && data.leaguePoints is number
+        && data.leaguePoints >= 0
+        && data.leaguePoints <= 1000000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateAccount(data) {
+      return data.keys().hasAll(['ownerId', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'email', 'createdAt', 'updatedAt'])
+        && data.ownerId is string
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && data.email is string
+        && data.email.size() >= 6
+        && data.email.size() <= 254
+        && data.email == request.auth.token.email
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserFriendEntry(data) {
+      return data.keys().hasAll(['ownerId', 'friendUsername', 'status', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'friendUsername', 'status', 'updatedAt'])
+        && data.ownerId is string
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.friendUsername is string
+        && data.friendUsername.size() >= 2
+        && data.friendUsername.size() <= 30
+        && data.friendUsername.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.status is string
+        && data.status.size() >= 6
+        && data.status.size() <= 8
+        && data.status.matches('^(friend|outgoing|removed)$')
+        && data.updatedAt is number
+        && data.updatedAt > 0;
+    }
+
+    function isValidUserPlayedGame(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'gameId',
+          'rated',
+          'speed',
+          'status',
+          'whiteName',
+          'blackName',
+          'pgn',
+          'createdAt',
+          'lastMoveAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'gameId',
+          'rated',
+          'speed',
+          'status',
+          'winner',
+          'whiteName',
+          'blackName',
+          'whiteRating',
+          'blackRating',
+          'opening',
+          'pgn',
+          'createdAt',
+          'lastMoveAt'
+        ])
+        && data.ownerId is string
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.gameId is string
+        && data.gameId.size() >= 2
+        && data.gameId.size() <= 128
+        && data.gameId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.rated is bool
+        && data.speed is string
+        && data.speed.matches('^(bullet|blitz|rapid|classical|correspondence)$')
+        && data.status is string
+        && data.status.size() >= 2
+        && data.status.size() <= 32
+        && (!('winner' in data) || (data.winner is string && data.winner.matches('^(white|black|draw)$')))
+        && data.whiteName is string
+        && data.whiteName.size() >= 1
+        && data.whiteName.size() <= 40
+        && data.blackName is string
+        && data.blackName.size() >= 1
+        && data.blackName.size() <= 40
+        && (!('whiteRating' in data) || isValidRating(data.whiteRating))
+        && (!('blackRating' in data) || isValidRating(data.blackRating))
+        && (!('opening' in data) || (data.opening is string && data.opening.size() <= 120))
+        && data.pgn is string
+        && data.pgn.size() >= 4
+        && data.pgn.size() <= 12000
+        && data.createdAt is number
+        && data.createdAt > 0
+        && data.lastMoveAt is number
+        && data.lastMoveAt > 0;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if false;
+
+      allow create: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUserPublicProfile(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUserPublicProfile(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'username',
+            'country',
+            'bio',
+            'rapidRating',
+            'blitzRating',
+            'bulletRating',
+            'puzzleRating',
+            'leaguePoints',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if false;
+
+      match /private/{docId} {
+        allow get: if isOwner(userId)
+          && isValidId(userId)
+          && docId == 'account'
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && get(/databases/$(database)/documents/users/$(userId)).data.ownerId == request.auth.uid;
+        allow list: if false;
+
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && docId == 'account'
+          && isValidUserPrivateAccount(incoming())
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && existsAfter(/databases/$(database)/documents/users/$(userId))
+          && getAfter(/databases/$(database)/documents/users/$(userId)).data.ownerId == request.auth.uid;
+
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && docId == 'account'
+          && isValidUserPrivateAccount(incoming())
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt'])
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && get(/databases/$(database)/documents/users/$(userId)).data.ownerId == request.auth.uid;
+
+        allow delete: if false;
+      }
+
+      match /friends/{friendKey} {
+        allow get: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(friendKey);
+        allow list: if isOwner(userId)
+          && isValidId(userId)
+          && request.query.limit <= 100;
+
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(friendKey)
+          && isValidUserFriendEntry(incoming());
+
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(friendKey)
+          && isValidUserFriendEntry(incoming())
+          && incoming().ownerId == existing().ownerId;
+
+        allow delete: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(friendKey);
+      }
+
+      match /games/{gameId} {
+        allow get: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(gameId);
+        allow list: if isOwner(userId)
+          && isValidId(userId)
+          && request.query.limit <= 60;
+
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(gameId)
+          && isValidUserPlayedGame(incoming());
+
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(gameId)
+          && isValidUserPlayedGame(incoming())
+          && incoming().ownerId == existing().ownerId
+          && incoming().gameId == existing().gameId;
+
+        allow delete: if false;
+      }
+    }
+  }
+}

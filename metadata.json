@@ -1,0 +1,6 @@
+{
+  "name": "OpenChess",
+  "description": "OpenChess — Chess.com-inspired mobile & desktop chess arena with Stockfish 17 NNUE cloud analysis, tactical puzzles, Puzzle Rush, opening drills, and fast AI coaching.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

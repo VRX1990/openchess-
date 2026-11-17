@@ -1,0 +1,234 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@layer base {
+  html,
+  body {
+    color-scheme: dark;
+    font-family: var(--font-sans);
+    background-color: #302E2B;
+    color: #FFFFFF;
+  }
+
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-display);
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Custom subtle scrollbars for move lists & coach feed */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+@keyframes view-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes piece-land {
+  0% {
+    transform: scale(0.86) translateY(-3px);
+  }
+  65% {
+    transform: scale(1.04) translateY(0);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes dot-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.35);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes modal-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.93) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes badge-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.45) translateY(3px);
+  }
+  65% {
+    opacity: 1;
+    transform: scale(1.08) translateY(0);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes piece-slide {
+  0% {
+    transform: translate3d(var(--from-x, 0%), var(--from-y, 0%), 0) scale(1.04);
+    filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.36));
+  }
+  65% {
+    transform: translate3d(calc(var(--from-x, 0%) * 0.14), calc(var(--from-y, 0%) * 0.14), 0) scale(1.03);
+    filter: drop-shadow(0 5px 8px rgba(0, 0, 0, 0.28));
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: drop-shadow(0 0 0 rgba(0, 0, 0, 0));
+  }
+}
+
+@keyframes knight-hop {
+  0% {
+    transform: translate3d(var(--from-x, 0%), var(--from-y, 0%), 0) scale(1.04);
+    filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.36));
+  }
+  48% {
+    transform: translate3d(calc(var(--from-x, 0%) * 0.48), calc(var(--from-y, 0%) * 0.48 - 10%), 0) scale(1.1);
+    filter: drop-shadow(0 12px 14px rgba(0, 0, 0, 0.42));
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: drop-shadow(0 0 0 rgba(0, 0, 0, 0));
+  }
+}
+
+@keyframes captured-fade {
+  0% {
+    opacity: 0.92;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.84);
+  }
+}
+
+@keyframes capture-ring {
+  0% {
+    opacity: 0.72;
+    transform: scale(0.55);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.16);
+  }
+}
+
+.animate-view-enter {
+  animation: view-enter 140ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+.animate-piece-land {
+  animation: piece-land 190ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+.animate-piece-slide {
+  animation: piece-slide 155ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, filter;
+}
+
+.animate-knight-hop {
+  animation: knight-hop 185ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, filter;
+}
+
+.animate-captured-fade {
+  animation: captured-fade 140ms ease-out forwards;
+  will-change: opacity, transform;
+}
+
+.animate-badge-pop {
+  animation: badge-pop 190ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-capture-ring {
+  animation: capture-ring 220ms ease-out both;
+}
+
+.animate-dot-pop {
+  animation: dot-pop 120ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+.animate-sheet-up {
+  animation: sheet-up 220ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+.animate-modal-pop {
+  animation: modal-pop 180ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+.animate-fade-in {
+  animation: fade-in 150ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-piece-slide,
+  .animate-knight-hop,
+  .animate-captured-fade,
+  .animate-capture-ring,
+  .animate-badge-pop,
+  .animate-piece-land,
+  .animate-dot-pop {
+    animation: none !important;
+  }
+}
