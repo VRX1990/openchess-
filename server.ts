@@ -1612,6 +1612,7 @@ interface LiveRoom {
   ficsOpponentPresent?: boolean;
   ficsGameNumber?: number;
   ficsBuffer?: string;
+  serverSource?: ChessServerSource;
 }
 
 const MAX_MATCHMAKING_ELO_GAP = 200;
@@ -1781,7 +1782,8 @@ async function refreshPlayStrategyPool(): Promise<void> {
         }
       }
     }
-    // Also grab live PlayStrategy crowd snapshot briefly via lobby WS
+    // Grab live PlayStrategy crowd snapshot + open lobby hooks briefly via lobby WS
+    const crowdUsersToHydrate: string[] = [];
     await new Promise<void>((resolve) => {
       let settled = false;
       const psSri = crypto.randomBytes(8).toString('base64url').slice(0, 10);
@@ -1799,22 +1801,50 @@ async function refreshPlayStrategyPool(): Promise<void> {
         }
         resolve();
       };
-      const t = setTimeout(finish, 1600);
+      const t = setTimeout(finish, 1500);
       ws.on('open', () => {
         ws.send(JSON.stringify({ t: 'hookIn' }));
       });
       ws.on('message', (raw) => {
         try {
           const msg = JSON.parse(String(raw));
-          if (msg.t === 'crowd' && msg.d) {
+          if ((msg.t === 'hooks' || msg.t === 'hli') && msg.d) {
+            const list = Array.isArray(msg.d) ? msg.d : Array.isArray(msg.d.list) ? msg.d.list : [];
+            for (const h of list) {
+              const u = typeof h?.u === 'string' ? h.u.trim() : '';
+              if (u && u.toLowerCase() !== 'anonymous') {
+                psCount += 1;
+                recordLiveDiscoveredPlayer({
+                  username: u,
+                  rating: typeof h?.rating === 'number' ? h.rating : undefined,
+                  sourceServer: 'PlayStrategy',
+                });
+                if (typeof h?.rating !== 'number') crowdUsersToHydrate.push(u);
+              }
+            }
+          } else if (msg.t === 'had' && msg.d) {
+            const u = typeof msg.d.u === 'string' ? msg.d.u.trim() : '';
+            if (u && u.toLowerCase() !== 'anonymous') {
+              psCount += 1;
+              recordLiveDiscoveredPlayer({
+                username: u,
+                rating: typeof msg.d.rating === 'number' ? msg.d.rating : undefined,
+                sourceServer: 'PlayStrategy',
+              });
+            }
+          } else if (msg.t === 'crowd' && msg.d) {
             const users = Array.isArray(msg.d.users) ? msg.d.users : [];
             for (const u of users) {
               if (typeof u === 'string' && u.trim()) {
+                const clean = u.trim();
                 psCount += 1;
                 recordLiveDiscoveredPlayer({
-                  username: u.trim(),
+                  username: clean,
                   sourceServer: 'PlayStrategy',
                 });
+                if (!LIVE_DISCOVERED_PLAYERS.get(clean.toLowerCase())?.rating) {
+                  crowdUsersToHydrate.push(clean);
+                }
               }
             }
             const nb = typeof msg.d.nb === 'number' ? msg.d.nb : users.length;
@@ -1835,6 +1865,34 @@ async function refreshPlayStrategyPool(): Promise<void> {
       ws.on('error', finish);
       ws.on('close', finish);
     });
+    // Hydrate PlayStrategy players missing ratings via public /api/user endpoint
+    const uniquePsHydrate = Array.from(new Set(crowdUsersToHydrate)).slice(0, 8);
+    if (uniquePsHydrate.length > 0) {
+      await Promise.allSettled(
+        uniquePsHydrate.map(async (uname) => {
+          const uRes = await fetch(`https://playstrategy.org/api/user/${encodeURIComponent(uname)}`, {
+            headers: { Accept: 'application/json', 'User-Agent': 'OpenChess/1.0' },
+            signal: AbortSignal.timeout(1800),
+          }).catch(() => null);
+          if (!uRes?.ok) return;
+          const uData = (await uRes.json().catch(() => null)) as Record<string, any> | null;
+          if (!uData) return;
+          const rating =
+            uData?.perfs?.rapid?.rating ??
+            uData?.perfs?.blitz?.rating ??
+            uData?.perfs?.bullet?.rating ??
+            uData?.perfs?.classical?.rating;
+          if (typeof rating === 'number' && rating >= 100) {
+            recordLiveDiscoveredPlayer({
+              username: String(uData.username || uname),
+              rating,
+              title: typeof uData.title === 'string' ? uData.title : undefined,
+              sourceServer: 'PlayStrategy',
+            });
+          }
+        }),
+      );
+    }
     if (psCount > 0 && !SERVER_POOL_HEALTH.get('PlayStrategy')?.ok) {
       SERVER_POOL_HEALTH.set('PlayStrategy', {
         name: 'PlayStrategy',
@@ -1916,7 +1974,8 @@ async function refreshChessComPublicPool(): Promise<void> {
     if (streamerRes?.ok) {
       const stData = (await streamerRes.json().catch(() => null)) as { streamers?: any[] } | null;
       const list = Array.isArray(stData?.streamers) ? stData.streamers : [];
-      const liveFirst = [...list.filter((s) => s?.is_live), ...list.filter((s) => !s?.is_live)].slice(0, 24);
+      const liveFirst = [...list.filter((s) => s?.is_live), ...list.filter((s) => !s?.is_live)].slice(0, 12);
+      const streamersToHydrate: string[] = [];
       for (const s of liveFirst) {
         const uname = typeof s?.username === 'string' ? s.username.trim() : '';
         if (!uname) continue;
@@ -1925,7 +1984,33 @@ async function refreshChessComPublicPool(): Promise<void> {
           avatarUrl: typeof s?.avatar === 'string' ? s.avatar : undefined,
           sourceServer: 'Chess.com',
         });
+        if (!LIVE_DISCOVERED_PLAYERS.get(uname.toLowerCase())?.rating) {
+          streamersToHydrate.push(uname);
+        }
         ccCount += 1;
+      }
+      if (streamersToHydrate.length > 0) {
+        await Promise.allSettled(
+          streamersToHydrate.slice(0, 6).map(async (uname) => {
+            const st = await fetch(`https://api.chess.com/pub/player/${encodeURIComponent(uname)}/stats`, {
+              headers,
+              signal: AbortSignal.timeout(1800),
+            }).catch(() => null);
+            if (!st?.ok) return;
+            const d = (await st.json().catch(() => null)) as Record<string, any> | null;
+            const rating =
+              d?.chess_rapid?.last?.rating ??
+              d?.chess_blitz?.last?.rating ??
+              d?.chess_bullet?.last?.rating;
+            if (typeof rating === 'number' && rating >= 100) {
+              recordLiveDiscoveredPlayer({
+                username: uname,
+                rating,
+                sourceServer: 'Chess.com',
+              });
+            }
+          }),
+        );
       }
     }
 
@@ -2017,6 +2102,44 @@ async function refreshLiveDiscoveredPlayers(): Promise<void> {
         count: Math.max(prevLichess?.count ?? 0, lichessPoolCount),
         updatedAt: Date.now(),
       });
+    }
+    // Enrich any discovered Lichess players that didn't yet carry a rating
+    const unratedLichessNames = Array.from(LIVE_DISCOVERED_PLAYERS.values())
+      .filter((p) => p.sourceServer === 'Lichess' && typeof p.rating !== 'number')
+      .slice(0, 40)
+      .map((p) => p.username);
+    if (unratedLichessNames.length > 0) {
+      const uRes = await fetch('https://lichess.org/api/users', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain',
+          Accept: 'application/json',
+          'User-Agent': 'OpenChess/1.0',
+        },
+        body: unratedLichessNames.join(','),
+        signal: AbortSignal.timeout(2000),
+      }).catch(() => null);
+      if (uRes?.ok) {
+        const arr = (await uRes.json().catch(() => null)) as Array<Record<string, any>> | null;
+        if (Array.isArray(arr)) {
+          for (const item of arr) {
+            const uname = typeof item?.username === 'string' ? item.username.trim() : '';
+            if (!uname) continue;
+            const rating =
+              Number(item?.perfs?.rapid?.rating) ||
+              Number(item?.perfs?.blitz?.rating) ||
+              Number(item?.perfs?.bullet?.rating) ||
+              undefined;
+            recordLiveDiscoveredPlayer({
+              username: uname,
+              rating,
+              title: typeof item?.title === 'string' ? item.title : undefined,
+              flag: item?.profile?.flag || item?.profile?.country,
+              sourceServer: 'Lichess',
+            });
+          }
+        }
+      }
     }
   } catch {
     // ignore refresh error
@@ -2280,10 +2403,10 @@ async function joinRealLichessLobbyGame(params: {
       }
       const { initial, increment } = parseHookClockSeconds(h);
       const elapsed = Date.now() - startedAt;
-      if (elapsed < 900) {
+      if (elapsed < 450) {
         return initial === params.initialSeconds && increment === params.incrementSeconds;
       }
-      if (elapsed < 2200) {
+      if (elapsed < 1600) {
         return (
           Math.abs(initial - params.initialSeconds) <= 120 &&
           Math.abs(increment - params.incrementSeconds) <= 3
@@ -2319,9 +2442,9 @@ async function joinRealLichessLobbyGame(params: {
         return;
       }
       const allHooks = [...candidateHooks.values()];
-      // Prefer named Lichess hooks first, then fall back to any live standard casual Lichess hook
+      // Prefer named Lichess hooks first; only fall back to anonymous hooks after 1200ms
       let eligible = allHooks.filter((h) => isEligibleStandardHook(h, true));
-      if (eligible.length === 0) {
+      if (eligible.length === 0 && Date.now() - startedAt >= 1200) {
         eligible = allHooks.filter((h) => isEligibleStandardHook(h, false));
       }
       if (eligible.length === 0) return;
@@ -2447,7 +2570,9 @@ async function joinRealLichessLobbyGame(params: {
   const v5OppUser =
     v5Data?.opponent?.user?.username ||
     v5Data?.opponent?.user?.name ||
-    v5Data?.opponent?.user?.id;
+    v5Data?.opponent?.user?.id ||
+    v5Data?.opponent?.username ||
+    v5Data?.opponent?.name;
   const v5OppRating =
     typeof v5Data?.opponent?.rating === 'number' ? v5Data.opponent.rating : undefined;
 
@@ -3122,6 +3247,8 @@ function setupLiveWebSocketServer(
       endReason: room.endReason,
       initialSeconds: room.initialSeconds,
       incrementSeconds: room.incrementSeconds,
+      serverSource:
+        room.serverSource ?? (room.lichessSide ? 'Lichess' : room.ficsSide ? 'FICS' : 'OpenChess'),
       chatMessages: room.chatMessages,
       spectatorCount: room.spectators?.size ?? 0,
     };
@@ -3379,9 +3506,47 @@ function setupLiveWebSocketServer(
     const fSock = room.ficsSocket;
     if (!fSock || fSock.destroyed) return;
 
+    const oppSide = room.ficsSide;
+    const oppName = oppSide === 'w' ? room.whiteName : room.blackName;
+    const existingOppRating = oppSide === 'w' ? room.whiteRating : room.blackRating;
+    let fingerRequested = false;
+    if (
+      oppSide &&
+      existingOppRating === undefined &&
+      oppName &&
+      !/^guest/i.test(oppName)
+    ) {
+      fingerRequested = true;
+      try {
+        fSock.write(`finger ${oppName}\n`);
+      } catch {
+        // ignore
+      }
+    }
+
     const processFicsLine = (rawLine: string) => {
       const line = rawLine.trim();
       if (!line || room.ficsSocket !== fSock || room.winner) return;
+
+      if (fingerRequested && oppSide) {
+        const fingerRatingM = line.match(/^(Blitz|Standard|Lightning)\s+(\d{3,4})\b/i);
+        if (fingerRatingM) {
+          const parsedRating = Number(fingerRatingM[2]);
+          if (Number.isFinite(parsedRating) && parsedRating >= 100) {
+            const currentRating = oppSide === 'w' ? room.whiteRating : room.blackRating;
+            if (currentRating === undefined || /^Blitz$/i.test(fingerRatingM[1])) {
+              if (oppSide === 'w') room.whiteRating = parsedRating;
+              else room.blackRating = parsedRating;
+              recordLiveDiscoveredPlayer({
+                username: oppName,
+                rating: parsedRating,
+                sourceServer: 'FICS',
+              });
+              broadcastRoomState(room);
+            }
+          }
+        }
+      }
 
       if (line.startsWith('<12> ')) {
         const s12 = parseFicsStyle12Line(line);
@@ -3792,6 +3957,7 @@ function setupLiveWebSocketServer(
       whiteTitle: params.whiteTitle,
       blackTitle: params.blackTitle,
       rated: params.rated ?? true,
+      serverSource: 'OpenChess',
       drawOfferBy: null,
       rematchOfferBy: null,
       winner: null,
@@ -3891,7 +4057,11 @@ function setupLiveWebSocketServer(
 
       const type = msg.type;
       if (type === 'ping') {
-        sendJson(ws, { type: 'pong', t: Date.now() });
+        sendJson(ws, {
+          type: 'pong',
+          t: Date.now(),
+          clientTs: typeof msg.clientTs === 'number' ? msg.clientTs : undefined,
+        });
         return;
       }
       if (type === 'presence:identify') {
@@ -4099,8 +4269,22 @@ function setupLiveWebSocketServer(
           blackTitle: creatorWhite ? playerTitle : ch.title,
           rated: ch.rated,
         });
-        sendJson(ch.ws, { type: 'room:matched', roomId, yourColor: creatorWhite ? 'w' : 'b' });
-        sendJson(ws, { type: 'room:matched', roomId, yourColor: creatorWhite ? 'b' : 'w' });
+        sendJson(ch.ws, {
+          type: 'room:matched',
+          roomId,
+          yourColor: creatorWhite ? 'w' : 'b',
+          initialSeconds: ch.initialSeconds,
+          incrementSeconds: ch.incrementSeconds,
+          serverSource: 'OpenChess',
+        });
+        sendJson(ws, {
+          type: 'room:matched',
+          roomId,
+          yourColor: creatorWhite ? 'b' : 'w',
+          initialSeconds: ch.initialSeconds,
+          incrementSeconds: ch.incrementSeconds,
+          serverSource: 'OpenChess',
+        });
         return;
       }
 
@@ -4352,6 +4536,7 @@ function setupLiveWebSocketServer(
           whiteTitle: humanColor === 'w' ? opts.pTitle : lichessMatch.opponentTitle,
           blackTitle: humanColor === 'b' ? opts.pTitle : lichessMatch.opponentTitle,
           rated: typeof lichessMatch.opponentRating === 'number',
+          serverSource: 'Lichess',
           drawOfferBy: null,
           rematchOfferBy: null,
           winner: null,
@@ -4375,7 +4560,14 @@ function setupLiveWebSocketServer(
             rooms.delete(roomId);
           }
         }, 30000);
-        sendJson(targetWs, { type: 'room:matched', roomId, yourColor: humanColor });
+        sendJson(targetWs, {
+          type: 'room:matched',
+          roomId,
+          yourColor: humanColor,
+          initialSeconds: lichessMatch.initialSeconds,
+          incrementSeconds: lichessMatch.incrementSeconds,
+          serverSource: 'Lichess',
+        });
       };
 
       const startBridgedFicsRoom = (
@@ -4416,6 +4608,7 @@ function setupLiveWebSocketServer(
           whiteTitle: humanColor === 'w' ? opts.pTitle : undefined,
           blackTitle: humanColor === 'b' ? opts.pTitle : undefined,
           rated: typeof ficsMatch.opponentRating === 'number',
+          serverSource: 'FICS',
           drawOfferBy: null,
           rematchOfferBy: null,
           winner: null,
@@ -4438,7 +4631,14 @@ function setupLiveWebSocketServer(
             rooms.delete(roomId);
           }
         }, 30000);
-        sendJson(targetWs, { type: 'room:matched', roomId, yourColor: humanColor });
+        sendJson(targetWs, {
+          type: 'room:matched',
+          roomId,
+          yourColor: humanColor,
+          initialSeconds: ficsMatch.initialSeconds,
+          incrementSeconds: ficsMatch.incrementSeconds,
+          serverSource: 'FICS',
+        });
       };
 
       if (type === 'join_fics_ad') {
@@ -4605,8 +4805,22 @@ function setupLiveWebSocketServer(
             whiteTitle: wsWhite ? playerTitle : opponent.title,
             blackTitle: wsWhite ? opponent.title : playerTitle,
           });
-          sendJson(ws, { type: 'room:matched', roomId, yourColor: wsWhite ? 'w' : 'b' });
-          sendJson(opponent.ws, { type: 'room:matched', roomId, yourColor: wsWhite ? 'b' : 'w' });
+          sendJson(ws, {
+            type: 'room:matched',
+            roomId,
+            yourColor: wsWhite ? 'w' : 'b',
+            initialSeconds,
+            incrementSeconds,
+            serverSource: 'OpenChess',
+          });
+          sendJson(opponent.ws, {
+            type: 'room:matched',
+            roomId,
+            yourColor: wsWhite ? 'b' : 'w',
+            initialSeconds,
+            incrementSeconds,
+            serverSource: 'OpenChess',
+          });
         } else if (waitingLobbyEntry) {
           const [chId, ch] = waitingLobbyEntry;
           openLobbyChallenges.delete(chId);
@@ -4631,8 +4845,22 @@ function setupLiveWebSocketServer(
             blackTitle: creatorWhite ? playerTitle : ch.title,
             rated: ch.rated,
           });
-          sendJson(ch.ws, { type: 'room:matched', roomId, yourColor: creatorWhite ? 'w' : 'b' });
-          sendJson(ws, { type: 'room:matched', roomId, yourColor: creatorWhite ? 'b' : 'w' });
+          sendJson(ch.ws, {
+            type: 'room:matched',
+            roomId,
+            yourColor: creatorWhite ? 'w' : 'b',
+            initialSeconds: ch.initialSeconds,
+            incrementSeconds: ch.incrementSeconds,
+            serverSource: 'OpenChess',
+          });
+          sendJson(ws, {
+            type: 'room:matched',
+            roomId,
+            yourColor: creatorWhite ? 'b' : 'w',
+            initialSeconds: ch.initialSeconds,
+            incrementSeconds: ch.incrementSeconds,
+            serverSource: 'OpenChess',
+          });
         } else {
           const entry: {
             ws: WebSocket;
@@ -4927,7 +5155,10 @@ function setupLiveWebSocketServer(
       if (room.winner) return;
 
       if (type === 'move') {
-        if (room.chess.turn() !== membership.color) return;
+        if (room.chess.turn() !== membership.color) {
+          sendJson(ws, { type: 'move:rejected', roomId: room.id, fen: room.chess.fen() });
+          return;
+        }
         const from = typeof msg.from === 'string' ? msg.from : '';
         const to = typeof msg.to === 'string' ? msg.to : '';
         const promotion = typeof msg.promotion === 'string' ? msg.promotion : 'q';
@@ -4960,7 +5191,11 @@ function setupLiveWebSocketServer(
 
         try {
           const moved = room.chess.move({ from, to, promotion });
-          if (!moved) return;
+          if (!moved) {
+            sendJson(ws, { type: 'move:rejected', roomId: room.id, fen: room.chess.fen() });
+            broadcastRoomState(room);
+            return;
+          }
           if (membership.color === 'w') room.whiteClockMs += room.incrementSeconds * 1000;
           else room.blackClockMs += room.incrementSeconds * 1000;
           room.lastMoveAt = now;
@@ -5001,7 +5236,8 @@ function setupLiveWebSocketServer(
           }
           broadcastRoomState(room);
         } catch {
-          // ignore illegal move
+          sendJson(ws, { type: 'move:rejected', roomId: room.id, fen: room.chess.fen() });
+          broadcastRoomState(room);
         }
         return;
       }
@@ -7918,7 +8154,11 @@ async function startServer() {
       byServer.set(p.sourceServer, list);
     }
     for (const list of byServer.values()) {
-      list.sort((a, b) => b.updatedAt - a.updatedAt);
+      list.sort(
+        (a, b) =>
+          (typeof b.rating === 'number' ? 1 : 0) - (typeof a.rating === 'number' ? 1 : 0) ||
+          b.updatedAt - a.updatedAt,
+      );
     }
     const balancedRemote: LiveDiscoveredPlayerEntry[] = [];
     const serverOrder: ChessServerSource[] = ['Lichess', 'FICS', 'Chess.com', 'PlayStrategy'];

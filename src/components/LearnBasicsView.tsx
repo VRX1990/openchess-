@@ -24,17 +24,8 @@ import {
   type BasicsPiece,
 } from '../chess/learnCurriculum';
 import { playErrorSound, playMoveSound, playSuccessSound } from '../chess/sound';
-import type { BoardTheme } from './ChessBoard';
+import { BOARD_THEME_PALETTES, type BoardTheme } from '../chess/theme';
 import { ChessPiece } from './ChessPiece';
-
-const BOARD_PALETTE: Record<
-  BoardTheme,
-  { light: string; dark: string; lightHighlight: string; darkHighlight: string }
-> = {
-  green: { light: '#EEEED2', dark: '#769656', lightHighlight: '#F6F669', darkHighlight: '#BACA2B' },
-  walnut: { light: '#F0D9B5', dark: '#B58863', lightHighlight: '#F7EC77', darkHighlight: '#DAC34B' },
-  slate: { light: '#DEE3E6', dark: '#8CA2AD', lightHighlight: '#D4E6F1', darkHighlight: '#6E95AB' },
-};
 
 interface LearnBasicsViewProps {
   boardTheme: BoardTheme;
@@ -488,7 +479,7 @@ export function LearnBasicsView({
 
   const completedLessonsCount = Object.keys(progressMap).length;
   const pct = Math.round((completedLessonsCount / Math.max(1, CHESS_BASICS_LESSONS.length)) * 100);
-  const palette = BOARD_PALETTE[boardTheme];
+  const palette = BOARD_THEME_PALETTES[boardTheme] ?? BOARD_THEME_PALETTES.green;
 
   // Grouped Lesson Catalog (Exact 18 Lichess lessons in Chess.com dark green theme)
   if (lessonIdx === null || !activeLesson || !stage) {

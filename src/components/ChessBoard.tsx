@@ -1,35 +1,25 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Chess, type Color, type PieceSymbol, type Square } from 'chess.js';
 import type { MoveQuality } from '../chess/engine';
-import { computePremoveTargets } from '../chess/onlineHelpers';
+import {
+  computePremoveTargets,
+  projectBoardForPremove,
+  type QueuedPremove,
+} from '../chess/onlineHelpers';
+import {
+  BOARD_THEME_PALETTES,
+  PREMOVE_COLOR_PALETTES,
+  useChessTheme,
+  type AnimationSpeed,
+  type BoardTheme,
+  type CoordinateStyle,
+  type PieceTheme,
+  type PremoveColorTheme,
+} from '../chess/theme';
 import { ChessPiece } from './ChessPiece';
 import { MOVE_QUALITY_META, MoveBadge } from './MoveBadge';
 
-export type BoardTheme = 'green' | 'walnut' | 'slate';
-
-const BOARD_THEMES: Record<
-  BoardTheme,
-  { light: string; dark: string; lightHighlight: string; darkHighlight: string }
-> = {
-  green: {
-    light: '#EEEED2',
-    dark: '#769656',
-    lightHighlight: '#F6F669',
-    darkHighlight: '#BACA2B',
-  },
-  walnut: {
-    light: '#F0D9B5',
-    dark: '#B58863',
-    lightHighlight: '#F7EC77',
-    darkHighlight: '#DAC34B',
-  },
-  slate: {
-    light: '#DEE3E6',
-    dark: '#8CA2AD',
-    lightHighlight: '#D4E6F1',
-    darkHighlight: '#6E95AB',
-  },
-};
+export type { BoardTheme };
 
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
 const RANKS = ['8', '7', '6', '5', '4', '3', '2', '1'];
@@ -71,6 +61,7 @@ interface ChessBoardProps {
   moveBadge?: { square: string; quality: MoveQuality } | null;
   bestMoveArrow?: { from: string; to: string } | null;
   premove?: { from: string; to: string; promotion?: PieceSymbol } | null;
+  premoves?: QueuedPremove[];
   onPremove?: (from: string, to: string, promotion?: PieceSymbol) => void;
   onClearPremove?: () => void;
   highlightSquares?: { square: string; color: 'green' | 'red' | 'yellow' | 'blue' }[];
@@ -78,6 +69,11 @@ interface ChessBoardProps {
   hideCoordinates?: boolean;
   onSquareClick?: (sq: Square) => void;
   theme?: BoardTheme;
+  pieceTheme?: PieceTheme;
+  premoveColor?: PremoveColorTheme;
+  animationSpeed?: AnimationSpeed;
+  coordinateStyle?: CoordinateStyle;
+  highlightMoves?: boolean;
   onMove: (from: string, to: string, promotion?: PieceSymbol) => boolean;
 }
 
@@ -110,15 +106,51 @@ export function ChessBoard({
   moveBadge = null,
   bestMoveArrow = null,
   premove = null,
+  premoves,
   onPremove,
   onClearPremove,
   highlightSquares = [],
   extraArrows = [],
   hideCoordinates = false,
   onSquareClick,
-  theme = 'green',
+  theme,
+  pieceTheme,
+  premoveColor,
+  animationSpeed,
+  coordinateStyle,
+  highlightMoves,
   onMove,
 }: ChessBoardProps) {
+  const { prefs } = useChessTheme();
+  const activeBoardTheme = theme ?? prefs.boardTheme;
+  const activePieceTheme = pieceTheme ?? prefs.pieceTheme;
+  const activePremoveColor = premoveColor ?? prefs.premoveColor;
+  const activeAnimationSpeed = animationSpeed ?? prefs.animationSpeed;
+  const activeCoordStyle: CoordinateStyle = hideCoordinates
+    ? 'none'
+    : (coordinateStyle ?? prefs.coordinateStyle);
+  const showMoveHighlights = highlightMoves ?? prefs.highlightMoves;
+
+  const effectivePremoves = useMemo<QueuedPremove[]>(() => {
+    if (premoves && premoves.length > 0) return premoves;
+    if (premove?.from && premove?.to) {
+      return [
+        {
+          from: premove.from,
+          to: premove.to,
+          promotion:
+            premove.promotion === 'q' ||
+            premove.promotion === 'r' ||
+            premove.promotion === 'b' ||
+            premove.promotion === 'n'
+              ? premove.promotion
+              : undefined,
+        },
+      ];
+    }
+    return [];
+  }, [premoves, premove]);
+
   const boardRef = useRef<HTMLDivElement | null>(null);
   const suppressSlideRef = useRef<string | null>(null);
   const skipNextClickRef = useRef(false);
@@ -145,14 +177,13 @@ export function ChessBoard({
   useEffect(() => {
     const prevFen = prevFenRef.current;
     prevFenRef.current = fen;
-    if (!lastMoveCapture || !lastMove?.to || prevFen === fen) {
+    if (!lastMoveCapture || !lastMove?.to || prevFen === fen || activeAnimationSpeed === 'none') {
       return;
     }
     try {
       const prevChess = new Chess(prevFen);
       let capturedSquare: Square = lastMove.to as Square;
       let capturedPiece = prevChess.get(capturedSquare);
-      // En passant capture: pawn captured sits on the origin rank of `from` and destination file of `to`
       if (!capturedPiece && lastMove.from && lastMove.to[0] !== lastMove.from[0]) {
         const epSq = `${lastMove.to[0]}${lastMove.from[1]}` as Square;
         const epPiece = prevChess.get(epSq);
@@ -172,12 +203,12 @@ export function ChessBoard({
       });
       const timer = window.setTimeout(() => {
         setGhostCapture((cur) => (cur?.key === `${capturedSquare}-${fen}` ? null : cur));
-      }, 160);
+      }, activeAnimationSpeed === 'fast' ? 95 : 160);
       return () => window.clearTimeout(timer);
     } catch {
       return;
     }
-  }, [fen, lastMove, lastMoveCapture]);
+  }, [fen, lastMove, lastMoveCapture, activeAnimationSpeed]);
 
   const chess = useMemo(() => {
     try {
@@ -190,12 +221,37 @@ export function ChessBoard({
   const board = chess.board();
   const inCheck = chess.inCheck();
   const activeTurn = chess.turn();
-  const palette = BOARD_THEMES[theme];
+  const palette = BOARD_THEME_PALETTES[activeBoardTheme] ?? BOARD_THEME_PALETTES.green;
+  const premovePalette = PREMOVE_COLOR_PALETTES[activePremoveColor] ?? PREMOVE_COLOR_PALETTES.crimson;
   const isPremoveMode =
     interactive &&
     allowedColor !== 'both' &&
     activeTurn !== allowedColor &&
     Boolean(onPremove);
+
+  const premoveProjection = useMemo(
+    () => projectBoardForPremove(fen, isPremoveMode || effectivePremoves.length > 0 ? effectivePremoves : []),
+    [fen, effectivePremoves, isPremoveMode],
+  );
+
+  const premoveAllSquares = useMemo(() => {
+    const origins = new Set<string>();
+    const destinations = new Set<string>();
+    for (const pm of effectivePremoves) {
+      origins.add(pm.from);
+      destinations.add(pm.to);
+    }
+    return { origins, destinations };
+  }, [effectivePremoves]);
+
+  const getInteractivePiece = (sq: Square): { type: PieceSymbol; color: Color } | null => {
+    if (isPremoveMode) {
+      const projected = premoveProjection.pieces.get(sq);
+      return projected ? { type: projected.type, color: projected.color } : null;
+    }
+    const real = chess.get(sq);
+    return real ? { type: real.type, color: real.color } : null;
+  };
 
   useEffect(() => {
     if (!selectedSquare) return;
@@ -203,7 +259,9 @@ export function ChessBoard({
       setSelectedSquare(null);
       return;
     }
-    const selPiece = chess.get(selectedSquare);
+    const selPiece = isPremoveMode
+      ? premoveProjection.pieces.get(selectedSquare)
+      : chess.get(selectedSquare);
     if (!selPiece) {
       setSelectedSquare(null);
       return;
@@ -211,19 +269,7 @@ export function ChessBoard({
     if (allowedColor !== 'both' && selPiece.color !== allowedColor) {
       setSelectedSquare(null);
     }
-  }, [allowedColor, chess, interactive, selectedSquare]);
-
-  const occupiedSquares = useMemo(() => {
-    const set = new Set<string>();
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        if (board[r][c]) {
-          set.add(`${FILES[c]}${RANKS[r]}`);
-        }
-      }
-    }
-    return set;
-  }, [board]);
+  }, [allowedColor, chess, interactive, isPremoveMode, premoveProjection.pieces, selectedSquare]);
 
   const activeSourceSquare = dragState?.active ? dragState.from : selectedSquare;
 
@@ -231,22 +277,26 @@ export function ChessBoard({
     if (!activeSourceSquare || !interactive) {
       return new Map<Square, { isCapture: boolean; isPromo: boolean }>();
     }
-    const piece = chess.get(activeSourceSquare);
-    if (!piece) {
-      return new Map<Square, { isCapture: boolean; isPromo: boolean }>();
-    }
-    if (isPremoveMode && piece.color === allowedColor) {
+    if (isPremoveMode) {
+      const piece = premoveProjection.pieces.get(activeSourceSquare);
+      if (!piece || piece.color !== allowedColor) {
+        return new Map<Square, { isCapture: boolean; isPromo: boolean }>();
+      }
       const rawTargets = computePremoveTargets(
         piece.type,
         piece.color,
         activeSourceSquare,
-        occupiedSquares,
+        premoveProjection.occupied,
       );
       const map = new Map<Square, { isCapture: boolean; isPromo: boolean }>();
       for (const [k, v] of rawTargets.entries()) {
         map.set(k as Square, v);
       }
       return map;
+    }
+    const piece = chess.get(activeSourceSquare);
+    if (!piece) {
+      return new Map<Square, { isCapture: boolean; isPromo: boolean }>();
     }
     const moves = chess.moves({ square: activeSourceSquare, verbose: true });
     const map = new Map<Square, { isCapture: boolean; isPromo: boolean }>();
@@ -257,14 +307,22 @@ export function ChessBoard({
       });
     }
     return map;
-  }, [chess, activeSourceSquare, interactive, isPremoveMode, allowedColor, occupiedSquares]);
+  }, [
+    chess,
+    activeSourceSquare,
+    interactive,
+    isPremoveMode,
+    allowedColor,
+    premoveProjection.pieces,
+    premoveProjection.occupied,
+  ]);
 
   const displayRanks = orientation === 'w' ? RANKS : [...RANKS].reverse();
   const displayFiles = orientation === 'w' ? FILES : [...FILES].reverse();
 
   const slideOffsets = useMemo(() => {
     const map = new Map<string, { dx: number; dy: number }>();
-    if (!lastMove?.from || !lastMove?.to) return map;
+    if (activeAnimationSpeed === 'none' || !lastMove?.from || !lastMove?.to) return map;
     const moveKey = `${lastMove.from}-${lastMove.to}-${fen}`;
     if (suppressSlideRef.current === moveKey) {
       return map;
@@ -301,7 +359,7 @@ export function ChessBoard({
     }
 
     return map;
-  }, [chess, fen, lastMove, orientation]);
+  }, [chess, fen, lastMove, orientation, activeAnimationSpeed]);
 
   const buildArrowSegment = (fromSq: string, toSq: string) => {
     if (!fromSq || !toSq || fromSq === toSq) return null;
@@ -334,10 +392,24 @@ export function ChessBoard({
     return buildArrowSegment(bestMoveArrow.from, bestMoveArrow.to);
   }, [bestMoveArrow, orientation]);
 
-  const premoveArrowCoords = useMemo(() => {
-    if (!premove?.from || !premove?.to) return null;
-    return buildArrowSegment(premove.from, premove.to);
-  }, [premove, orientation]);
+  const premoveArrowSegments = useMemo(
+    () =>
+      effectivePremoves
+        .map((pm, idx) => ({
+          ...pm,
+          idx,
+          seg: buildArrowSegment(pm.from, pm.to),
+        }))
+        .filter(
+          (
+            item,
+          ): item is QueuedPremove & {
+            idx: number;
+            seg: NonNullable<ReturnType<typeof buildArrowSegment>>;
+          } => Boolean(item.seg),
+        ),
+    [effectivePremoves, orientation],
+  );
 
   const extraArrowSegments = useMemo(
     () =>
@@ -370,11 +442,15 @@ export function ChessBoard({
   );
 
   const attemptMove = (from: Square, to: Square, viaDrag = false) => {
-    const piece = chess.get(from);
-    if (!piece) return false;
-
-    if (isPremoveMode && piece.color === allowedColor && onPremove) {
-      const premoveTargets = computePremoveTargets(piece.type, piece.color, from, occupiedSquares);
+    if (isPremoveMode && onPremove) {
+      const piece = premoveProjection.pieces.get(from);
+      if (!piece || piece.color !== allowedColor) return false;
+      const premoveTargets = computePremoveTargets(
+        piece.type,
+        piece.color,
+        from,
+        premoveProjection.occupied,
+      );
       const targetMeta = premoveTargets.get(to);
       if (!targetMeta) return false;
       if (targetMeta.isPromo) {
@@ -388,6 +464,9 @@ export function ChessBoard({
       setUserArrows([]);
       return true;
     }
+
+    const piece = chess.get(from);
+    if (!piece) return false;
 
     const moves = chess.moves({ square: from, verbose: true });
     const matching = moves.filter((m) => m.to === to);
@@ -434,11 +513,11 @@ export function ChessBoard({
     }
     if (!interactive || pendingPromotion) return;
 
-    const piece = chess.get(sq);
+    const piece = getInteractivePiece(sq);
     const canControlTurn = allowedColor === 'both' || allowedColor === activeTurn;
     const canControlPiece =
       piece &&
-      ((piece.color === activeTurn && canControlTurn) ||
+      ((!isPremoveMode && piece.color === activeTurn && canControlTurn) ||
         (isPremoveMode && piece.color === allowedColor));
 
     if (selectedSquare && legalMovesFromSelected.has(sq)) {
@@ -455,7 +534,7 @@ export function ChessBoard({
       return;
     }
 
-    if (premove && onClearPremove) {
+    if (effectivePremoves.length > 0 && onClearPremove) {
       onClearPremove();
     }
     setSelectedSquare(null);
@@ -476,7 +555,7 @@ export function ChessBoard({
   const handlePointerDownSquare = (sq: Square, e: React.PointerEvent<HTMLButtonElement>) => {
     if (e.button === 2) {
       e.preventDefault();
-      if (premove && onClearPremove) {
+      if (effectivePremoves.length > 0 && onClearPremove) {
         onClearPremove();
         setSelectedSquare(null);
         return;
@@ -486,11 +565,11 @@ export function ChessBoard({
     }
     if (e.button !== 0 || !interactive || pendingPromotion) return;
 
-    const piece = chess.get(sq);
+    const piece = getInteractivePiece(sq);
     const canControlTurn = allowedColor === 'both' || allowedColor === activeTurn;
     const canDragPiece =
       piece &&
-      ((piece.color === activeTurn && canControlTurn) ||
+      ((!isPremoveMode && piece.color === activeTurn && canControlTurn) ||
         (isPremoveMode && piece.color === allowedColor));
     if (!canDragPiece || !piece) return;
 
@@ -576,417 +655,549 @@ export function ChessBoard({
   };
 
   const badgeMeta = moveBadge ? MOVE_QUALITY_META[moveBadge.quality] : null;
+  const animCssVars = {
+    '--piece-anim-ms':
+      activeAnimationSpeed === 'none'
+        ? '0ms'
+        : activeAnimationSpeed === 'fast'
+          ? '75ms'
+          : '155ms',
+    '--knight-anim-ms':
+      activeAnimationSpeed === 'none'
+        ? '0ms'
+        : activeAnimationSpeed === 'fast'
+          ? '90ms'
+          : '185ms',
+  } as CSSProperties;
 
-  return (
+  const isOutsideCoords = activeCoordStyle === 'outside';
+
+  const boardCore = (
     <div
       ref={boardRef}
+      style={animCssVars}
       className="relative w-full aspect-square select-none touch-none"
       data-testid="chess-board"
       onContextMenu={(e) => e.preventDefault()}
     >
       <div className="relative w-full h-full rounded-none sm:rounded-md overflow-hidden shadow-[0_14px_38px_rgba(0,0,0,0.48)] ring-1 ring-black/30">
         <div className="grid grid-cols-8 grid-rows-8 w-full h-full">
-        {displayRanks.map((rank, rVisIdx) =>
-          displayFiles.map((file, cVisIdx) => {
-            const sq = `${file}${rank}` as Square;
-            const fileIdx = FILES.indexOf(file);
-            const rankIdx = RANKS.indexOf(rank);
-            const isLight = (fileIdx + rankIdx) % 2 === 0;
-            const piece = board[rankIdx][fileIdx];
+          {displayRanks.map((rank, rVisIdx) =>
+            displayFiles.map((file, cVisIdx) => {
+              const sq = `${file}${rank}` as Square;
+              const fileIdx = FILES.indexOf(file);
+              const rankIdx = RANKS.indexOf(rank);
+              const isLight = (fileIdx + rankIdx) % 2 === 0;
+              const piece = board[rankIdx][fileIdx];
 
-            const isSelected = selectedSquare === sq || dragState?.from === sq;
-            const isDragHover =
-              dragState?.active &&
-              dragState.hoverSquare === sq &&
-              legalMovesFromSelected.has(sq);
-            const isLastMove = lastMove?.from === sq || lastMove?.to === sq;
-            const isPremoveSq = premove?.from === sq || premove?.to === sq;
-            const isMarked = markedSquares.includes(sq);
-            const isKingInCheck =
-              inCheck && piece?.type === 'k' && piece.color === activeTurn;
-            const isHint = hintSquares?.from === sq || hintSquares?.to === sq;
-            const targetInfo = legalMovesFromSelected.get(sq);
-            const slide = slideOffsets.get(sq);
-            const isMovingPiece = Boolean(slide && piece);
-            const isBeingDragged = Boolean(dragState?.active && dragState.from === sq);
-            const showBadge = Boolean(moveBadge && moveBadge.square === sq);
+              const isSelected = selectedSquare === sq || dragState?.from === sq;
+              const isDragHover =
+                dragState?.active &&
+                dragState.hoverSquare === sq &&
+                legalMovesFromSelected.has(sq);
+              const isLastMove = showMoveHighlights && (lastMove?.from === sq || lastMove?.to === sq);
+              const isPremoveOrigin = premoveAllSquares.origins.has(sq);
+              const isPremoveDest = premoveAllSquares.destinations.has(sq);
+              const isPremoveSq = isPremoveOrigin || isPremoveDest;
+              const ghostPremovePiece = isPremoveMode
+                ? premoveProjection.ghostDestinations.get(sq)
+                : undefined;
+              const isVacatedByPremove =
+                isPremoveMode &&
+                premoveProjection.vacatedOrigins.has(sq) &&
+                !ghostPremovePiece;
 
-            const bg =
-              isSelected || isLastMove
-                ? isLight
-                  ? palette.lightHighlight
-                  : palette.darkHighlight
-                : isLight
-                  ? palette.light
-                  : palette.dark;
+              const isMarked = markedSquares.includes(sq);
+              const isKingInCheck =
+                inCheck && piece?.type === 'k' && piece.color === activeTurn;
+              const isHint = hintSquares?.from === sq || hintSquares?.to === sq;
+              const targetInfo = legalMovesFromSelected.get(sq);
+              const slide = slideOffsets.get(sq);
+              const isMovingPiece = Boolean(slide && piece);
+              const isBeingDragged = Boolean(dragState?.active && dragState.from === sq);
+              const showBadge = Boolean(moveBadge && moveBadge.square === sq);
 
-            const coordColor = isLight ? palette.dark : palette.light;
-            const pieceLabel = piece
-              ? `${piece.color === 'w' ? 'White' : 'Black'} ${PIECE_NAMES[piece.type]}`
-              : 'empty square';
+              const bg =
+                isSelected || isLastMove
+                  ? isLight
+                    ? palette.lightHighlight
+                    : palette.darkHighlight
+                  : isLight
+                    ? palette.light
+                    : palette.dark;
 
-            const slideStyle = slide
-              ? ({
-                  '--from-x': `${slide.dx}%`,
-                  '--from-y': `${slide.dy}%`,
-                } as CSSProperties)
-              : undefined;
+              const coordColor = isLight ? palette.dark : palette.light;
+              const pieceLabel = piece
+                ? `${piece.color === 'w' ? 'White' : 'Black'} ${PIECE_NAMES[piece.type]}`
+                : 'empty square';
 
-            const customHighlight = highlightSquares.find((h) => h.square === sq);
-            const customHighlightBg =
-              customHighlight?.color === 'green'
-                ? 'bg-[#81B64C]/55'
-                : customHighlight?.color === 'red'
-                  ? 'bg-[#FA412D]/55'
-                  : customHighlight?.color === 'yellow'
-                    ? 'bg-[#F7C045]/55'
-                    : customHighlight?.color === 'blue'
-                      ? 'bg-[#4EA1DE]/55'
-                      : '';
+              const slideStyle = slide
+                ? ({
+                    '--from-x': `${slide.dx}%`,
+                    '--from-y': `${slide.dy}%`,
+                  } as CSSProperties)
+                : undefined;
 
-            return (
-              <button
-                key={sq}
-                type="button"
-                data-square={sq}
-                data-premove={isPremoveSq ? 'true' : undefined}
-                aria-label={`${sq} ${pieceLabel}`}
-                onClick={() => handleSquareClick(sq)}
-                onPointerDown={(e) => handlePointerDownSquare(sq, e)}
-                onPointerMove={handlePointerMoveSquare}
-                onPointerUp={(e) => handlePointerUpSquare(sq, e)}
-                onPointerCancel={() => setDragState(null)}
-                style={{ backgroundColor: bg }}
-                className={`relative flex items-center justify-center p-0 border-0 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#81B64C] transition-colors duration-75 ${
-                  isMovingPiece ? 'z-30' : showBadge ? 'z-20' : 'z-0'
-                } ${interactive || onSquareClick ? 'cursor-pointer' : 'cursor-default'}`}
-              >
-                {/* Queued Premove Highlight */}
-                {isPremoveSq && (
-                  <span
-                    className="absolute inset-0 pointer-events-none z-5"
-                    style={{
-                      backgroundColor: isLight
-                        ? 'rgba(232, 93, 74, 0.52)'
-                        : 'rgba(214, 73, 55, 0.58)',
-                    }}
-                  />
-                )}
+              const customHighlight = highlightSquares.find((h) => h.square === sq);
+              const customHighlightBg =
+                customHighlight?.color === 'green'
+                  ? 'bg-[#81B64C]/55'
+                  : customHighlight?.color === 'red'
+                    ? 'bg-[#FA412D]/55'
+                    : customHighlight?.color === 'yellow'
+                      ? 'bg-[#F7C045]/55'
+                      : customHighlight?.color === 'blue'
+                        ? 'bg-[#4EA1DE]/55'
+                        : '';
 
-                {/* Visual Analysis Destination Square Tint when MoveBadge is active */}
-                {showBadge && badgeMeta && (
-                  <span
-                    className="absolute inset-0 pointer-events-none z-5 transition-opacity duration-200"
-                    style={{
-                      boxShadow: `inset 0 0 0 2.5px ${badgeMeta.bg}88`,
-                      backgroundColor: `${badgeMeta.bg}22`,
-                    }}
-                  />
-                )}
+              return (
+                <button
+                  key={sq}
+                  type="button"
+                  data-square={sq}
+                  data-premove={isPremoveSq ? 'true' : undefined}
+                  aria-label={`${sq} ${pieceLabel}`}
+                  onClick={() => handleSquareClick(sq)}
+                  onPointerDown={(e) => handlePointerDownSquare(sq, e)}
+                  onPointerMove={handlePointerMoveSquare}
+                  onPointerUp={(e) => handlePointerUpSquare(sq, e)}
+                  onPointerCancel={() => setDragState(null)}
+                  style={{ backgroundColor: bg }}
+                  className={`relative flex items-center justify-center p-0 border-0 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#81B64C] transition-colors duration-75 ${
+                    isMovingPiece ? 'z-30' : showBadge ? 'z-20' : 'z-0'
+                  } ${interactive || onSquareClick ? 'cursor-pointer' : 'cursor-default'}`}
+                >
+                  {/* Queued Premove Highlight */}
+                  {isPremoveSq && (
+                    <span
+                      className="absolute inset-0 pointer-events-none z-5"
+                      style={{
+                        backgroundColor: isLight
+                          ? premovePalette.lightSq
+                          : premovePalette.darkSq,
+                        boxShadow: isPremoveDest
+                          ? `inset 0 0 0 2px ${premovePalette.ring}`
+                          : undefined,
+                      }}
+                    />
+                  )}
 
-                {/* Hover target ring while finger/cursor dragging */}
-                {isDragHover && (
-                  <span className="absolute inset-0 ring-4 ring-inset ring-white/55 pointer-events-none z-15" />
-                )}
+                  {/* Visual Analysis Destination Square Tint when MoveBadge is active */}
+                  {showBadge && badgeMeta && (
+                    <span
+                      className="absolute inset-0 pointer-events-none z-5 transition-opacity duration-200"
+                      style={{
+                        boxShadow: `inset 0 0 0 2.5px ${badgeMeta.bg}88`,
+                        backgroundColor: `${badgeMeta.bg}22`,
+                      }}
+                    />
+                  )}
 
-                {/* Custom study/coordinate square highlight */}
-                {customHighlight && (
-                  <span className={`absolute inset-0 ${customHighlightBg} pointer-events-none z-5`} />
-                )}
+                  {/* Hover target ring while finger/cursor dragging */}
+                  {isDragHover && (
+                    <span className="absolute inset-0 ring-4 ring-inset ring-white/55 pointer-events-none z-15" />
+                  )}
 
-                {/* Right-click tactical highlight */}
-                {isMarked && (
-                  <span className="absolute inset-0 bg-[#EB6150]/55 pointer-events-none z-5" />
-                )}
+                  {/* Custom study/coordinate square highlight */}
+                  {customHighlight && (
+                    <span className={`absolute inset-0 ${customHighlightBg} pointer-events-none z-5`} />
+                  )}
 
-                {/* Check radial warning */}
-                {isKingInCheck && (
-                  <span
-                    className="absolute inset-0 pointer-events-none"
-                    style={{
-                      background:
-                        'radial-gradient(circle, rgba(229,57,53,0.92) 0%, rgba(229,57,53,0.45) 55%, rgba(229,57,53,0) 78%)',
-                    }}
-                  />
-                )}
+                  {/* Right-click tactical highlight */}
+                  {isMarked && (
+                    <span className="absolute inset-0 bg-[#EB6150]/55 pointer-events-none z-5" />
+                  )}
 
-                {/* Coach hint ring */}
-                {isHint && (
-                  <span className="absolute inset-1 rounded-sm border-[3px] border-[#E59A28] pointer-events-none z-10" />
-                )}
+                  {/* Check radial warning */}
+                  {isKingInCheck && (
+                    <span
+                      className="absolute inset-0 pointer-events-none"
+                      style={{
+                        background:
+                          'radial-gradient(circle, rgba(229,57,53,0.92) 0%, rgba(229,57,53,0.45) 55%, rgba(229,57,53,0) 78%)',
+                      }}
+                    />
+                  )}
 
-                {/* Rank coordinate on left column */}
-                {!hideCoordinates && cVisIdx === 0 && (
-                  <span
-                    style={{ color: coordColor }}
-                    className="absolute top-[2px] left-[3px] text-[9px] sm:text-[11px] font-sans font-bold leading-none pointer-events-none select-none"
-                  >
-                    {rank}
-                  </span>
-                )}
+                  {/* Coach hint ring */}
+                  {isHint && (
+                    <span className="absolute inset-1 rounded-sm border-[3px] border-[#E59A28] pointer-events-none z-10" />
+                  )}
 
-                {/* File coordinate on bottom row */}
-                {!hideCoordinates && rVisIdx === 7 && (
-                  <span
-                    style={{ color: coordColor }}
-                    className="absolute bottom-[1px] right-[3px] text-[9px] sm:text-[11px] font-sans font-bold leading-none pointer-events-none select-none"
-                  >
-                    {file}
-                  </span>
-                )}
+                  {/* Inside Coordinates */}
+                  {activeCoordStyle === 'inside' && cVisIdx === 0 && (
+                    <span
+                      style={{ color: coordColor }}
+                      className="absolute top-[2px] left-[3px] text-[9px] sm:text-[11px] font-sans font-bold leading-none pointer-events-none select-none z-25"
+                    >
+                      {rank}
+                    </span>
+                  )}
+                  {activeCoordStyle === 'inside' && rVisIdx === 7 && (
+                    <span
+                      style={{ color: coordColor }}
+                      className="absolute bottom-[1px] right-[3px] text-[9px] sm:text-[11px] font-sans font-bold leading-none pointer-events-none select-none z-25"
+                    >
+                      {file}
+                    </span>
+                  )}
 
-                {/* Legal / Premove move indicator */}
-                {targetInfo && !targetInfo.isCapture && (
-                  <span
-                    className={`animate-dot-pop w-[30%] h-[30%] rounded-full pointer-events-none z-10 ${
-                      isPremoveMode ? 'bg-[#E06C5A]/45' : 'bg-black/18'
-                    }`}
-                  />
-                )}
-                {targetInfo && targetInfo.isCapture && (
-                  <span
-                    className={`animate-dot-pop absolute inset-[5%] rounded-full border-[5px] pointer-events-none z-10 ${
-                      isPremoveMode ? 'border-[#E06C5A]/55' : 'border-black/18'
-                    }`}
-                  />
-                )}
+                  {/* Legal / Premove move indicator */}
+                  {targetInfo && !targetInfo.isCapture && (
+                    <span
+                      className="animate-dot-pop w-[30%] h-[30%] rounded-full pointer-events-none z-10"
+                      style={{
+                        backgroundColor: isPremoveMode
+                          ? premovePalette.dot
+                          : 'rgba(0, 0, 0, 0.18)',
+                      }}
+                    />
+                  )}
+                  {targetInfo && targetInfo.isCapture && (
+                    <span
+                      className="animate-dot-pop absolute inset-[5%] rounded-full border-[5px] pointer-events-none z-10"
+                      style={{
+                        borderColor: isPremoveMode
+                          ? premovePalette.dot
+                          : 'rgba(0, 0, 0, 0.18)',
+                      }}
+                    />
+                  )}
 
-                {/* Capture impact burst ring */}
-                {lastMoveCapture && lastMove?.to === sq && (
-                  <span
-                    key={`cap-${sq}-${fen}`}
-                    className="animate-capture-ring absolute inset-[8%] rounded-full border-[3px] border-white/55 pointer-events-none z-15"
-                  />
-                )}
+                  {/* Capture impact burst ring */}
+                  {lastMoveCapture && lastMove?.to === sq && activeAnimationSpeed !== 'none' && (
+                    <span
+                      key={`cap-${sq}-${fen}`}
+                      className="animate-capture-ring absolute inset-[8%] rounded-full border-[3px] border-white/55 pointer-events-none z-15"
+                    />
+                  )}
 
-                {/* Chess.com-style fading captured piece beneath the landing piece */}
-                {ghostCapture && ghostCapture.square === sq && (
-                  <div
-                    key={`ghost-${ghostCapture.key}`}
-                    className="animate-captured-fade absolute inset-0 flex items-center justify-center pointer-events-none z-10"
-                  >
-                    <div className="w-[84%] h-[84%]">
-                      <ChessPiece type={ghostCapture.type} color={ghostCapture.color} />
-                    </div>
-                  </div>
-                )}
-
-                {/* Piece with real square-to-square slide / knight hop animation */}
-                {piece && !isBeingDragged && (
-                  <div
-                    key={
-                      isMovingPiece && lastMove
-                        ? `${sq}-${lastMove.from}-${lastMove.to}-${fen}`
-                        : `${sq}-${piece.color}-${piece.type}`
-                    }
-                    style={slideStyle}
-                    className={`w-full h-full flex items-center justify-center z-20 ${
-                      isMovingPiece
-                        ? piece.type === 'n'
-                          ? 'animate-knight-hop'
-                          : 'animate-piece-slide'
-                        : ''
-                    }`}
-                  >
+                  {/* Fading captured piece beneath the landing piece */}
+                  {ghostCapture && ghostCapture.square === sq && (
                     <div
-                      className={`w-[84%] h-[84%] transition-transform duration-100 ${
-                        isSelected ? 'scale-[1.06]' : ''
+                      key={`ghost-${ghostCapture.key}`}
+                      className="animate-captured-fade absolute inset-0 flex items-center justify-center pointer-events-none z-10"
+                    >
+                      <div className="w-[84%] h-[84%]">
+                        <ChessPiece
+                          type={ghostCapture.type}
+                          color={ghostCapture.color}
+                          pieceTheme={activePieceTheme}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Real Piece with square-to-square slide / knight hop animation */}
+                  {piece && !isBeingDragged && !ghostPremovePiece && (
+                    <div
+                      key={
+                        isMovingPiece && lastMove
+                          ? `${sq}-${lastMove.from}-${lastMove.to}-${fen}`
+                          : `${sq}-${piece.color}-${piece.type}`
+                      }
+                      style={slideStyle}
+                      className={`w-full h-full flex items-center justify-center z-20 ${
+                        isVacatedByPremove ? 'opacity-35 scale-90 transition-all duration-100' : ''
+                      } ${
+                        isMovingPiece
+                          ? piece.type === 'n'
+                            ? 'animate-knight-hop'
+                            : 'animate-piece-slide'
+                          : ''
                       }`}
                     >
-                      <ChessPiece type={piece.type} color={piece.color} />
+                      <div
+                        className={`w-[84%] h-[84%] transition-transform duration-100 ${
+                          isSelected ? 'scale-[1.06]' : ''
+                        }`}
+                      >
+                        <ChessPiece
+                          type={piece.type}
+                          color={piece.color}
+                          pieceTheme={activePieceTheme}
+                        />
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                {/* Frameless Move Classification Logo (!!, !, ★, ✓, 📖, ?!, ?, ??) */}
-                {showBadge && moveBadge && (
-                  <MoveBadge
-                    key={`${sq}-${moveBadge.quality}`}
-                    quality={moveBadge.quality}
-                    size="board"
-                    className="animate-badge-pop absolute top-[2.5%] right-[2.5%] z-40 pointer-events-none"
-                  />
-                )}
-              </button>
-            );
-          }),
-        )}
-      </div>
+                  {/* Ghost Premove Destination Preview Piece + Queue Order Badge */}
+                  {ghostPremovePiece && !isBeingDragged && (
+                    <div className="relative w-full h-full flex items-center justify-center z-25 pointer-events-none">
+                      <div className="w-[80%] h-[80%] opacity-65 scale-95 drop-shadow-[0_2px_6px_rgba(0,0,0,0.45)]">
+                        <ChessPiece
+                          type={ghostPremovePiece.type}
+                          color={ghostPremovePiece.color}
+                          pieceTheme={activePieceTheme}
+                        />
+                      </div>
+                      {effectivePremoves.length > 1 && (
+                        <span
+                          style={{ backgroundColor: premovePalette.badgeBg }}
+                          className="absolute top-[4%] left-[4%] min-w-[16px] h-[16px] px-1 rounded-full text-[9px] sm:text-[10px] font-mono font-extrabold text-white flex items-center justify-center shadow ring-1 ring-black/40"
+                        >
+                          {ghostPremovePiece.order}
+                        </span>
+                      )}
+                    </div>
+                  )}
 
-      {/* Floating dragged piece under finger / mouse */}
-      {dragState?.active && boardRef.current && (
-        <div
-          aria-hidden="true"
-          className="pointer-events-none fixed z-50"
-          style={{
-            width: dragState.squareSize * 1.18,
-            height: dragState.squareSize * 1.18,
-            left: dragState.curX - (dragState.squareSize * 1.18) / 2,
-            top: dragState.curY - (dragState.squareSize * 1.18) / 2 - 10,
-            filter: 'drop-shadow(0 12px 16px rgba(0,0,0,0.45))',
-          }}
-        >
-          <ChessPiece type={dragState.pieceType} color={dragState.pieceColor} />
+                  {/* Frameless Move Classification Logo (!!, !, ★, ✓, 📖, ?!, ?, ??) */}
+                  {showBadge && moveBadge && (
+                    <MoveBadge
+                      key={`${sq}-${moveBadge.quality}`}
+                      quality={moveBadge.quality}
+                      size="board"
+                      className="animate-badge-pop absolute top-[2.5%] right-[2.5%] z-40 pointer-events-none"
+                    />
+                  )}
+                </button>
+              );
+            }),
+          )}
         </div>
-      )}
 
-      {/* Best Move / Premove / Study / User Calculation SVG Arrow Overlay */}
-      {(arrowCoords || premoveArrowCoords || userArrowSegments.length > 0 || extraArrowSegments.length > 0) && (
-        <svg
-          viewBox="0 0 800 800"
-          className="absolute inset-0 w-full h-full pointer-events-none z-35"
-          aria-hidden="true"
-        >
-          <defs>
-            <marker
-              id="openchess-best-arrowhead"
-              markerWidth="4.2"
-              markerHeight="4.2"
-              refX="2.4"
-              refY="2.1"
-              orient="auto"
-            >
-              <polygon points="0 0, 4.2 2.1, 0 4.2" fill="rgba(129, 182, 76, 0.88)" />
-            </marker>
-            <marker
-              id="openchess-user-arrowhead"
-              markerWidth="4.2"
-              markerHeight="4.2"
-              refX="2.4"
-              refY="2.1"
-              orient="auto"
-            >
-              <polygon points="0 0, 4.2 2.1, 0 4.2" fill="rgba(245, 166, 35, 0.88)" />
-            </marker>
-            <marker
-              id="openchess-red-arrowhead"
-              markerWidth="4.2"
-              markerHeight="4.2"
-              refX="2.4"
-              refY="2.1"
-              orient="auto"
-            >
-              <polygon points="0 0, 4.2 2.1, 0 4.2" fill="rgba(250, 65, 45, 0.88)" />
-            </marker>
-            <marker
-              id="openchess-blue-arrowhead"
-              markerWidth="4.2"
-              markerHeight="4.2"
-              refX="2.4"
-              refY="2.1"
-              orient="auto"
-            >
-              <polygon points="0 0, 4.2 2.1, 0 4.2" fill="rgba(78, 161, 222, 0.88)" />
-            </marker>
-          </defs>
-          {extraArrowSegments.map((ea, idx) => {
-            const stroke =
-              ea.color === 'red'
-                ? 'rgba(250, 65, 45, 0.84)'
-                : ea.color === 'yellow'
-                  ? 'rgba(245, 166, 35, 0.86)'
-                  : ea.color === 'blue'
-                    ? 'rgba(78, 161, 222, 0.86)'
-                    : 'rgba(129, 182, 76, 0.86)';
-            const markerId =
-              ea.color === 'red'
-                ? 'url(#openchess-red-arrowhead)'
-                : ea.color === 'yellow'
-                  ? 'url(#openchess-user-arrowhead)'
-                  : ea.color === 'blue'
-                    ? 'url(#openchess-blue-arrowhead)'
-                    : 'url(#openchess-best-arrowhead)';
-            return (
+        {/* Floating dragged piece under finger / mouse */}
+        {dragState?.active && boardRef.current && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none fixed z-50"
+            style={{
+              width: dragState.squareSize * 1.18,
+              height: dragState.squareSize * 1.18,
+              left: dragState.curX - (dragState.squareSize * 1.18) / 2,
+              top: dragState.curY - (dragState.squareSize * 1.18) / 2 - 10,
+              filter: 'drop-shadow(0 12px 16px rgba(0,0,0,0.45))',
+            }}
+          >
+            <ChessPiece
+              type={dragState.pieceType}
+              color={dragState.pieceColor}
+              pieceTheme={activePieceTheme}
+            />
+          </div>
+        )}
+
+        {/* Best Move / Multi-Premove / Study / User Calculation SVG Arrow Overlay */}
+        {(arrowCoords ||
+          premoveArrowSegments.length > 0 ||
+          userArrowSegments.length > 0 ||
+          extraArrowSegments.length > 0) && (
+          <svg
+            viewBox="0 0 800 800"
+            className="absolute inset-0 w-full h-full pointer-events-none z-35"
+            aria-hidden="true"
+          >
+            <defs>
+              <marker
+                id="openchess-best-arrowhead"
+                markerWidth="4.2"
+                markerHeight="4.2"
+                refX="2.4"
+                refY="2.1"
+                orient="auto"
+              >
+                <polygon points="0 0, 4.2 2.1, 0 4.2" fill="rgba(129, 182, 76, 0.88)" />
+              </marker>
+              <marker
+                id="openchess-user-arrowhead"
+                markerWidth="4.2"
+                markerHeight="4.2"
+                refX="2.4"
+                refY="2.1"
+                orient="auto"
+              >
+                <polygon points="0 0, 4.2 2.1, 0 4.2" fill="rgba(245, 166, 35, 0.88)" />
+              </marker>
+              <marker
+                id="openchess-red-arrowhead"
+                markerWidth="4.2"
+                markerHeight="4.2"
+                refX="2.4"
+                refY="2.1"
+                orient="auto"
+              >
+                <polygon points="0 0, 4.2 2.1, 0 4.2" fill="rgba(250, 65, 45, 0.88)" />
+              </marker>
+              <marker
+                id="openchess-blue-arrowhead"
+                markerWidth="4.2"
+                markerHeight="4.2"
+                refX="2.4"
+                refY="2.1"
+                orient="auto"
+              >
+                <polygon points="0 0, 4.2 2.1, 0 4.2" fill="rgba(78, 161, 222, 0.88)" />
+              </marker>
+              <marker
+                id="openchess-premove-arrowhead"
+                markerWidth="4.2"
+                markerHeight="4.2"
+                refX="2.4"
+                refY="2.1"
+                orient="auto"
+              >
+                <polygon points="0 0, 4.2 2.1, 0 4.2" fill={premovePalette.arrow} />
+              </marker>
+            </defs>
+            {extraArrowSegments.map((ea, idx) => {
+              const stroke =
+                ea.color === 'red'
+                  ? 'rgba(250, 65, 45, 0.84)'
+                  : ea.color === 'yellow'
+                    ? 'rgba(245, 166, 35, 0.86)'
+                    : ea.color === 'blue'
+                      ? 'rgba(78, 161, 222, 0.86)'
+                      : 'rgba(129, 182, 76, 0.86)';
+              const markerId =
+                ea.color === 'red'
+                  ? 'url(#openchess-red-arrowhead)'
+                  : ea.color === 'yellow'
+                    ? 'url(#openchess-user-arrowhead)'
+                    : ea.color === 'blue'
+                      ? 'url(#openchess-blue-arrowhead)'
+                      : 'url(#openchess-best-arrowhead)';
+              return (
+                <line
+                  key={`${ea.from}-${ea.to}-${idx}`}
+                  x1={ea.seg.x1}
+                  y1={ea.seg.y1}
+                  x2={ea.seg.x2}
+                  y2={ea.seg.y2}
+                  stroke={stroke}
+                  strokeWidth="16"
+                  strokeLinecap="round"
+                  markerEnd={markerId}
+                />
+              );
+            })}
+            {userArrowSegments.map((u) => (
               <line
-                key={`${ea.from}-${ea.to}-${idx}`}
-                x1={ea.seg.x1}
-                y1={ea.seg.y1}
-                x2={ea.seg.x2}
-                y2={ea.seg.y2}
-                stroke={stroke}
+                key={`${u.from}-${u.to}`}
+                x1={u.seg.x1}
+                y1={u.seg.y1}
+                x2={u.seg.x2}
+                y2={u.seg.y2}
+                stroke="rgba(245, 166, 35, 0.84)"
                 strokeWidth="16"
                 strokeLinecap="round"
-                markerEnd={markerId}
+                markerEnd="url(#openchess-user-arrowhead)"
               />
-            );
-          })}
-          {userArrowSegments.map((u) => (
-            <line
-              key={`${u.from}-${u.to}`}
-              x1={u.seg.x1}
-              y1={u.seg.y1}
-              x2={u.seg.x2}
-              y2={u.seg.y2}
-              stroke="rgba(245, 166, 35, 0.84)"
-              strokeWidth="16"
-              strokeLinecap="round"
-              markerEnd="url(#openchess-user-arrowhead)"
-            />
-          ))}
-          {premoveArrowCoords && (
-            <line
-              x1={premoveArrowCoords.x1}
-              y1={premoveArrowCoords.y1}
-              x2={premoveArrowCoords.x2}
-              y2={premoveArrowCoords.y2}
-              stroke="rgba(250, 65, 45, 0.85)"
-              strokeWidth="15"
-              strokeLinecap="round"
-              strokeDasharray="24 14"
-              markerEnd="url(#openchess-red-arrowhead)"
-            />
-          )}
-          {arrowCoords && (
-            <line
-              x1={arrowCoords.x1}
-              y1={arrowCoords.y1}
-              x2={arrowCoords.x2}
-              y2={arrowCoords.y2}
-              stroke="rgba(129, 182, 76, 0.86)"
-              strokeWidth="18"
-              strokeLinecap="round"
-              markerEnd="url(#openchess-best-arrowhead)"
-            />
-          )}
-        </svg>
-      )}
+            ))}
+            {premoveArrowSegments.map((pm) => (
+              <g key={`pm-arrow-${pm.idx}-${pm.from}-${pm.to}`}>
+                <line
+                  x1={pm.seg.x1}
+                  y1={pm.seg.y1}
+                  x2={pm.seg.x2}
+                  y2={pm.seg.y2}
+                  stroke={premovePalette.ring}
+                  strokeOpacity="0.28"
+                  strokeWidth="24"
+                  strokeLinecap="round"
+                />
+                <line
+                  x1={pm.seg.x1}
+                  y1={pm.seg.y1}
+                  x2={pm.seg.x2}
+                  y2={pm.seg.y2}
+                  stroke={premovePalette.arrow}
+                  strokeWidth="14"
+                  strokeLinecap="round"
+                  strokeDasharray="24 12"
+                  markerEnd="url(#openchess-premove-arrowhead)"
+                />
+              </g>
+            ))}
+            {arrowCoords && (
+              <line
+                x1={arrowCoords.x1}
+                y1={arrowCoords.y1}
+                x2={arrowCoords.x2}
+                y2={arrowCoords.y2}
+                stroke="rgba(129, 182, 76, 0.86)"
+                strokeWidth="18"
+                strokeLinecap="round"
+                markerEnd="url(#openchess-best-arrowhead)"
+              />
+            )}
+          </svg>
+        )}
 
-      {/* Promotion Modal */}
-      {pendingPromotion && (
-        <div
-          className="animate-fade-in absolute inset-0 z-40 bg-black/55 flex items-center justify-center p-4"
-          role="dialog"
-          aria-label="Choose promotion piece"
-        >
-          <div className="animate-modal-pop bg-[#262421] border border-white/15 rounded-lg p-3 shadow-2xl">
-            <p className="text-xs font-medium text-[#C8C4BC] mb-2 text-center">
-              Promote pawn
-            </p>
-            <div className="grid grid-cols-4 gap-2">
-              {(['q', 'r', 'b', 'n'] as PieceSymbol[]).map((promo) => (
-                <button
-                  key={promo}
-                  type="button"
-                  aria-label={`Promote to ${PIECE_NAMES[promo]}`}
-                  onClick={() => {
-                    if (pendingPromotion.isPremove && onPremove) {
-                      onPremove(pendingPromotion.from, pendingPromotion.to, promo);
-                    } else {
-                      onMove(pendingPromotion.from, pendingPromotion.to, promo);
-                    }
-                    setPendingPromotion(null);
-                  }}
-                  className="w-12 h-12 sm:w-14 sm:h-14 rounded-md bg-[#383530] hover:bg-[#81B64C]/30 border border-white/10 flex items-center justify-center p-1.5 transition-colors cursor-pointer"
-                >
-                  <ChessPiece type={promo} color={pendingPromotion.color} />
-                </button>
-              ))}
+        {/* Promotion Modal */}
+        {pendingPromotion && (
+          <div
+            className="animate-fade-in absolute inset-0 z-40 bg-black/55 flex items-center justify-center p-4"
+            role="dialog"
+            aria-label="Choose promotion piece"
+          >
+            <div className="animate-modal-pop bg-[#262421] border border-white/15 rounded-lg p-3 shadow-2xl">
+              <p className="text-xs font-medium text-[#C8C4BC] mb-2 text-center">
+                Promote pawn
+              </p>
+              <div className="grid grid-cols-4 gap-2">
+                {(['q', 'r', 'b', 'n'] as PieceSymbol[]).map((promo) => (
+                  <button
+                    key={promo}
+                    type="button"
+                    aria-label={`Promote to ${PIECE_NAMES[promo]}`}
+                    onClick={() => {
+                      if (pendingPromotion.isPremove && onPremove) {
+                        onPremove(pendingPromotion.from, pendingPromotion.to, promo);
+                      } else {
+                        onMove(pendingPromotion.from, pendingPromotion.to, promo);
+                      }
+                      setPendingPromotion(null);
+                    }}
+                    className="w-12 h-12 sm:w-14 sm:h-14 rounded-md bg-[#383530] hover:bg-[#81B64C]/30 border border-white/10 flex items-center justify-center p-1.5 transition-colors cursor-pointer"
+                  >
+                    <ChessPiece
+                      type={promo}
+                      color={pendingPromotion.color}
+                      pieceTheme={activePieceTheme}
+                    />
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
+        )}
+      </div>
+    </div>
+  );
+
+  if (!isOutsideCoords) {
+    return boardCore;
+  }
+
+  return (
+    <div className="w-full rounded-md bg-[#22201D] p-1.5 sm:p-2 ring-1 ring-white/10 select-none">
+      <div className="flex items-stretch gap-1">
+        <div
+          aria-hidden="true"
+          className="w-3.5 sm:w-4 grid grid-rows-8 text-[9px] sm:text-[10px] font-mono font-bold text-[#9E998F] shrink-0"
+        >
+          {displayRanks.map((r) => (
+            <div key={r} className="flex items-center justify-center leading-none">
+              {r}
+            </div>
+          ))}
         </div>
-      )}
+        <div className="flex-1 min-w-0">{boardCore}</div>
+      </div>
+      <div className="flex items-center gap-1 pt-1">
+        <div className="w-3.5 sm:w-4 shrink-0" />
+        <div
+          aria-hidden="true"
+          className="flex-1 grid grid-cols-8 text-[9px] sm:text-[10px] font-mono font-bold text-[#9E998F]"
+        >
+          {displayFiles.map((f) => (
+            <div key={f} className="flex items-center justify-center leading-none uppercase">
+              {f}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
 }
-

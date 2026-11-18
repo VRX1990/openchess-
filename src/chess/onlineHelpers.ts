@@ -1073,16 +1073,16 @@ export function parseFicsWhoOutput(rawBuffer: string): Array<{ username: string;
   const out: Array<{ username: string; rating?: number }> = [];
   const seen = new Set<string>();
   for (const rawLine of rawBuffer.split(/\r?\n/)) {
-    if (/\(C\)/.test(rawLine)) continue;
+    if (/\(C\)|displayed|welcome to|fics%/i.test(rawLine)) continue;
     const tokenMatches = rawLine.matchAll(
-      /(?:^|\s)(\d{3,4}|\+{4}|-{4})\s*[*^~:+.]?\s*([A-Za-z][A-Za-z0-9_-]{2,18})(?:\([A-Z*]+\))?(?=$|\s)/g,
+      /(?:^\s*|\s{2,})(\d{3,4}|\+{4}|-{4})\s*[*^~:+.]?\s*([A-Za-z][A-Za-z0-9_-]{2,18})(?:\([A-Z*]+\))?(?=$|\s{2,})/g,
     );
     for (const m of tokenMatches) {
       const ratingToken = m[1];
       const uname = m[2];
       if (
         !uname ||
-        /^(Guest|TD|SR|CA|FM|IM|GM|WGM|WIM|WFM|TM|fics|blitz|standard|lightning|unrated|rated|displayed|players)$/i.test(
+        /^(Guest|TD|SR|CA|FM|IM|GM|WGM|WIM|WFM|TM|fics|blitz|standard|lightning|unrated|rated|displayed|players|the|and|for|from|with|that|this|suicide|atomic|crazyhouse|losers|bughouse|wild|chess|online|game|games|server|users)$/i.test(
           uname,
         ) ||
         seen.has(uname.toLowerCase())
@@ -1290,5 +1290,129 @@ export function parseFicsGameEndLine(
   }
   return null;
 }
+
+export interface QueuedPremove {
+  from: string;
+  to: string;
+  promotion?: 'q' | 'r' | 'b' | 'n';
+}
+
+export interface VirtualPremovePiece {
+  type: 'p' | 'n' | 'b' | 'r' | 'q' | 'k';
+  color: 'w' | 'b';
+}
+
+export function enqueuePremoveMove(
+  queue: QueuedPremove[],
+  move: QueuedPremove,
+  maxLength = 5,
+): QueuedPremove[] {
+  if (!move.from || !move.to || move.from === move.to) return queue;
+  const trimmed = queue.slice(0, Math.max(0, maxLength));
+  if (trimmed.length >= maxLength) return trimmed;
+  return [...trimmed, move];
+}
+
+export function projectBoardForPremove(
+  fen: string,
+  queue: QueuedPremove[],
+): {
+  pieces: Map<string, VirtualPremovePiece>;
+  occupied: Set<string>;
+  vacatedOrigins: Set<string>;
+  ghostDestinations: Map<string, VirtualPremovePiece & { order: number }>;
+} {
+  const pieces = new Map<string, VirtualPremovePiece>();
+  const boardPart = (fen.split(' ')[0] ?? '').trim();
+  const ranks = boardPart.split('/');
+  if (ranks.length === 8) {
+    for (let r = 0; r < 8; r++) {
+      let c = 0;
+      for (const ch of ranks[r]) {
+        if (ch >= '1' && ch <= '8') {
+          c += parseInt(ch, 10);
+        } else if (c < 8) {
+          const lower = ch.toLowerCase();
+          if (
+            lower === 'p' ||
+            lower === 'n' ||
+            lower === 'b' ||
+            lower === 'r' ||
+            lower === 'q' ||
+            lower === 'k'
+          ) {
+            const sq = `${BOARD_FILES[c]}${BOARD_RANKS[r]}`;
+            pieces.set(sq, {
+              type: lower,
+              color: ch === ch.toUpperCase() ? 'w' : 'b',
+            });
+          }
+          c += 1;
+        }
+      }
+    }
+  }
+
+  const vacatedOrigins = new Set<string>();
+  const ghostDestinations = new Map<string, VirtualPremovePiece & { order: number }>();
+
+  queue.forEach((pm, index) => {
+    const moving = pieces.get(pm.from);
+    if (!moving) return;
+    pieces.delete(pm.from);
+    vacatedOrigins.add(pm.from);
+
+    const nextType: VirtualPremovePiece['type'] =
+      moving.type === 'p' &&
+      pm.promotion &&
+      ((moving.color === 'w' && pm.to[1] === '8') || (moving.color === 'b' && pm.to[1] === '1'))
+        ? pm.promotion
+        : moving.type;
+
+    const landed: VirtualPremovePiece = { type: nextType, color: moving.color };
+    pieces.set(pm.to, landed);
+
+    // Move rook along virtually on castling premove
+    if (moving.type === 'k' && pm.from[1] === pm.to[1]) {
+      const fromF = BOARD_FILES.indexOf(pm.from[0]);
+      const toF = BOARD_FILES.indexOf(pm.to[0]);
+      if (Math.abs(fromF - toF) === 2) {
+        const rookFrom = toF > fromF ? `h${pm.from[1]}` : `a${pm.from[1]}`;
+        const rookTo = toF > fromF ? `f${pm.from[1]}` : `d${pm.from[1]}`;
+        const rook = pieces.get(rookFrom);
+        if (rook && rook.type === 'r' && rook.color === moving.color) {
+          pieces.delete(rookFrom);
+          vacatedOrigins.add(rookFrom);
+          pieces.set(rookTo, rook);
+        }
+      }
+    }
+
+    ghostDestinations.set(pm.to, { ...landed, order: index + 1 });
+  });
+
+  const occupied = new Set<string>(pieces.keys());
+  return { pieces, occupied, vacatedOrigins, ghostDestinations };
+}
+
+export function formatOnlineTimeControl(
+  initialSeconds: number,
+  incrementSeconds = 0,
+): { id: string; label: string; category: 'Bullet' | 'Blitz' | 'Rapid' } {
+  const safeInit = Math.max(30, Math.round(initialSeconds || 600));
+  const safeInc = Math.max(0, Math.round(incrementSeconds || 0));
+  const totalEstimated = safeInit + 40 * safeInc;
+  const category: 'Bullet' | 'Blitz' | 'Rapid' =
+    totalEstimated < 180 ? 'Bullet' : totalEstimated < 480 ? 'Blitz' : 'Rapid';
+  const mins = safeInit / 60;
+  const minsStr = Number.isInteger(mins) ? String(mins) : mins.toFixed(1);
+  const label = safeInc > 0 ? `${minsStr} | ${safeInc}` : `${minsStr} min`;
+  return {
+    id: `${minsStr}+${safeInc}`,
+    label,
+    category,
+  };
+}
+
 
 

@@ -22,6 +22,7 @@ import { loadUserAvatar } from '../chess/avatars';
 import { countryCodeToFlagEmoji, loadGuestPerfs, loadGuestPlayerName } from '../chess/analytics';
 import {
   filterNamedOpenChallenges,
+  formatOnlineTimeControl,
   getShareableAppOrigin,
   isPlaceholderPlayerUsername,
   type ChessServerName,
@@ -446,9 +447,29 @@ export function NewGameView({
           ws.close();
           wsQueueRef.current = null;
           setSeekingState('idle');
+          const matchedInit =
+            typeof msg.initialSeconds === 'number'
+              ? msg.initialSeconds
+              : selectedTc.initialSeconds;
+          const matchedInc =
+            typeof msg.incrementSeconds === 'number'
+              ? msg.incrementSeconds
+              : selectedTc.incrementSeconds;
+          const matchedTc =
+            TIME_CONTROLS.find(
+              (t) =>
+                t.initialSeconds === matchedInit && t.incrementSeconds === matchedInc,
+            ) ?? selectedTc;
+          const formattedTc = formatOnlineTimeControl(matchedInit, matchedInc);
           onStartGame({
             mode: 'online-ws',
-            timeId: selectedTc.id,
+            timeId:
+              matchedTc.initialSeconds === matchedInit && matchedTc.incrementSeconds === matchedInc
+                ? matchedTc.id
+                : formattedTc.id,
+            matchedInitialSeconds: matchedInit,
+            matchedIncrementSeconds: matchedInc,
+            serverSource: typeof msg.serverSource === 'string' ? (msg.serverSource as ChessServerName) : undefined,
             wsRoomId: msg.roomId,
             wsAction: 'join',
             color: msg.yourColor,
@@ -526,9 +547,25 @@ export function NewGameView({
           setMyPostedChallengeId(null);
           ws.close();
           wsLobbyRef.current = null;
+          const matchedInit =
+            typeof msg.initialSeconds === 'number'
+              ? msg.initialSeconds
+              : selectedTc.initialSeconds;
+          const matchedInc =
+            typeof msg.incrementSeconds === 'number'
+              ? msg.incrementSeconds
+              : selectedTc.incrementSeconds;
+          const matchedTc =
+            TIME_CONTROLS.find(
+              (t) =>
+                t.initialSeconds === matchedInit && t.incrementSeconds === matchedInc,
+            ) ?? selectedTc;
           onStartGame({
             mode: 'online-ws',
-            timeId: selectedTc.id,
+            timeId: matchedTc.id,
+            matchedInitialSeconds: matchedInit,
+            matchedIncrementSeconds: matchedInc,
+            serverSource: typeof msg.serverSource === 'string' ? (msg.serverSource as ChessServerName) : 'OpenChess',
             wsRoomId: msg.roomId,
             wsAction: 'join',
             color: msg.yourColor,
@@ -632,14 +669,28 @@ export function NewGameView({
             ws.close();
             wsQueueRef.current = null;
             setSeekingState('idle');
+            const matchedInit =
+              typeof msg.initialSeconds === 'number' ? msg.initialSeconds : ch.initialSeconds;
+            const matchedInc =
+              typeof msg.incrementSeconds === 'number' ? msg.incrementSeconds : ch.incrementSeconds;
             const matchedTc =
               TIME_CONTROLS.find(
                 (t) =>
-                  t.initialSeconds === ch.initialSeconds && t.incrementSeconds === ch.incrementSeconds,
+                  t.initialSeconds === matchedInit && t.incrementSeconds === matchedInc,
               ) ?? selectedTc;
+            const formattedTc = formatOnlineTimeControl(matchedInit, matchedInc);
             onStartGame({
               mode: 'online-ws',
-              timeId: matchedTc.id,
+              timeId:
+                matchedTc.initialSeconds === matchedInit && matchedTc.incrementSeconds === matchedInc
+                  ? matchedTc.id
+                  : formattedTc.id,
+              matchedInitialSeconds: matchedInit,
+              matchedIncrementSeconds: matchedInc,
+              serverSource:
+                typeof msg.serverSource === 'string'
+                  ? (msg.serverSource as ChessServerName)
+                  : ch.server ?? (isFics ? 'FICS' : 'Lichess'),
               wsRoomId: msg.roomId,
               wsAction: 'join',
               color: msg.yourColor,
@@ -701,14 +752,24 @@ export function NewGameView({
           if (acceptPing) window.clearInterval(acceptPing);
           ws.close();
           if (wsQueueRef.current === ws) wsQueueRef.current = null;
+          const matchedInit =
+            typeof msg.initialSeconds === 'number' ? msg.initialSeconds : ch.initialSeconds;
+          const matchedInc =
+            typeof msg.incrementSeconds === 'number' ? msg.incrementSeconds : ch.incrementSeconds;
           const matchedTc =
             TIME_CONTROLS.find(
               (t) =>
-                t.initialSeconds === ch.initialSeconds && t.incrementSeconds === ch.incrementSeconds,
+                t.initialSeconds === matchedInit && t.incrementSeconds === matchedInc,
             ) ?? selectedTc;
           onStartGame({
             mode: 'online-ws',
             timeId: matchedTc.id,
+            matchedInitialSeconds: matchedInit,
+            matchedIncrementSeconds: matchedInc,
+            serverSource:
+              typeof msg.serverSource === 'string'
+                ? (msg.serverSource as ChessServerName)
+                : ch.server ?? 'OpenChess',
             wsRoomId: msg.roomId,
             wsAction: 'join',
             color: msg.yourColor,
@@ -1384,8 +1445,10 @@ export function NewGameView({
                       </div>
                       <div className="flex items-center justify-between text-[10px] text-[#9E998F]">
                         <span>{pl.server}</span>
-                        {typeof pl.rating === 'number' && (
-                          <span className="font-mono text-[#C8C4BC]">{pl.rating}</span>
+                        {typeof pl.rating === 'number' ? (
+                          <span className="font-mono text-[#C8C4BC] tabular-nums">{pl.rating}</span>
+                        ) : (
+                          <span className="font-mono text-[#7C776E]">Unrated</span>
                         )}
                       </div>
                     </div>

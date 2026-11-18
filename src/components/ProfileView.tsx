@@ -60,6 +60,7 @@ import {
 import type { LichessFriendStatus, LichessUserGame } from '../chess/lichess';
 import type { LichessSession } from '../chess/useLichessAuth';
 import type { BoardTheme } from './ChessBoard';
+import { BOARD_THEME_PALETTES } from '../chess/theme';
 import { ChessPiece } from './ChessPiece';
 import { AvatarPickerModal, PlayerAvatar } from './PlayerAvatar';
 import type { NavTab } from './PrepView';
@@ -79,6 +80,7 @@ interface ProfileViewProps {
   muted: boolean;
   onSetBoardTheme: (theme: BoardTheme) => void;
   onToggleMute: () => void;
+  onOpenThemeStudio?: () => void;
   onBack: () => void;
   onNavigate: (tab: NavTab) => void;
   onConnectLichess: () => void;
@@ -107,6 +109,7 @@ export function ProfileView({
   muted,
   onSetBoardTheme,
   onToggleMute,
+  onOpenThemeStudio,
   onBack,
   onNavigate,
   onConnectLichess,
@@ -1202,24 +1205,46 @@ export function ProfileView({
             </button>
           )}
 
-          <div className="pt-2 border-t border-white/10 space-y-2">
-            <div className="text-xs font-bold text-[#9E998F] flex items-center gap-1.5">
-              <Palette className="w-3.5 h-3.5 text-[#E59A28]" />
-              <span>Board Theme</span>
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              {(['green', 'walnut', 'slate'] as BoardTheme[]).map((t) => (
+          <div className="pt-2 border-t border-white/10 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-bold text-[#9E998F] flex items-center gap-1.5">
+                <Palette className="w-3.5 h-3.5 text-[#E59A28]" />
+                <span>Board Theme</span>
+              </div>
+              {onOpenThemeStudio && (
                 <button
-                  key={t}
                   type="button"
-                  onClick={() => onSetBoardTheme(t)}
-                  className={`min-h-[42px] rounded-lg border text-xs font-bold capitalize cursor-pointer ${
-                    boardTheme === t
+                  onClick={() => {
+                    setSettingsOpen(false);
+                    onOpenThemeStudio();
+                  }}
+                  className="text-[11px] font-extrabold text-[#81B64C] hover:text-[#98CA63] cursor-pointer"
+                >
+                  Customize Pieces &amp; More →
+                </button>
+              )}
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              {Object.values(BOARD_THEME_PALETTES).map((b) => (
+                <button
+                  key={b.id}
+                  type="button"
+                  onClick={() => onSetBoardTheme(b.id)}
+                  className={`p-1.5 rounded-lg border flex flex-col items-center gap-1 cursor-pointer ${
+                    boardTheme === b.id
                       ? 'bg-[#81B64C]/20 border-[#81B64C] text-white'
                       : 'bg-[#262421] border-white/10 text-[#C8C4BC]'
                   }`}
                 >
-                  {t}
+                  <span className="w-6 h-6 rounded overflow-hidden grid grid-cols-2 grid-rows-2 ring-1 ring-black/30">
+                    <span style={{ backgroundColor: b.light }} />
+                    <span style={{ backgroundColor: b.dark }} />
+                    <span style={{ backgroundColor: b.dark }} />
+                    <span style={{ backgroundColor: b.light }} />
+                  </span>
+                  <span className="text-[10px] font-bold truncate max-w-full">
+                    {b.name.replace('Chess.com ', '').replace('Tournament ', '')}
+                  </span>
                 </button>
               ))}
             </div>

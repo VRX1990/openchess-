@@ -8,7 +8,9 @@ import {
   computeLeagueInfo,
   computePremoveTargets,
   countUnreadDirectMessages,
+  enqueuePremoveMove,
   filterNamedOpenChallenges,
+  formatOnlineTimeControl,
   isGoogleMxHost,
   isPlaceholderPlayerUsername,
   isPremoveLegalAfterReply,
@@ -19,10 +21,12 @@ import {
   parseFicsSoughtOutput,
   parseFicsStyle12Line,
   parseFicsWhoOutput,
+  projectBoardForPremove,
   resolveOnlineOpponentRating,
   upsertDirectMessage,
   validateGoogleOrGmailEmail,
 } from './onlineHelpers';
+import { DEFAULT_THEME_PREFS, normalizeThemePrefs } from './theme';
 
 test('computePremoveTargets computes pseudo-legal premove squares including captures, castling, and promotions', () => {
   const pawnStart = computePremoveTargets('p', 'w', 'e2', new Set(['d3', 'f3']));
@@ -497,6 +501,71 @@ test('parseFicsStyle12Line & parseFicsGameEndLine parse live FICS board state, c
   assert.equal(end2?.winner, 'draw');
 });
 
+test('enqueuePremoveMove & projectBoardForPremove support chained premoves, captures, promotions, and castling', () => {
+  let queue = enqueuePremoveMove([], { from: 'g1', to: 'f3' }, 5);
+  queue = enqueuePremoveMove(queue, { from: 'f3', to: 'f3' }, 5); // ignored same-square
+  queue = enqueuePremoveMove(queue, { from: 'f3', to: 'e5' }, 5);
+  queue = enqueuePremoveMove(queue, { from: 'e1', to: 'g1' }, 5);
+  assert.equal(queue.length, 3);
+
+  // Enforce maxLength cap
+  let capped = queue;
+  capped = enqueuePremoveMove(capped, { from: 'd2', to: 'd4' }, 3);
+  assert.equal(capped.length, 3);
+
+  const startFen = 'rnbqk2r/pppp1ppp/5n2/4p3/4P3/5N2/PPPPBPPP/RNBQK2R w KQkq - 4 4';
+  const proj = projectBoardForPremove(startFen, [
+    { from: 'e1', to: 'g1' },
+    { from: 'f3', to: 'e5' },
+  ]);
+  assert.equal(proj.pieces.get('g1')?.type, 'k');
+  assert.equal(proj.pieces.get('f1')?.type, 'r');
+  assert.equal(proj.vacatedOrigins.has('e1'), true);
+  assert.equal(proj.vacatedOrigins.has('h1'), true);
+  assert.equal(proj.pieces.get('e5')?.type, 'n');
+  assert.equal(proj.pieces.get('e5')?.color, 'w');
+  assert.equal(proj.ghostDestinations.get('g1')?.order, 1);
+  assert.equal(proj.ghostDestinations.get('e5')?.order, 2);
+
+  // Pawn promotion premove
+  const promoFen = '8/P7/8/8/8/8/8/4K2k w - - 0 1';
+  const promoProj = projectBoardForPremove(promoFen, [{ from: 'a7', to: 'a8', promotion: 'n' }]);
+  assert.equal(promoProj.pieces.get('a8')?.type, 'n');
+  assert.equal(promoProj.ghostDestinations.get('a8')?.type, 'n');
+});
+
+test('formatOnlineTimeControl formats standard and custom time controls into Bullet, Blitz, Rapid', () => {
+  assert.deepEqual(formatOnlineTimeControl(60, 0), { id: '1+0', label: '1 min', category: 'Bullet' });
+  assert.deepEqual(formatOnlineTimeControl(120, 12), { id: '2+12', label: '2 | 12', category: 'Rapid' });
+  assert.deepEqual(formatOnlineTimeControl(180, 2), { id: '3+2', label: '3 | 2', category: 'Blitz' });
+  assert.deepEqual(formatOnlineTimeControl(600, 0), { id: '10+0', label: '10 min', category: 'Rapid' });
+});
+
+test('normalizeThemePrefs accepts valid board/piece/premove preferences and falls back on invalid data', () => {
+  const valid = normalizeThemePrefs({
+    boardTheme: 'brown',
+    pieceTheme: 'wood',
+    premoveColor: 'violet',
+    coordinateStyle: 'outside',
+    animationSpeed: 'fast',
+    highlightMoves: false,
+  });
+  assert.equal(valid.boardTheme, 'brown');
+  assert.equal(valid.pieceTheme, 'wood');
+  assert.equal(valid.premoveColor, 'violet');
+  assert.equal(valid.coordinateStyle, 'outside');
+  assert.equal(valid.animationSpeed, 'fast');
+  assert.equal(valid.highlightMoves, false);
+
+  const fallback = normalizeThemePrefs({
+    boardTheme: 'invalid-board',
+    pieceTheme: 123,
+    premoveColor: 'neon-pink',
+    coordinateStyle: 'diagonal',
+    animationSpeed: 'instant',
+  });
+  assert.deepEqual(fallback, DEFAULT_THEME_PREFS);
+});
 
 
 

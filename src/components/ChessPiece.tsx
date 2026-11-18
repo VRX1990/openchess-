@@ -1,23 +1,133 @@
 import type { Color, PieceSymbol } from 'chess.js';
+import { useChessTheme, type PieceTheme } from '../chess/theme';
 
 interface ChessPieceProps {
   type: PieceSymbol;
   color: Color;
   className?: string;
+  pieceTheme?: PieceTheme;
 }
 
+interface PiecePalette {
+  whiteFill: string;
+  whiteShade: string;
+  whiteHighlight: string;
+  whiteStroke: string;
+  whiteDetailStroke: string;
+  blackFill: string;
+  blackShade: string;
+  blackHighlight: string;
+  blackStroke: string;
+  blackDetailStroke: string;
+  strokeWidth: number;
+  opacity?: number;
+}
+
+const PIECE_PALETTES: Record<PieceTheme, PiecePalette> = {
+  neo: {
+    whiteFill: '#FFFFFF',
+    whiteShade: '#DCD8CE',
+    whiteHighlight: '#FFFFFF',
+    whiteStroke: '#3D3B38',
+    whiteDetailStroke: '#3D3B38',
+    blackFill: '#585552',
+    blackShade: '#3A3836',
+    blackHighlight: '#8A8680',
+    blackStroke: '#1F1E1C',
+    blackDetailStroke: '#CBC7BF',
+    strokeWidth: 1.65,
+  },
+  classic: {
+    whiteFill: '#FBF5E6',
+    whiteShade: '#DFD2B8',
+    whiteHighlight: '#FFFFFF',
+    whiteStroke: '#3A2E23',
+    whiteDetailStroke: '#4D3D2E',
+    blackFill: '#45352C',
+    blackShade: '#281E18',
+    blackHighlight: '#7A6355',
+    blackStroke: '#17110D',
+    blackDetailStroke: '#EADBC5',
+    strokeWidth: 1.65,
+  },
+  wood: {
+    whiteFill: '#ECC992',
+    whiteShade: '#C69A5F',
+    whiteHighlight: '#F8DFB4',
+    whiteStroke: '#4E311B',
+    whiteDetailStroke: '#59371E',
+    blackFill: '#78482B',
+    blackShade: '#4B2B17',
+    blackHighlight: '#A36B46',
+    blackStroke: '#28150A',
+    blackDetailStroke: '#E2BD8B',
+    strokeWidth: 1.65,
+  },
+  glass: {
+    whiteFill: '#EBF5FC',
+    whiteShade: '#B6CEE0',
+    whiteHighlight: '#FFFFFF',
+    whiteStroke: '#385770',
+    whiteDetailStroke: '#446A87',
+    blackFill: '#3B5166',
+    blackShade: '#223344',
+    blackHighlight: '#8FB5D6',
+    blackStroke: '#16212C',
+    blackDetailStroke: '#D5E7F5',
+    strokeWidth: 1.55,
+    opacity: 0.93,
+  },
+  alpha: {
+    whiteFill: '#FFFFFF',
+    whiteShade: '#ECEAE5',
+    whiteHighlight: '#FFFFFF',
+    whiteStroke: '#1D1C1A',
+    whiteDetailStroke: '#1D1C1A',
+    blackFill: '#242321',
+    blackShade: '#181715',
+    blackHighlight: '#52504C',
+    blackStroke: '#0E0D0C',
+    blackDetailStroke: '#F2EFE9',
+    strokeWidth: 1.95,
+  },
+  club: {
+    whiteFill: '#FFF9EB',
+    whiteShade: '#E4D6B5',
+    whiteHighlight: '#FFFFFF',
+    whiteStroke: '#3F3321',
+    whiteDetailStroke: '#5C4A2F',
+    blackFill: '#332E28',
+    blackShade: '#1D1A16',
+    blackHighlight: '#7C6D56',
+    blackStroke: '#12100D',
+    blackDetailStroke: '#DFBD74',
+    strokeWidth: 1.7,
+  },
+};
+
 /**
- * Chess.com Neo-inspired Staunton SVG pieces with two-tone depth shading
- * so both White and Black pieces read crisply on dark-green, walnut, and slate boards.
+ * Staunton SVG pieces supporting 6 Chess.com-inspired styles
+ * (Neo, Classic, Wood, Glass, Alpha, Club).
  */
-export function ChessPiece({ type, color, className = 'w-full h-full' }: ChessPieceProps) {
+export function ChessPiece({
+  type,
+  color,
+  className = 'w-full h-full',
+  pieceTheme,
+}: ChessPieceProps) {
+  const { prefs } = useChessTheme();
+  const activeStyle = pieceTheme ?? prefs.pieceTheme;
+  const pal = PIECE_PALETTES[activeStyle] ?? PIECE_PALETTES.neo;
+
   const isWhite = color === 'w';
-  const fill = isWhite ? '#FFFFFF' : '#585552';
-  const shade = isWhite ? '#DCD8CE' : '#3A3836';
-  const highlight = isWhite ? '#FFFFFF' : '#8A8680';
-  const stroke = isWhite ? '#3D3B38' : '#1F1E1C';
-  const detailStroke = isWhite ? '#3D3B38' : '#CBC7BF';
+  const fill = isWhite ? pal.whiteFill : pal.blackFill;
+  const shade = isWhite ? pal.whiteShade : pal.blackShade;
+  const highlight = isWhite ? pal.whiteHighlight : pal.blackHighlight;
+  const stroke = isWhite ? pal.whiteStroke : pal.blackStroke;
+  const detailStroke = isWhite ? pal.whiteDetailStroke : pal.blackDetailStroke;
+  const sw = pal.strokeWidth;
   const shadowStyle = {
+    opacity: pal.opacity ?? 1,
     filter: isWhite
       ? 'drop-shadow(0 2px 1.5px rgba(0, 0, 0, 0.28))'
       : 'drop-shadow(0 2px 1.5px rgba(0, 0, 0, 0.36))',
@@ -31,17 +141,15 @@ export function ChessPiece({ type, color, className = 'w-full h-full' }: ChessPi
             d="M22.5 9c-2.21 0-4 1.79-4 4 0 .89.29 1.71.78 2.38C17.33 16.5 16 18.59 16 21c0 2.03.94 3.84 2.41 5.03-3 1.06-7.41 5.55-7.41 13.47h23c0-7.92-4.41-12.41-7.41-13.47 1.47-1.19 2.41-3 2.41-5.03 0-2.41-1.33-4.5-3.28-5.62.49-.67.78-1.49.78-2.38 0-2.21-1.79-4-4-4z"
             fill={fill}
             stroke={stroke}
-            strokeWidth="1.65"
+            strokeWidth={sw}
             strokeLinecap="round"
             strokeLinejoin="round"
           />
-          {/* Right-side sculptural shading */}
           <path
             d="M23 9.2c1.8.2 3.2 1.8 3.2 3.8 0 .8-.25 1.55-.7 2.2 1.85 1.08 3.1 3.1 3.1 5.6 0 1.9-.85 3.6-2.25 4.8 2.7 1.05 6.8 5.25 6.8 13.1h-4.7c-.2-6.8-2.8-10.7-5.75-12.3 1.15-1.05 1.8-2.7 1.8-4.7 0-2.35-1.1-4.35-2.6-5.3.4-.6.6-1.35.6-2.15 0-1.95-.95-3.65-2.3-4.45.8-.45 1.75-.65 2.8-.6z"
             fill={shade}
             opacity="0.85"
           />
-          {/* Collar ring & highlight */}
           <path
             d="M17.2 26.2h10.6"
             stroke={detailStroke}
@@ -65,13 +173,12 @@ export function ChessPiece({ type, color, className = 'w-full h-full' }: ChessPi
     case 'r':
       return (
         <svg viewBox="0 0 45 45" className={className} style={shadowStyle} aria-hidden="true">
-          <g fill={fill} stroke={stroke} strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+          <g fill={fill} stroke={stroke} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
             <path d="M9 39h27v-3H9v3zM12 36v-4h21v4H12zM11 14V9h4v2h5V9h5v2h5V9h4v5" />
             <path d="M34 14l-3 3H14l-3-3" />
             <path d="M31 17v12.5H14V17" />
             <path d="M31 29.5l1.5 2.5h-20l1.5-2.5" />
           </g>
-          {/* Right-side shadow */}
           <path
             d="M26 17.5h4.3v11.5H26zM28 32.5h4.2v3H28zM29.5 36.4h5.7v2H29.5z"
             fill={shade}
@@ -98,11 +205,10 @@ export function ChessPiece({ type, color, className = 'w-full h-full' }: ChessPi
     case 'n':
       return (
         <svg viewBox="0 0 45 45" className={className} style={shadowStyle} aria-hidden="true">
-          <g fill={fill} stroke={stroke} strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+          <g fill={fill} stroke={stroke} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
             <path d="M 22,10 C 32.5,11 38.5,18 38,39 L 15,39 C 15,30 25,32.5 23,18" />
             <path d="M 24,18 C 24.38,20.91 18.45,25.37 16,27 C 13,29 13.18,31.34 11,31 C 9.958,30.06 12.41,27.96 11,28 C 10,28 11.19,29.23 10,30 C 9,30 5.997,31 6,26 C 6,24 12,14 12,14 C 12,14 13.89,12.1 14,10.5 C 13.27,9.506 13.5,8.5 13.5,7.5 C 14.5,6.5 16.5,10 16.5,10 L 18.5,10 C 18.5,10 19.28,8.008 21,7 C 22,7 22,10 22,10" />
           </g>
-          {/* Mane / neck shading */}
           <path
             d="M 24.6,11.2 C 30.8,12.8 35.6,18.2 36.2,38.2 L 32.4,38.2 C 32.5,22 29,14.8 24.1,12.4 Z"
             fill={shade}
@@ -129,12 +235,11 @@ export function ChessPiece({ type, color, className = 'w-full h-full' }: ChessPi
     case 'b':
       return (
         <svg viewBox="0 0 45 45" className={className} style={shadowStyle} aria-hidden="true">
-          <g fill={fill} stroke={stroke} strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+          <g fill={fill} stroke={stroke} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
             <path d="M9 36c3.39-.97 10.11.43 13.5-2 3.39 2.43 10.11 1.03 13.5 2 0 0 1.65.54 3 2-.68.97-1.65.99-3 .5-3.39-.97-10.11.46-13.5-1-3.39 1.46-10.11.03-13.5 1-1.354.49-2.323.47-3-.5 1.354-1.94 3-2 3-2z" />
             <path d="M15 32c2.5 2.5 12.5 2.5 15 0 .5-1.5 0-2 0-2 0-2.5-2.5-4-2.5-4 5.5-1.5 6-11.5-5-15.5-11 4-10.5 14-5 15.5 0 0-2.5 1.5-2.5 4 0 0-.5.5 0 2z" />
             <circle cx="22.5" cy="8" r="2.5" />
           </g>
-          {/* Right-side miter shading */}
           <path
             d="M23.5 11.8c7.5 3.6 7.4 11.4 3.2 13.7-.3.2.5.8 1.4 2.1.4.8.6 1.7.3 2.8-1.4 1-3.7 1.3-5.8 1.2 2.4-1.1 3.4-2.8 2.4-5.4 3.4-3.3 2.5-10.4-1.5-14.4z"
             fill={shade}
@@ -164,7 +269,7 @@ export function ChessPiece({ type, color, className = 'w-full h-full' }: ChessPi
     case 'q':
       return (
         <svg viewBox="0 0 45 45" className={className} style={shadowStyle} aria-hidden="true">
-          <g fill={fill} stroke={stroke} strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+          <g fill={fill} stroke={stroke} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
             <circle cx="6" cy="12" r="2.6" />
             <circle cx="14" cy="9" r="2.6" />
             <circle cx="22.5" cy="8" r="2.6" />
@@ -173,7 +278,6 @@ export function ChessPiece({ type, color, className = 'w-full h-full' }: ChessPi
             <path d="M9 26c8.5-1.5 21-1.5 27 0l2.5-12.5L31 25l-.3-14.1-5.2 13.6-3-14.5-3 14.5-5.2-13.6L14 25 6.5 13.5 9 26z" />
             <path d="M9 26c0 2 1.5 2 2.5 4 1 1.5 1 1 .5 3.5-1.5 1-1.5 2.5-1.5 2.5-1.5 1.5.5 2.5.5 2.5 6.5 1 16.5 1 23 0 0 0 1.5-1 0-2.5 0 0 .5-1.5-1-2.5-.5-2.5-.5-2 .5-3.5 1-2 2.5-2 2.5-4-8.5-1.5-18.5-1.5-27 0z" />
           </g>
-          {/* Right crown shading */}
           <path
             d="M27 25.5l3.6-12.5.3 11.4 6.6-9.5L35 25.5c-.4 1.6-1.5 2.1-2.3 3.8-.9 1.6-.8 2.2-.3 4 1 .8.9 1.8.6 2.5 1 1.1.2 1.8-.8 2-2.2.4-4.5.6-6.9.6 1.5-1.8 2-4.6 1.2-8.2-.4-1.8.2-3.2.5-4.7z"
             fill={shade}
@@ -193,12 +297,11 @@ export function ChessPiece({ type, color, className = 'w-full h-full' }: ChessPi
     case 'k':
       return (
         <svg viewBox="0 0 45 45" className={className} style={shadowStyle} aria-hidden="true">
-          <g fill={fill} stroke={stroke} strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+          <g fill={fill} stroke={stroke} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round">
             <path d="M22.5 11.63V6M20 8h5" fill="none" stroke={stroke} strokeWidth="2.1" />
             <path d="M22.5 25s4.5-7.5 3-10.5c0 0-1-2.5-3-2.5s-3 2.5-3 2.5c-1.5 3 3 10.5 3 10.5" />
             <path d="M11.5 37c5.5 3.5 15.5 3.5 21 0v-7s9-4.5 6-10.5c-4-6.5-13.5-3.5-16 4V27v-3.5c-3.5-7.5-13-10.5-16-4-3 6 5 10 5 10V37z" />
           </g>
-          {/* Right-wing shading */}
           <path
             d="M23.2 24.5c2.7-6.2 10.7-8.7 14.3-3.6 2.3 4.6-4.5 8.2-5.4 8.6v6.7c-2.6 1.5-5.6 2.2-8.8 2.2v-7.5c0-2.6 0-4.8-.1-6.4z"
             fill={shade}

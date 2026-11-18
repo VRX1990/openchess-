@@ -39,9 +39,14 @@ import {
   saveLocalFriendsBackup,
 } from './chess/onlineHelpers';
 import { syncFriendsStateToFirestore } from './firebase';
-import type { BoardTheme } from './components/ChessBoard';
+import {
+  BOARD_THEME_PALETTES,
+  ChessThemeProvider,
+  useChessTheme,
+} from './chess/theme';
 import { PlayerAvatar } from './components/PlayerAvatar';
 import { BottomSheet } from './components/BottomSheet';
+import { ThemeSettingsModal } from './components/ThemeSettingsModal';
 import { SocialNotificationsOverlay } from './components/SocialNotificationsOverlay';
 import { HomeView } from './components/HomeView';
 import { ProfileView } from './components/ProfileView';
@@ -76,6 +81,14 @@ function OpenChessLogo({ sizeClass = 'w-7 h-7' }: { sizeClass?: string }) {
 }
 
 export default function App() {
+  return (
+    <ChessThemeProvider>
+      <AppContent />
+    </ChessThemeProvider>
+  );
+}
+
+function AppContent() {
   const {
     session: lichessSession,
     connecting: lichessConnecting,
@@ -116,7 +129,9 @@ export default function App() {
     return 'home';
   });
 
-  const [boardTheme, setBoardTheme] = useState<BoardTheme>('green');
+  const { prefs: themePrefs, setBoardTheme } = useChessTheme();
+  const boardTheme = themePrefs.boardTheme;
+  const [themeModalOpen, setThemeModalOpen] = useState(false);
   const [selectedCoachId, setSelectedCoachId] = useState<CoachPersonaId>(() =>
     loadSelectedCoachId(),
   );
@@ -213,10 +228,9 @@ export default function App() {
     setSoundMuted(next);
   };
 
-  const cycleTheme = () => {
-    setBoardTheme((prev) =>
-      prev === 'green' ? 'walnut' : prev === 'walnut' ? 'slate' : 'green',
-    );
+  const openThemeStudio = () => {
+    setMoreOpen(false);
+    setThemeModalOpen(true);
   };
 
   const navigateTo = (tab: NavTab, preserveReview = false) => {
@@ -621,14 +635,16 @@ export default function App() {
 
           <button
             type="button"
-            onClick={cycleTheme}
+            onClick={openThemeStudio}
             className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-[#1E1C19] hover:bg-[#312E2A] text-xs font-semibold text-[#C8C4BC] cursor-pointer"
           >
             <span className="flex items-center gap-2">
               <Palette className="w-3.5 h-3.5 text-[#E59A28]" />
-              <span>Board Theme</span>
+              <span>Theme</span>
             </span>
-            <span className="capitalize text-white">{boardTheme}</span>
+            <span className="capitalize text-white truncate max-w-[96px]">
+              {boardTheme} · {themePrefs.pieceTheme}
+            </span>
           </button>
 
           <button
@@ -758,6 +774,7 @@ export default function App() {
               muted={muted}
               onSetBoardTheme={setBoardTheme}
               onToggleMute={toggleMute}
+              onOpenThemeStudio={openThemeStudio}
               onBack={() => navigateTo('home')}
               onNavigate={navigateTo}
               onConnectLichess={openAuthPage}
@@ -1157,26 +1174,57 @@ export default function App() {
             <ChevronRight className="w-4 h-4 text-[#8E8980]" />
           </button>
 
-          <div className="pt-2 border-t border-white/10 space-y-2">
-            <div className="text-xs font-bold text-[#9E998F] px-1">
-              Board Colors
+          <div className="pt-2 border-t border-white/10 space-y-2.5">
+            <div className="flex items-center justify-between px-1">
+              <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-[#9E998F]">
+                <Palette className="w-3.5 h-3.5 text-[#E59A28]" />
+                <span>Theme · Board &amp; Pieces</span>
+              </div>
+              <span className="text-[11px] font-bold text-[#81B64C] capitalize">
+                {boardTheme} · {themePrefs.pieceTheme}
+              </span>
             </div>
-            <div className="grid grid-cols-3 gap-2">
-              {(['green', 'walnut', 'slate'] as BoardTheme[]).map((t) => (
+
+            <div className="grid grid-cols-4 gap-2">
+              {Object.values(BOARD_THEME_PALETTES).map((b) => (
                 <button
-                  key={t}
+                  key={b.id}
                   type="button"
-                  onClick={() => setBoardTheme(t)}
-                  className={`min-h-[44px] px-3 py-2 rounded-lg border text-xs font-bold capitalize cursor-pointer ${
-                    boardTheme === t
+                  onClick={() => setBoardTheme(b.id)}
+                  className={`p-1.5 rounded-xl border flex flex-col items-center gap-1 cursor-pointer transition-colors ${
+                    boardTheme === b.id
                       ? 'bg-[#81B64C]/20 border-[#81B64C] text-white'
                       : 'bg-[#262421] border-white/10 text-[#C3C0B8]'
                   }`}
                 >
-                  {t}
+                  <span className="w-7 h-7 rounded overflow-hidden grid grid-cols-2 grid-rows-2 ring-1 ring-black/35">
+                    <span style={{ backgroundColor: b.light }} />
+                    <span style={{ backgroundColor: b.dark }} />
+                    <span style={{ backgroundColor: b.dark }} />
+                    <span style={{ backgroundColor: b.light }} />
+                  </span>
+                  <span className="text-[10px] font-bold truncate max-w-full">
+                    {b.name.replace('Chess.com ', '').replace('Tournament ', '')}
+                  </span>
                 </button>
               ))}
             </div>
+
+            <button
+              type="button"
+              onClick={openThemeStudio}
+              className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-2 text-left cursor-pointer"
+            >
+              <div>
+                <div className="text-xs font-extrabold text-white">
+                  Customize Pieces, Coordinates &amp; Premove
+                </div>
+                <div className="text-[11px] text-[#9E998F] capitalize">
+                  Pieces: {themePrefs.pieceTheme} · Coords: {themePrefs.coordinateStyle} · Premove: {themePrefs.premoveColor}
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-[#8E8980] shrink-0" />
+            </button>
           </div>
 
           <button
@@ -1279,6 +1327,10 @@ export default function App() {
           setProfileModalUsername(null);
           handleSendToReview(pgn, color, res);
         }}
+      />
+      <ThemeSettingsModal
+        open={themeModalOpen}
+        onClose={() => setThemeModalOpen(false)}
       />
     </div>
   );
