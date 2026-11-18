@@ -26,7 +26,14 @@ import {
   upsertDirectMessage,
   validateGoogleOrGmailEmail,
 } from './onlineHelpers';
-import { DEFAULT_THEME_PREFS, normalizeThemePrefs } from './theme';
+import {
+  BOARD_THEME_PALETTES,
+  DEFAULT_THEME_PREFS,
+  normalizeThemePrefs,
+  PIECE_THEME_OPTIONS,
+  PREMOVE_COLOR_PALETTES,
+  THEME_PRESETS,
+} from './theme';
 
 test('computePremoveTargets computes pseudo-legal premove squares including captures, castling, and promotions', () => {
   const pawnStart = computePremoveTargets('p', 'w', 'e2', new Set(['d3', 'f3']));
@@ -543,19 +550,26 @@ test('formatOnlineTimeControl formats standard and custom time controls into Bul
 
 test('normalizeThemePrefs accepts valid board/piece/premove preferences and falls back on invalid data', () => {
   const valid = normalizeThemePrefs({
-    boardTheme: 'brown',
-    pieceTheme: 'wood',
-    premoveColor: 'violet',
+    boardTheme: 'ocean',
+    pieceTheme: 'merida',
+    premoveColor: 'sky',
     coordinateStyle: 'outside',
     animationSpeed: 'fast',
     highlightMoves: false,
   });
-  assert.equal(valid.boardTheme, 'brown');
-  assert.equal(valid.pieceTheme, 'wood');
-  assert.equal(valid.premoveColor, 'violet');
+  assert.equal(valid.boardTheme, 'ocean');
+  assert.equal(valid.pieceTheme, 'merida');
+  assert.equal(valid.premoveColor, 'sky');
   assert.equal(valid.coordinateStyle, 'outside');
   assert.equal(valid.animationSpeed, 'fast');
   assert.equal(valid.highlightMoves, false);
+
+  assert.ok(Object.keys(BOARD_THEME_PALETTES).length >= 16);
+  assert.ok(PIECE_THEME_OPTIONS.length >= 9);
+  assert.ok(Object.keys(PREMOVE_COLOR_PALETTES).length >= 6);
+  for (const preset of THEME_PRESETS) {
+    assert.deepEqual(normalizeThemePrefs(preset.prefs), preset.prefs);
+  }
 
   const fallback = normalizeThemePrefs({
     boardTheme: 'invalid-board',

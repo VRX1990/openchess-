@@ -103,11 +103,50 @@ const PIECE_PALETTES: Record<PieceTheme, PiecePalette> = {
     blackDetailStroke: '#DFBD74',
     strokeWidth: 1.7,
   },
+  merida: {
+    whiteFill: '#FAF7EE',
+    whiteShade: '#DDD6C3',
+    whiteHighlight: '#FFFFFF',
+    whiteStroke: '#1E1D1B',
+    whiteDetailStroke: '#1E1D1B',
+    blackFill: '#3B3935',
+    blackShade: '#211F1D',
+    blackHighlight: '#6C6861',
+    blackStroke: '#141311',
+    blackDetailStroke: '#EAE6DC',
+    strokeWidth: 1.85,
+  },
+  icy: {
+    whiteFill: '#F2FAFF',
+    whiteShade: '#C7E2F4',
+    whiteHighlight: '#FFFFFF',
+    whiteStroke: '#294D6B',
+    whiteDetailStroke: '#3B6B91',
+    blackFill: '#2C5E85',
+    blackShade: '#1B3E5B',
+    blackHighlight: '#7AB4DF',
+    blackStroke: '#10273B',
+    blackDetailStroke: '#DDF1FF',
+    strokeWidth: 1.65,
+  },
+  royal: {
+    whiteFill: '#FFF5DA',
+    whiteShade: '#E2C98E',
+    whiteHighlight: '#FFFDF4',
+    whiteStroke: '#463315',
+    whiteDetailStroke: '#7A5B21',
+    blackFill: '#362D3B',
+    blackShade: '#1F1824',
+    blackHighlight: '#776682',
+    blackStroke: '#130D17',
+    blackDetailStroke: '#F2CE74',
+    strokeWidth: 1.7,
+  },
 };
 
 /**
- * Staunton SVG pieces supporting 6 Chess.com-inspired styles
- * (Neo, Classic, Wood, Glass, Alpha, Club).
+ * Staunton SVG pieces supporting 9 Chess.com-inspired styles
+ * (Neo, Classic, Merida, Wood, Club, Alpha, Glass, Icy, Royal).
  */
 export function ChessPiece({
   type,

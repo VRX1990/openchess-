@@ -3,24 +3,46 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 export type BoardTheme =
   | 'green'
   | 'brown'
+  | 'olive'
+  | 'sand'
+  | 'tournament'
   | 'walnut'
+  | 'light_wood'
+  | 'burled'
+  | 'marble'
+  | 'copper'
+  | 'icy'
+  | 'ocean'
   | 'slate'
   | 'emerald'
   | 'purple'
+  | 'bubblegum'
   | 'charcoal'
-  | 'sand';
+  | 'midnight';
 
-export type PieceTheme = 'neo' | 'classic' | 'wood' | 'glass' | 'alpha' | 'club';
+export type BoardThemeCategory = 'Classic' | 'Wood & Stone' | 'Vibrant & Dark';
+
+export type PieceTheme =
+  | 'neo'
+  | 'classic'
+  | 'merida'
+  | 'wood'
+  | 'club'
+  | 'alpha'
+  | 'glass'
+  | 'icy'
+  | 'royal';
 
 export type AnimationSpeed = 'smooth' | 'fast' | 'none';
 
 export type CoordinateStyle = 'inside' | 'outside' | 'none';
 
-export type PremoveColorTheme = 'crimson' | 'amber' | 'violet';
+export type PremoveColorTheme = 'crimson' | 'amber' | 'violet' | 'sky' | 'emerald' | 'rose';
 
 export interface BoardThemeDefinition {
   id: BoardTheme;
   name: string;
+  category: BoardThemeCategory;
   light: string;
   dark: string;
   lightHighlight: string;
@@ -30,7 +52,8 @@ export interface BoardThemeDefinition {
 export const BOARD_THEME_PALETTES: Record<BoardTheme, BoardThemeDefinition> = {
   green: {
     id: 'green',
-    name: 'Chess.com Green',
+    name: 'Classic Green',
+    category: 'Classic',
     light: '#EEEED2',
     dark: '#769656',
     lightHighlight: '#F6F669',
@@ -38,23 +61,107 @@ export const BOARD_THEME_PALETTES: Record<BoardTheme, BoardThemeDefinition> = {
   },
   brown: {
     id: 'brown',
-    name: 'Classic Brown',
+    name: 'Warm Brown',
+    category: 'Classic',
     light: '#F0D9B5',
     dark: '#B58863',
     lightHighlight: '#F7EC77',
     darkHighlight: '#DAC34B',
   },
+  olive: {
+    id: 'olive',
+    name: 'Olive Felt',
+    category: 'Classic',
+    light: '#EAE9D2',
+    dark: '#6F7D4C',
+    lightHighlight: '#F4F178',
+    darkHighlight: '#B4BA36',
+  },
+  sand: {
+    id: 'sand',
+    name: 'Parchment',
+    category: 'Classic',
+    light: '#F5EFE0',
+    dark: '#C0AE8E',
+    lightHighlight: '#F8E37D',
+    darkHighlight: '#D0B44A',
+  },
+  tournament: {
+    id: 'tournament',
+    name: 'Arena Sage',
+    category: 'Classic',
+    light: '#EAEED7',
+    dark: '#5F8755',
+    lightHighlight: '#F5F67E',
+    darkHighlight: '#A7C840',
+  },
   walnut: {
     id: 'walnut',
     name: 'Dark Walnut',
+    category: 'Wood & Stone',
     light: '#D9BC96',
     dark: '#8C5B3C',
     lightHighlight: '#EEDD79',
     darkHighlight: '#B89738',
   },
+  light_wood: {
+    id: 'light_wood',
+    name: 'Maple Wood',
+    category: 'Wood & Stone',
+    light: '#F3DCBA',
+    dark: '#C9935B',
+    lightHighlight: '#F9EA7A',
+    darkHighlight: '#D8B73E',
+  },
+  burled: {
+    id: 'burled',
+    name: 'Mahogany',
+    category: 'Wood & Stone',
+    light: '#E1B88E',
+    dark: '#7A422B',
+    lightHighlight: '#F1DC72',
+    darkHighlight: '#B58932',
+  },
+  marble: {
+    id: 'marble',
+    name: 'Marble',
+    category: 'Wood & Stone',
+    light: '#ECECE9',
+    dark: '#8A8D8F',
+    lightHighlight: '#E7EA88',
+    darkHighlight: '#9DAE5C',
+  },
+  copper: {
+    id: 'copper',
+    name: 'Warm Bronze',
+    category: 'Wood & Stone',
+    light: '#EAD8C7',
+    dark: '#9E6347',
+    lightHighlight: '#F4DF7C',
+    darkHighlight: '#C69D42',
+  },
+  icy: {
+    id: 'icy',
+    name: 'Icy Sea',
+    category: 'Vibrant & Dark',
+    light: '#DCE8F2',
+    dark: '#5D8AA8',
+    lightHighlight: '#CCE8FF',
+    darkHighlight: '#6DAFD8',
+  },
+  ocean: {
+    id: 'ocean',
+    name: 'Deep Ocean',
+    category: 'Vibrant & Dark',
+    light: '#D5E4EC',
+    dark: '#3B6E8C',
+    lightHighlight: '#BCE2F7',
+    darkHighlight: '#559FC2',
+  },
   slate: {
     id: 'slate',
-    name: 'Tournament Slate',
+    name: 'Slate Blue',
+    category: 'Vibrant & Dark',
     light: '#DEE3E6',
     dark: '#8CA2AD',
     lightHighlight: '#D4E6F1',
@@ -63,6 +170,7 @@ export const BOARD_THEME_PALETTES: Record<BoardTheme, BoardThemeDefinition> = {
   emerald: {
     id: 'emerald',
     name: 'Emerald Club',
+    category: 'Vibrant & Dark',
     light: '#E3ECE4',
     dark: '#4F7A61',
     lightHighlight: '#BCE08A',
@@ -71,28 +179,46 @@ export const BOARD_THEME_PALETTES: Record<BoardTheme, BoardThemeDefinition> = {
   purple: {
     id: 'purple',
     name: 'Royal Purple',
+    category: 'Vibrant & Dark',
     light: '#EFEFEF',
     dark: '#8877B7',
     lightHighlight: '#E3D4FF',
     darkHighlight: '#A386DC',
   },
+  bubblegum: {
+    id: 'bubblegum',
+    name: 'Coral Rose',
+    category: 'Vibrant & Dark',
+    light: '#F9E3E6',
+    dark: '#C76B7E',
+    lightHighlight: '#FBE59B',
+    darkHighlight: '#D88D6D',
+  },
   charcoal: {
     id: 'charcoal',
     name: 'Obsidian',
+    category: 'Vibrant & Dark',
     light: '#A5A19A',
     dark: '#4D4A46',
     lightHighlight: '#C9B458',
     darkHighlight: '#917F37',
   },
-  sand: {
-    id: 'sand',
-    name: 'Parchment',
-    light: '#F5EFE0',
-    dark: '#C0AE8E',
-    lightHighlight: '#F8E37D',
-    darkHighlight: '#D0B44A',
+  midnight: {
+    id: 'midnight',
+    name: 'Midnight',
+    category: 'Vibrant & Dark',
+    light: '#B8C1D1',
+    dark: '#3F4C6B',
+    lightHighlight: '#D6D98B',
+    darkHighlight: '#6B7E9E',
   },
 };
+
+export const BOARD_THEME_CATEGORIES: BoardThemeCategory[] = [
+  'Classic',
+  'Wood & Stone',
+  'Vibrant & Dark',
+];
 
 export interface PieceThemeDefinition {
   id: PieceTheme;
@@ -103,10 +229,13 @@ export interface PieceThemeDefinition {
 export const PIECE_THEME_OPTIONS: PieceThemeDefinition[] = [
   { id: 'neo', name: 'Neo', description: 'Crisp Chess.com tournament shading' },
   { id: 'classic', name: 'Classic', description: 'Warm ivory & espresso Staunton' },
+  { id: 'merida', name: 'Merida', description: 'Iconic balanced tournament contrast' },
   { id: 'wood', name: 'Wood', description: 'Carved oak & rich walnut grain' },
-  { id: 'glass', name: 'Glass', description: 'Frosted crystal & obsidian slate' },
+  { id: 'club', name: 'Club', description: 'Gold-trimmed ivory & ebony' },
   { id: 'alpha', name: 'Alpha', description: 'High-contrast bold flat contours' },
-  { id: 'club', name: 'Club', description: 'Warm gold-trimmed ivory & ebony' },
+  { id: 'glass', name: 'Glass', description: 'Frosted crystal & obsidian slate' },
+  { id: 'icy', name: 'Icy', description: 'Glacial pearl & frost sapphire' },
+  { id: 'royal', name: 'Royal', description: 'Champagne cream & velvet charcoal' },
 ];
 
 export interface PremoveColorDefinition {
@@ -151,6 +280,36 @@ export const PREMOVE_COLOR_PALETTES: Record<PremoveColorTheme, PremoveColorDefin
     dot: 'rgba(167, 139, 250, 0.62)',
     badgeBg: '#7C3AED',
   },
+  sky: {
+    id: 'sky',
+    name: 'Sky',
+    lightSq: 'rgba(14, 165, 233, 0.44)',
+    darkSq: 'rgba(2, 132, 199, 0.52)',
+    ring: 'rgba(125, 211, 252, 0.9)',
+    arrow: 'rgba(56, 189, 248, 0.92)',
+    dot: 'rgba(56, 189, 248, 0.62)',
+    badgeBg: '#0284C7',
+  },
+  emerald: {
+    id: 'emerald',
+    name: 'Emerald',
+    lightSq: 'rgba(34, 197, 94, 0.44)',
+    darkSq: 'rgba(22, 163, 74, 0.52)',
+    ring: 'rgba(134, 239, 172, 0.88)',
+    arrow: 'rgba(74, 222, 128, 0.92)',
+    dot: 'rgba(74, 222, 128, 0.62)',
+    badgeBg: '#16A34A',
+  },
+  rose: {
+    id: 'rose',
+    name: 'Rose',
+    lightSq: 'rgba(236, 72, 153, 0.44)',
+    darkSq: 'rgba(219, 39, 119, 0.52)',
+    ring: 'rgba(249, 168, 212, 0.88)',
+    arrow: 'rgba(244, 114, 182, 0.92)',
+    dot: 'rgba(244, 114, 182, 0.62)',
+    badgeBg: '#DB2777',
+  },
 };
 
 export interface ChessThemePreferences {
@@ -161,6 +320,94 @@ export interface ChessThemePreferences {
   premoveColor: PremoveColorTheme;
   highlightMoves: boolean;
 }
+
+export interface ThemePresetDefinition {
+  id: string;
+  name: string;
+  subtitle: string;
+  prefs: ChessThemePreferences;
+}
+
+export const THEME_PRESETS: ThemePresetDefinition[] = [
+  {
+    id: 'tournament-green',
+    name: 'Tournament',
+    subtitle: 'Green · Neo',
+    prefs: {
+      boardTheme: 'green',
+      pieceTheme: 'neo',
+      animationSpeed: 'smooth',
+      coordinateStyle: 'inside',
+      premoveColor: 'crimson',
+      highlightMoves: true,
+    },
+  },
+  {
+    id: 'grandmaster-wood',
+    name: 'GM Walnut',
+    subtitle: 'Walnut · Wood',
+    prefs: {
+      boardTheme: 'walnut',
+      pieceTheme: 'wood',
+      animationSpeed: 'smooth',
+      coordinateStyle: 'outside',
+      premoveColor: 'amber',
+      highlightMoves: true,
+    },
+  },
+  {
+    id: 'icy-arena',
+    name: 'Icy Arena',
+    subtitle: 'Icy Sea · Icy',
+    prefs: {
+      boardTheme: 'icy',
+      pieceTheme: 'icy',
+      animationSpeed: 'fast',
+      coordinateStyle: 'inside',
+      premoveColor: 'sky',
+      highlightMoves: true,
+    },
+  },
+  {
+    id: 'obsidian-club',
+    name: 'Obsidian Club',
+    subtitle: 'Obsidian · Club',
+    prefs: {
+      boardTheme: 'charcoal',
+      pieceTheme: 'club',
+      animationSpeed: 'smooth',
+      coordinateStyle: 'inside',
+      premoveColor: 'violet',
+      highlightMoves: true,
+    },
+  },
+  {
+    id: 'marble-classic',
+    name: 'Marble Classic',
+    subtitle: 'Marble · Merida',
+    prefs: {
+      boardTheme: 'marble',
+      pieceTheme: 'merida',
+      animationSpeed: 'smooth',
+      coordinateStyle: 'outside',
+      premoveColor: 'crimson',
+      highlightMoves: true,
+    },
+  },
+  {
+    id: 'deep-ocean',
+    name: 'Deep Ocean',
+    subtitle: 'Ocean · Glass',
+    prefs: {
+      boardTheme: 'ocean',
+      pieceTheme: 'glass',
+      animationSpeed: 'fast',
+      coordinateStyle: 'inside',
+      premoveColor: 'emerald',
+      highlightMoves: true,
+    },
+  },
+];
 
 export const DEFAULT_THEME_PREFS: ChessThemePreferences = {
   boardTheme: 'green',

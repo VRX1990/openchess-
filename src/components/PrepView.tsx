@@ -37,6 +37,7 @@ export type NavTab =
   | 'prep'
   | 'messages'
   | 'leaderboard'
+  | 'themes'
   | 'auth';
 
 interface PrepViewProps {

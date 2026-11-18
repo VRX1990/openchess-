@@ -54,7 +54,10 @@ export function BottomSheet({
             </button>
           </div>
         </div>
-        <div className={`flex-1 min-h-0 flex flex-col ${desktopModal ? 'overflow-y-auto' : 'overflow-hidden'}`}>
+        <div
+          data-testid="bottom-sheet-scroll"
+          className="flex-1 min-h-0 flex flex-col overflow-y-auto overscroll-contain"
+        >
           {children}
         </div>
       </div>

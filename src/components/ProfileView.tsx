@@ -1220,33 +1220,35 @@ export function ProfileView({
                   }}
                   className="text-[11px] font-extrabold text-[#81B64C] hover:text-[#98CA63] cursor-pointer"
                 >
-                  Customize Pieces &amp; More →
+                  Open Themes Studio →
                 </button>
               )}
             </div>
             <div className="grid grid-cols-4 gap-2">
-              {Object.values(BOARD_THEME_PALETTES).map((b) => (
-                <button
-                  key={b.id}
-                  type="button"
-                  onClick={() => onSetBoardTheme(b.id)}
-                  className={`p-1.5 rounded-lg border flex flex-col items-center gap-1 cursor-pointer ${
-                    boardTheme === b.id
-                      ? 'bg-[#81B64C]/20 border-[#81B64C] text-white'
-                      : 'bg-[#262421] border-white/10 text-[#C8C4BC]'
-                  }`}
-                >
-                  <span className="w-6 h-6 rounded overflow-hidden grid grid-cols-2 grid-rows-2 ring-1 ring-black/30">
-                    <span style={{ backgroundColor: b.light }} />
-                    <span style={{ backgroundColor: b.dark }} />
-                    <span style={{ backgroundColor: b.dark }} />
-                    <span style={{ backgroundColor: b.light }} />
-                  </span>
-                  <span className="text-[10px] font-bold truncate max-w-full">
-                    {b.name.replace('Chess.com ', '').replace('Tournament ', '')}
-                  </span>
-                </button>
-              ))}
+              {Object.values(BOARD_THEME_PALETTES)
+                .slice(0, 8)
+                .map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => onSetBoardTheme(b.id)}
+                    className={`p-1.5 rounded-lg border flex flex-col items-center gap-1 cursor-pointer ${
+                      boardTheme === b.id
+                        ? 'bg-[#81B64C]/20 border-[#81B64C] text-white'
+                        : 'bg-[#262421] border-white/10 text-[#C8C4BC]'
+                    }`}
+                  >
+                    <span className="w-6 h-6 rounded overflow-hidden grid grid-cols-2 grid-rows-2 ring-1 ring-black/30">
+                      <span style={{ backgroundColor: b.light }} />
+                      <span style={{ backgroundColor: b.dark }} />
+                      <span style={{ backgroundColor: b.dark }} />
+                      <span style={{ backgroundColor: b.light }} />
+                    </span>
+                    <span className="text-[10px] font-bold truncate max-w-full">
+                      {b.name.replace('Chess.com ', '').replace('Tournament ', '')}
+                    </span>
+                  </button>
+                ))}
             </div>
           </div>
 

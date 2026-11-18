@@ -46,7 +46,7 @@ import {
 } from './chess/theme';
 import { PlayerAvatar } from './components/PlayerAvatar';
 import { BottomSheet } from './components/BottomSheet';
-import { ThemeSettingsModal } from './components/ThemeSettingsModal';
+import { ThemesView } from './components/ThemesView';
 import { SocialNotificationsOverlay } from './components/SocialNotificationsOverlay';
 import { HomeView } from './components/HomeView';
 import { ProfileView } from './components/ProfileView';
@@ -131,7 +131,7 @@ function AppContent() {
 
   const { prefs: themePrefs, setBoardTheme } = useChessTheme();
   const boardTheme = themePrefs.boardTheme;
-  const [themeModalOpen, setThemeModalOpen] = useState(false);
+  const activeBoardMeta = BOARD_THEME_PALETTES[boardTheme] ?? BOARD_THEME_PALETTES.green;
   const [selectedCoachId, setSelectedCoachId] = useState<CoachPersonaId>(() =>
     loadSelectedCoachId(),
   );
@@ -229,8 +229,7 @@ function AppContent() {
   };
 
   const openThemeStudio = () => {
-    setMoreOpen(false);
-    setThemeModalOpen(true);
+    navigateTo('themes');
   };
 
   const navigateTo = (tab: NavTab, preserveReview = false) => {
@@ -489,6 +488,7 @@ function AppContent() {
     { id: 'watch', label: 'Watch Live', icon: Binoculars },
     { id: 'review', label: 'Game Review', icon: SearchCheck },
     { id: 'prep', label: 'Sharping', icon: CalendarCheck2 },
+    { id: 'themes', label: 'Themes', icon: Palette },
   ];
 
   // Exact Chess.com Bottom 5-Tab Bar: Home | Puzzles | Learn | Watch | More
@@ -516,14 +516,15 @@ function AppContent() {
     activeTab === 'review' ||
     activeTab === 'prep' ||
     activeTab === 'messages' ||
-    activeTab === 'leaderboard';
+    activeTab === 'leaderboard' ||
+    activeTab === 'themes';
 
   return (
     <div className="min-h-dvh bg-[#302E2B] text-white flex flex-col lg:flex-row">
       {/* Desktop Left Sidebar Rail */}
-      <aside className="hidden lg:flex lg:w-52 xl:w-56 bg-[#262421] border-r border-white/[0.06] flex-col justify-between shrink-0 p-3">
-        <div className="space-y-5">
-          <div className="flex items-center justify-between gap-2 px-2.5 py-2">
+      <aside className="hidden lg:flex lg:w-52 xl:w-56 lg:sticky lg:top-0 lg:h-dvh lg:overflow-y-auto bg-[#262421] border-r border-white/[0.06] flex-col justify-between shrink-0 p-3">
+        <div className="space-y-4">
+          <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
             <a
               href="#home"
               onClick={(e) => {
@@ -549,7 +550,7 @@ function AppContent() {
             </button>
           </div>
 
-          <nav aria-label="Primary navigation" className="space-y-1">
+          <nav aria-label="Primary navigation" className="space-y-0.5">
             {desktopNavItems.map((item) => {
               const Icon = item.icon;
               const active =
@@ -562,7 +563,7 @@ function AppContent() {
                   onClick={() =>
                     navigateTo(item.id === 'play' && !playIsActive ? 'new-game' : item.id)
                   }
-                  className={`w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-sm font-bold transition-colors whitespace-nowrap cursor-pointer ${
+                  className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors whitespace-nowrap cursor-pointer ${
                     active
                       ? 'bg-[#383530] text-white'
                       : 'text-[#C3C0B8] hover:text-white hover:bg-white/5'
@@ -632,20 +633,6 @@ function AppContent() {
               <Globe className="w-3.5 h-3.5 shrink-0" />
             </button>
           )}
-
-          <button
-            type="button"
-            onClick={openThemeStudio}
-            className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-[#1E1C19] hover:bg-[#312E2A] text-xs font-semibold text-[#C8C4BC] cursor-pointer"
-          >
-            <span className="flex items-center gap-2">
-              <Palette className="w-3.5 h-3.5 text-[#E59A28]" />
-              <span>Theme</span>
-            </span>
-            <span className="capitalize text-white truncate max-w-[96px]">
-              {boardTheme} · {themePrefs.pieceTheme}
-            </span>
-          </button>
 
           <button
             type="button"
@@ -948,6 +935,9 @@ function AppContent() {
           {activeTab === 'prep' && (
             <PrepView stats={stats} onNavigate={navigateTo} />
           )}
+          {activeTab === 'themes' && (
+            <ThemesView onBack={() => navigateTo('home')} />
+          )}
           {activeTab === 'auth' && (
             <AuthView
               lichessSession={lichessSession}
@@ -1020,11 +1010,11 @@ function AppContent() {
         title="More · OpenChess"
         onClose={() => setMoreOpen(false)}
       >
-        <div className="p-4 space-y-2.5">
+        <div data-testid="more-menu-content" className="p-4 pb-6 space-y-2.5">
           <button
             type="button"
             onClick={() => navigateTo('friends')}
-            className="w-full min-h-[52px] px-3.5 py-3 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-3 cursor-pointer"
+            className="w-full shrink-0 min-h-[52px] px-3.5 py-3 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-3 cursor-pointer"
           >
             <div className="flex items-center gap-3 text-left">
               <Users className="w-5 h-5 text-[#6FB3E0] shrink-0" />
@@ -1035,13 +1025,13 @@ function AppContent() {
                 </div>
               </div>
             </div>
-            <ChevronRight className="w-4 h-4 text-[#8E8980]" />
+            <ChevronRight className="w-4 h-4 text-[#8E8980] shrink-0" />
           </button>
 
           <button
             type="button"
             onClick={() => navigateTo('messages')}
-            className="w-full min-h-[52px] px-3.5 py-3 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-3 cursor-pointer"
+            className="w-full shrink-0 min-h-[52px] px-3.5 py-3 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-3 cursor-pointer"
           >
             <div className="flex items-center gap-3 text-left">
               <MessageSquare className="w-5 h-5 text-[#81B64C] shrink-0" />
@@ -1059,13 +1049,13 @@ function AppContent() {
                 </div>
               </div>
             </div>
-            <ChevronRight className="w-4 h-4 text-[#8E8980]" />
+            <ChevronRight className="w-4 h-4 text-[#8E8980] shrink-0" />
           </button>
 
           <button
             type="button"
             onClick={() => navigateTo('leaderboard')}
-            className="w-full min-h-[52px] px-3.5 py-3 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-3 cursor-pointer"
+            className="w-full shrink-0 min-h-[52px] px-3.5 py-3 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-3 cursor-pointer"
           >
             <div className="flex items-center gap-3 text-left">
               <Trophy className="w-5 h-5 text-[#F7C045] shrink-0" />
@@ -1076,13 +1066,13 @@ function AppContent() {
                 </div>
               </div>
             </div>
-            <ChevronRight className="w-4 h-4 text-[#8E8980]" />
+            <ChevronRight className="w-4 h-4 text-[#8E8980] shrink-0" />
           </button>
 
           <button
             type="button"
             onClick={() => navigateTo('review')}
-            className="w-full min-h-[52px] px-3.5 py-3 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-3 cursor-pointer"
+            className="w-full shrink-0 min-h-[52px] px-3.5 py-3 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-3 cursor-pointer"
           >
             <div className="flex items-center gap-3 text-left">
               <SearchCheck className="w-5 h-5 text-[#81B64C] shrink-0" />
@@ -1093,13 +1083,13 @@ function AppContent() {
                 </div>
               </div>
             </div>
-            <ChevronRight className="w-4 h-4 text-[#8E8980]" />
+            <ChevronRight className="w-4 h-4 text-[#8E8980] shrink-0" />
           </button>
 
           <button
             type="button"
             onClick={() => navigateTo('new-game')}
-            className="w-full min-h-[52px] px-3.5 py-3 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-3 cursor-pointer"
+            className="w-full shrink-0 min-h-[52px] px-3.5 py-3 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-3 cursor-pointer"
           >
             <div className="flex items-center gap-3 text-left">
               <Swords className="w-5 h-5 text-[#81B64C] shrink-0" />
@@ -1110,13 +1100,13 @@ function AppContent() {
                 </div>
               </div>
             </div>
-            <ChevronRight className="w-4 h-4 text-[#8E8980]" />
+            <ChevronRight className="w-4 h-4 text-[#8E8980] shrink-0" />
           </button>
 
           <button
             type="button"
             onClick={() => navigateTo('bots')}
-            className="w-full min-h-[52px] px-3.5 py-3 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-3 cursor-pointer"
+            className="w-full shrink-0 min-h-[52px] px-3.5 py-3 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-3 cursor-pointer"
           >
             <div className="flex items-center gap-3 text-left">
               <Monitor className="w-5 h-5 text-[#7FC4ED] shrink-0" />
@@ -1127,13 +1117,13 @@ function AppContent() {
                 </div>
               </div>
             </div>
-            <ChevronRight className="w-4 h-4 text-[#8E8980]" />
+            <ChevronRight className="w-4 h-4 text-[#8E8980] shrink-0" />
           </button>
 
           <button
             type="button"
             onClick={() => navigateTo('prep')}
-            className={`w-full min-h-[52px] px-3.5 py-3 rounded-xl border flex items-center justify-between gap-3 cursor-pointer ${
+            className={`w-full shrink-0 min-h-[52px] px-3.5 py-3 rounded-xl border flex items-center justify-between gap-3 cursor-pointer ${
               activeTab === 'prep'
                 ? 'bg-[#383530] border-[#81B64C]'
                 : 'bg-[#262421] hover:bg-[#312E2A] border-white/10'
@@ -1148,13 +1138,46 @@ function AppContent() {
                 </div>
               </div>
             </div>
-            <ChevronRight className="w-4 h-4 text-[#8E8980]" />
+            <ChevronRight className="w-4 h-4 text-[#8E8980] shrink-0" />
+          </button>
+
+          <button
+            type="button"
+            data-testid="more-themes-button"
+            onClick={() => navigateTo('themes')}
+            className={`w-full shrink-0 min-h-[54px] px-3.5 py-3 rounded-xl border flex items-center justify-between gap-3 cursor-pointer ${
+              activeTab === 'themes'
+                ? 'bg-[#383530] border-[#81B64C]'
+                : 'bg-[#262421] hover:bg-[#312E2A] border-white/10'
+            }`}
+          >
+            <div className="flex items-center gap-3 text-left min-w-0">
+              <span
+                className="w-7 h-7 rounded-lg overflow-hidden grid grid-cols-2 grid-rows-2 shrink-0 ring-1 ring-white/15"
+                aria-hidden="true"
+              >
+                <span style={{ backgroundColor: activeBoardMeta.light }} />
+                <span style={{ backgroundColor: activeBoardMeta.dark }} />
+                <span style={{ backgroundColor: activeBoardMeta.dark }} />
+                <span style={{ backgroundColor: activeBoardMeta.light }} />
+              </span>
+              <div className="min-w-0">
+                <div className="text-sm font-bold text-white flex items-center gap-1.5">
+                  <Palette className="w-3.5 h-3.5 text-[#E59A28] shrink-0" />
+                  <span>Themes</span>
+                </div>
+                <div className="text-xs text-[#9E998F] truncate capitalize">
+                  {activeBoardMeta.name} · {themePrefs.pieceTheme} · {themePrefs.premoveColor}
+                </div>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-[#8E8980] shrink-0" />
           </button>
 
           <button
             type="button"
             onClick={openAuthPage}
-            className="w-full min-h-[52px] px-3.5 py-3 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-3 cursor-pointer"
+            className="w-full shrink-0 min-h-[52px] px-3.5 py-3 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-3 cursor-pointer"
           >
             <div className="flex items-center gap-3 text-left">
               <Globe className="w-5 h-5 text-[#81B64C] shrink-0" />
@@ -1171,66 +1194,13 @@ function AppContent() {
                 </div>
               </div>
             </div>
-            <ChevronRight className="w-4 h-4 text-[#8E8980]" />
+            <ChevronRight className="w-4 h-4 text-[#8E8980] shrink-0" />
           </button>
-
-          <div className="pt-2 border-t border-white/10 space-y-2.5">
-            <div className="flex items-center justify-between px-1">
-              <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-[#9E998F]">
-                <Palette className="w-3.5 h-3.5 text-[#E59A28]" />
-                <span>Theme · Board &amp; Pieces</span>
-              </div>
-              <span className="text-[11px] font-bold text-[#81B64C] capitalize">
-                {boardTheme} · {themePrefs.pieceTheme}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-4 gap-2">
-              {Object.values(BOARD_THEME_PALETTES).map((b) => (
-                <button
-                  key={b.id}
-                  type="button"
-                  onClick={() => setBoardTheme(b.id)}
-                  className={`p-1.5 rounded-xl border flex flex-col items-center gap-1 cursor-pointer transition-colors ${
-                    boardTheme === b.id
-                      ? 'bg-[#81B64C]/20 border-[#81B64C] text-white'
-                      : 'bg-[#262421] border-white/10 text-[#C3C0B8]'
-                  }`}
-                >
-                  <span className="w-7 h-7 rounded overflow-hidden grid grid-cols-2 grid-rows-2 ring-1 ring-black/35">
-                    <span style={{ backgroundColor: b.light }} />
-                    <span style={{ backgroundColor: b.dark }} />
-                    <span style={{ backgroundColor: b.dark }} />
-                    <span style={{ backgroundColor: b.light }} />
-                  </span>
-                  <span className="text-[10px] font-bold truncate max-w-full">
-                    {b.name.replace('Chess.com ', '').replace('Tournament ', '')}
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            <button
-              type="button"
-              onClick={openThemeStudio}
-              className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 flex items-center justify-between gap-2 text-left cursor-pointer"
-            >
-              <div>
-                <div className="text-xs font-extrabold text-white">
-                  Customize Pieces, Coordinates &amp; Premove
-                </div>
-                <div className="text-[11px] text-[#9E998F] capitalize">
-                  Pieces: {themePrefs.pieceTheme} · Coords: {themePrefs.coordinateStyle} · Premove: {themePrefs.premoveColor}
-                </div>
-              </div>
-              <ChevronRight className="w-4 h-4 text-[#8E8980] shrink-0" />
-            </button>
-          </div>
 
           <button
             type="button"
             onClick={toggleMute}
-            className="w-full min-h-[48px] px-3.5 py-2.5 rounded-xl bg-[#262421] border border-white/10 flex items-center justify-between text-sm font-bold text-white cursor-pointer"
+            className="w-full shrink-0 min-h-[48px] px-3.5 py-2.5 rounded-xl bg-[#262421] border border-white/10 flex items-center justify-between text-sm font-bold text-white cursor-pointer"
           >
             <span className="flex items-center gap-2.5">
               {muted ? (
@@ -1327,10 +1297,6 @@ function AppContent() {
           setProfileModalUsername(null);
           handleSendToReview(pgn, color, res);
         }}
-      />
-      <ThemeSettingsModal
-        open={themeModalOpen}
-        onClose={() => setThemeModalOpen(false)}
       />
     </div>
   );
