@@ -672,7 +672,7 @@ export function sanitizePublicAvatar(raw: string | undefined): string | undefine
   return undefined;
 }
 
-export const MAX_MATCHMAKING_ELO_GAP = 200;
+export const MAX_MATCHMAKING_ELO_GAP = 300;
 
 export function getFairMatchmakingEloBand(
   playerElo: number,
@@ -691,6 +691,49 @@ export function isWithinFairEloBand(
   maxGap = MAX_MATCHMAKING_ELO_GAP,
 ): boolean {
   return Math.abs(Math.round(playerElo) - Math.round(opponentElo)) <= maxGap;
+}
+
+export interface MatchmakingPassConfig {
+  requireNamedRated: boolean;
+  maxEloGap: number;
+  allowSpeedFallback: boolean;
+  preferExactClock: boolean;
+  phase: 'searching' | 'broadening_live_pool';
+}
+
+export function buildMatchmakingPassConfig(
+  attempt: number,
+  explicitAllowUnratedFallback = false,
+  rated = true,
+): MatchmakingPassConfig {
+  const safeAttempt = Math.max(0, Math.floor(attempt));
+  const mustStayRated = rated && !explicitAllowUnratedFallback;
+
+  if (safeAttempt === 0) {
+    return {
+      requireNamedRated: mustStayRated,
+      maxEloGap: MAX_MATCHMAKING_ELO_GAP,
+      allowSpeedFallback: false,
+      preferExactClock: true,
+      phase: 'searching',
+    };
+  }
+  if (safeAttempt <= 1) {
+    return {
+      requireNamedRated: mustStayRated,
+      maxEloGap: MAX_MATCHMAKING_ELO_GAP,
+      allowSpeedFallback: true,
+      preferExactClock: true,
+      phase: 'broadening_live_pool',
+    };
+  }
+  return {
+    requireNamedRated: mustStayRated,
+    maxEloGap: mustStayRated ? MAX_MATCHMAKING_ELO_GAP : 450,
+    allowSpeedFallback: true,
+    preferExactClock: false,
+    phase: 'broadening_live_pool',
+  };
 }
 
 export function clampOpponentEloToBand(
@@ -843,7 +886,17 @@ export function isPlaceholderPlayerUsername(username: string | undefined | null)
     !clean ||
     clean === 'anonymous' ||
     clean === 'anonymous (live)' ||
+    clean === 'anonymous (guest)' ||
     clean === 'lichess player' ||
+    clean === 'live opponent' ||
+    clean === 'guest opponent' ||
+    clean === 'opponent' ||
+    clean === 'player' ||
+    clean === 'guest' ||
+    clean === 'waiting for friend...' ||
+    clean === 'connecting...' ||
+    clean === 'white' ||
+    clean === 'black' ||
     clean.startsWith('lichess_')
   );
 }
@@ -856,7 +909,7 @@ export function filterNamedOpenChallenges<
     if (
       typeof targetElo === 'number' &&
       typeof ch.rating === 'number' &&
-      Math.abs(ch.rating - targetElo) > 200
+      !isWithinFairEloBand(targetElo, ch.rating, MAX_MATCHMAKING_ELO_GAP)
     ) {
       return false;
     }
@@ -1269,24 +1322,42 @@ export function parseFicsStyle12Line(rawLine: string): FicsStyle12State | null {
 
 export function parseFicsGameEndLine(
   rawLine: string,
-): { winner: 'w' | 'b' | 'draw'; reason: string; aborted?: boolean } | null {
-  const m = rawLine.match(/\{Game\s+\d+\s+\([^)]+\)\s+([^}]+)\}\s*(1-0|0-1|1\/2-1\/2|\*)?/i);
+): {
+  gameNumber?: number;
+  whiteName?: string;
+  blackName?: string;
+  winner: 'w' | 'b' | 'draw';
+  reason: string;
+  aborted?: boolean;
+} | null {
+  const m = rawLine.match(
+    /\{Game\s+(\d+)\s+\(([^)]+)\)\s+([^}]+)\}\s*(1-0|0-1|1\/2-1\/2|\*)?/i,
+  );
   if (!m) return null;
-  const detail = m[1].trim();
-  const resultToken = m[2];
+  const gameNumber = parseInt(m[1], 10);
+  const vsMatch = m[2].trim().match(/^([A-Za-z0-9_-]+)(?:\([^)]*\))?\s+vs\.\s+([A-Za-z0-9_-]+)(?:\([^)]*\))?$/i);
+  const whiteName = vsMatch?.[1];
+  const blackName = vsMatch?.[2];
+  const detail = m[3].trim();
+  const resultToken = m[4];
+  const base = {
+    ...(Number.isFinite(gameNumber) && gameNumber > 0 ? { gameNumber } : {}),
+    ...(whiteName ? { whiteName } : {}),
+    ...(blackName ? { blackName } : {}),
+  };
   if (/abort|adjourn/i.test(detail) || resultToken === '*') {
-    return { winner: 'draw', reason: detail, aborted: true };
+    return { ...base, winner: 'draw', reason: detail, aborted: true };
   }
-  if (resultToken === '1-0') return { winner: 'w', reason: detail };
-  if (resultToken === '0-1') return { winner: 'b', reason: detail };
+  if (resultToken === '1-0') return { ...base, winner: 'w', reason: detail };
+  if (resultToken === '0-1') return { ...base, winner: 'b', reason: detail };
   if (resultToken === '1/2-1/2' || /drawn|stalemate|repetition|insufficient/i.test(detail)) {
-    return { winner: 'draw', reason: detail };
+    return { ...base, winner: 'draw', reason: detail };
   }
   if (/white\s+(checkmated|resigns|forfeits)/i.test(detail)) {
-    return { winner: 'b', reason: detail };
+    return { ...base, winner: 'b', reason: detail };
   }
   if (/black\s+(checkmated|resigns|forfeits)/i.test(detail)) {
-    return { winner: 'w', reason: detail };
+    return { ...base, winner: 'w', reason: detail };
   }
   return null;
 }
@@ -1413,6 +1484,521 @@ export function formatOnlineTimeControl(
     category,
   };
 }
+
+export function stripPlatformFromText(raw: string | undefined | null): string {
+  if (!raw || typeof raw !== 'string') return '';
+  return raw
+    .replace(/\b(lichess|fics|playstrategy|chess\.com|openchess)\b\s*[·:-]?\s*/gi, '')
+    .replace(/^\s*opponent\b/i, 'Opponent')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+export function resolveOnlineEndOutcome(params: {
+  statusName?: string | null;
+  winnerSide?: string | null;
+  moveCount: number;
+  endReason?: string | null;
+  isDisconnect?: boolean;
+  disconnectedSide?: 'w' | 'b' | null;
+}): { winner: 'w' | 'b' | 'draw' | 'aborted'; aborted: boolean; reason: string } {
+  const statusLower = (params.statusName ?? '').trim().toLowerCase();
+  const reasonClean = stripPlatformFromText(params.endReason);
+  const wLower = (params.winnerSide ?? '').trim().toLowerCase();
+
+  if (
+    statusLower === 'aborted' ||
+    statusLower === 'nostart' ||
+    statusLower === 'adjourn' ||
+    statusLower === 'adjourned' ||
+    /abort|before (?:the )?(?:game started|first move)/i.test(reasonClean)
+  ) {
+    return {
+      winner: 'aborted',
+      aborted: true,
+      reason: reasonClean || 'Game aborted before starting',
+    };
+  }
+
+  if (params.isDisconnect) {
+    if (params.moveCount < 2) {
+      return {
+        winner: 'aborted',
+        aborted: true,
+        reason: 'Opponent left before game started',
+      };
+    }
+    const winSide: 'w' | 'b' = params.disconnectedSide === 'w' ? 'b' : 'w';
+    return {
+      winner: winSide,
+      aborted: false,
+      reason: reasonClean || 'Opponent disconnected',
+    };
+  }
+
+  if (wLower === 'w' || wLower === 'white') {
+    return {
+      winner: 'w',
+      aborted: false,
+      reason: reasonClean || 'White wins',
+    };
+  }
+  if (wLower === 'b' || wLower === 'black') {
+    return {
+      winner: 'b',
+      aborted: false,
+      reason: reasonClean || 'Black wins',
+    };
+  }
+
+  if (params.moveCount < 2 && !['draw', 'stalemate'].includes(statusLower)) {
+    return {
+      winner: 'aborted',
+      aborted: true,
+      reason: reasonClean || 'Game aborted before starting',
+    };
+  }
+
+  return {
+    winner: 'draw',
+    aborted: false,
+    reason: reasonClean || 'Game drawn',
+  };
+}
+
+export function parseFicsCreatingLine(rawLine: string): {
+  whiteName: string;
+  whiteRating?: number;
+  blackName: string;
+  blackRating?: number;
+} | null {
+  const m = rawLine.match(
+    /(?:Creating|Challenge):\s+([A-Za-z0-9_-]+)(?:\([^)]*\))?\s+\((?:\s*\++\s*|\s*-+\s*|\s*(\d{3,4})[PE*]?\s*)\)\s+([A-Za-z0-9_-]+)(?:\([^)]*\))?\s+\((?:\s*\++\s*|\s*-+\s*|\s*(\d{3,4})[PE*]?\s*)\)/i,
+  );
+  if (!m) return null;
+  const wR = m[2] ? Number(m[2]) : undefined;
+  const bR = m[4] ? Number(m[4]) : undefined;
+  return {
+    whiteName: m[1].trim(),
+    whiteRating: typeof wR === 'number' && wR >= 100 && wR <= 3500 ? wR : undefined,
+    blackName: m[3].trim(),
+    blackRating: typeof bR === 'number' && bR >= 100 && bR <= 3500 ? bR : undefined,
+  };
+}
+
+export function parseFicsFingerRatingLine(rawLine: string): {
+  category: 'standard' | 'blitz' | 'lightning';
+  rating: number;
+} | null {
+  const cleaned = rawLine.replace(/^(?:fics%\s*)+/i, '').trim();
+  const m = cleaned.match(/^(Blitz|Standard|Lightning)\s+(\d{3,4})\b/i);
+  if (!m) return null;
+  const rating = Number(m[2]);
+  if (!Number.isFinite(rating) || rating < 100 || rating > 3500) return null;
+  return {
+    category: m[1].toLowerCase() as 'standard' | 'blitz' | 'lightning',
+    rating,
+  };
+}
+
+export function isTimeControlCompatibleForFallback(
+  reqInitialSeconds: number,
+  reqIncrementSeconds: number,
+  hookInitialSeconds: number,
+  hookIncrementSeconds: number,
+): boolean {
+  const reqEst = reqInitialSeconds + 40 * reqIncrementSeconds;
+  const hookEst = hookInitialSeconds + 40 * hookIncrementSeconds;
+  const reqSpeed: 'bullet' | 'blitz' | 'rapid' =
+    reqEst < 180 ? 'bullet' : reqEst < 480 ? 'blitz' : 'rapid';
+  const hookSpeed: 'bullet' | 'blitz' | 'rapid' =
+    hookEst < 180 ? 'bullet' : hookEst < 480 ? 'blitz' : 'rapid';
+  if (reqSpeed !== hookSpeed) return false;
+  // Never match 30+ min / 180+180 classical marathons when searching normal rapid (10+0 / 15+10)
+  if (reqSpeed === 'rapid' && hookInitialSeconds > Math.max(1800, reqInitialSeconds * 2)) {
+    return false;
+  }
+  return true;
+}
+
+export function flushPendingBridgeMoves<T>(
+  queue: T[] | undefined,
+  isOpen: () => boolean,
+  sendMove: (item: T) => void,
+): T[] {
+  if (!queue || queue.length === 0) return [];
+  const remaining: T[] = [];
+  for (let i = 0; i < queue.length; i++) {
+    if (!isOpen()) {
+      return queue.slice(i);
+    }
+    sendMove(queue[i]);
+  }
+  return remaining;
+}
+
+export interface ParsedLichessStreamMeta {
+  gameId?: string;
+  rated?: boolean;
+  statusName?: string;
+  winnerSide?: string;
+  initialFen?: string;
+  whiteName?: string;
+  whiteRating?: number;
+  whiteTitle?: string;
+  blackName?: string;
+  blackRating?: number;
+  blackTitle?: string;
+  initialSeconds?: number;
+  incrementSeconds?: number;
+  whiteClockMs?: number;
+  blackClockMs?: number;
+  initialMovesUci: string[];
+}
+
+export function parseLichessGameStreamInitial(rawInput: string): ParsedLichessStreamMeta | null {
+  const firstLine = rawInput
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find(Boolean);
+  if (!firstLine) return null;
+  try {
+    const data = JSON.parse(firstLine) as Record<string, any>;
+    if (!data || typeof data !== 'object') return null;
+
+    const extractSeat = (seat: any) => {
+      if (!seat || typeof seat !== 'object') return {};
+      const userObj = seat.user && typeof seat.user === 'object' ? seat.user : null;
+      const rawName =
+        (typeof userObj?.name === 'string' && userObj.name.trim()) ||
+        (typeof userObj?.username === 'string' && userObj.username.trim()) ||
+        (typeof seat.name === 'string' && seat.name.trim()) ||
+        (typeof seat.userId === 'string' && seat.userId.trim()) ||
+        undefined;
+      const cleanName =
+        rawName && !/^(anonymous|lichess)$/i.test(rawName) ? rawName : undefined;
+      const rating =
+        typeof seat.rating === 'number' && Number.isFinite(seat.rating) && seat.rating >= 100
+          ? Math.round(seat.rating)
+          : undefined;
+      const title =
+        typeof userObj?.title === 'string' && userObj.title.trim()
+          ? userObj.title.trim()
+          : undefined;
+      return { name: cleanName, rating, title };
+    };
+
+    const white = extractSeat(data.players?.white);
+    const black = extractSeat(data.players?.black);
+    const statusName =
+      typeof data.status === 'object'
+        ? typeof data.status?.name === 'string'
+          ? data.status.name
+          : undefined
+        : typeof data.status === 'string'
+          ? data.status
+          : undefined;
+    const winnerSide =
+      typeof data.winner === 'string' ? data.winner : undefined;
+
+    const clockInit =
+      typeof data.clock?.initial === 'number' && Number.isFinite(data.clock.initial)
+        ? Math.round(data.clock.initial)
+        : undefined;
+    const clockInc =
+      typeof data.clock?.increment === 'number' && Number.isFinite(data.clock.increment)
+        ? Math.round(data.clock.increment)
+        : undefined;
+
+    const whiteClockMs =
+      typeof data.wc === 'number' && Number.isFinite(data.wc)
+        ? Math.max(0, Math.round(data.wc * 1000))
+        : typeof data.clock?.white === 'number'
+          ? Math.max(0, Math.round(data.clock.white * 1000))
+          : undefined;
+    const blackClockMs =
+      typeof data.bc === 'number' && Number.isFinite(data.bc)
+        ? Math.max(0, Math.round(data.bc * 1000))
+        : typeof data.clock?.black === 'number'
+          ? Math.max(0, Math.round(data.clock.black * 1000))
+          : undefined;
+
+    const initialMovesUci =
+      typeof data.moves === 'string' && data.moves.trim()
+        ? data.moves
+            .trim()
+            .split(/\s+/)
+            .filter((u: string) => /^[a-h][1-8][a-h][1-8][qrbn]?$/.test(u))
+        : [];
+
+    return {
+      gameId: typeof data.id === 'string' ? data.id : undefined,
+      rated: typeof data.rated === 'boolean' ? data.rated : undefined,
+      statusName,
+      winnerSide,
+      initialFen: typeof data.initialFen === 'string' ? data.initialFen : undefined,
+      whiteName: white.name,
+      whiteRating: white.rating,
+      whiteTitle: white.title,
+      blackName: black.name,
+      blackRating: black.rating,
+      blackTitle: black.title,
+      initialSeconds: clockInit,
+      incrementSeconds: clockInc,
+      whiteClockMs,
+      blackClockMs,
+      initialMovesUci,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export type OpponentPresenceStatus = 'joining' | 'active' | 'disconnected';
+
+export function resolveOnlineSignalQuality(
+  lagMs: number | null | undefined,
+  connected: boolean,
+): {
+  bars: 0 | 1 | 2 | 3 | 4;
+  label: 'Offline' | 'Poor' | 'Fair' | 'Good' | 'Excellent';
+  color: string;
+  lagText: string;
+} {
+  if (!connected) {
+    return { bars: 0, label: 'Offline', color: '#E06C5A', lagText: 'Offline' };
+  }
+  if (typeof lagMs !== 'number' || !Number.isFinite(lagMs) || lagMs <= 0) {
+    return { bars: 4, label: 'Good', color: '#81B64C', lagText: 'Connected' };
+  }
+  const rounded = Math.round(lagMs);
+  if (rounded <= 90) {
+    return { bars: 4, label: 'Excellent', color: '#81B64C', lagText: `${rounded}ms` };
+  }
+  if (rounded <= 220) {
+    return { bars: 3, label: 'Good', color: '#81B64C', lagText: `${rounded}ms` };
+  }
+  if (rounded <= 450) {
+    return { bars: 2, label: 'Fair', color: '#E59A28', lagText: `${rounded}ms` };
+  }
+  return { bars: 1, label: 'Poor', color: '#E06C5A', lagText: `${rounded}ms` };
+}
+
+export function computeLiveInterpolatedClockMs(params: {
+  baseWhiteClockMs: number;
+  baseBlackClockMs: number;
+  syncedAtMs: number;
+  nowMs: number;
+  turn: 'w' | 'b';
+  running: boolean;
+}): { whiteMs: number; blackMs: number } {
+  const safeW = Math.max(0, params.baseWhiteClockMs);
+  const safeB = Math.max(0, params.baseBlackClockMs);
+  if (!params.running) {
+    return { whiteMs: safeW, blackMs: safeB };
+  }
+  const elapsed = Math.max(0, params.nowMs - params.syncedAtMs);
+  if (params.turn === 'w') {
+    return { whiteMs: Math.max(0, safeW - elapsed), blackMs: safeB };
+  }
+  return { whiteMs: safeW, blackMs: Math.max(0, safeB - elapsed) };
+}
+
+export function formatHighPrecisionClock(ms: number): string {
+  const safeMs = Math.max(0, ms);
+  if (safeMs === 0) return '0:00.0';
+  if (safeMs < 20_000) {
+    const tenthsTotal = Math.floor(safeMs / 100);
+    const secs = Math.floor(tenthsTotal / 10);
+    const tenths = tenthsTotal % 10;
+    return `0:${secs.toString().padStart(2, '0')}.${tenths}`;
+  }
+  const totalSeconds = Math.ceil(safeMs / 1000);
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+export function formatOnlinePlayerDisplay(params: {
+  name?: string | null;
+  rating?: number;
+  connected?: boolean;
+  isSelf?: boolean;
+}): { displayName: string; ratingBadge: string | null; isGuest: boolean } {
+  const raw = stripPlatformFromText(params.name) || '';
+  const rawLower = raw.trim().toLowerCase();
+  if (!params.connected && (rawLower === 'connecting...' || rawLower === 'waiting for friend...')) {
+    return {
+      displayName: raw.trim(),
+      ratingBadge: null,
+      isGuest: false,
+    };
+  }
+  const placeholder =
+    isPlaceholderPlayerUsername(params.name) || isPlaceholderPlayerUsername(raw);
+  const cleanName = placeholder ? 'Guest Opponent' : raw;
+  const ratingBadge =
+    typeof params.rating === 'number' && Number.isFinite(params.rating) && params.rating >= 100
+      ? `(${Math.round(params.rating)})`
+      : params.connected || params.isSelf
+        ? '(Unrated)'
+        : null;
+  return {
+    displayName: cleanName,
+    ratingBadge,
+    isGuest: placeholder || /^guest/i.test(cleanName),
+  };
+}
+
+export function formatOpponentPresenceText(params: {
+  status: OpponentPresenceStatus;
+  goneSeconds?: number | null;
+  isOpponentTurn?: boolean;
+  moveCount?: number;
+}): { label: string; tone: 'good' | 'warn' | 'bad' } {
+  if (params.status === 'disconnected') {
+    const secs =
+      typeof params.goneSeconds === 'number' && params.goneSeconds > 0
+        ? ` (${Math.ceil(params.goneSeconds)}s)`
+        : '';
+    return { label: `Offline${secs}`, tone: 'bad' };
+  }
+  if (params.status === 'joining') {
+    return { label: 'Joining...', tone: 'warn' };
+  }
+  if (params.isOpponentTurn) {
+    return {
+      label: (params.moveCount ?? 0) === 0 ? 'Waiting to move' : 'Thinking...',
+      tone: 'good',
+    };
+  }
+  return { label: 'Online', tone: 'good' };
+}
+
+export function resolveLichessSeatAndReadiness(params: {
+  hookColor?: 'white' | 'black';
+  hookOpponentName?: string | null;
+  whiteName?: string | null;
+  blackName?: string | null;
+  knownColor?: 'w' | 'b';
+  crowdWhite?: boolean;
+  crowdBlack?: boolean;
+  plyCount?: number;
+  elapsedMs?: number;
+  maxWaitMs?: number;
+}): {
+  status: 'ready' | 'waiting' | 'ambiguous' | 'ghost';
+  humanColor?: 'w' | 'b';
+  opponentPresent: boolean;
+} {
+  let humanColor: 'w' | 'b' | undefined = params.knownColor;
+  const hookOppLower = (params.hookOpponentName ?? '').trim().toLowerCase();
+  const wClean = (params.whiteName ?? '').trim();
+  const bClean = (params.blackName ?? '').trim();
+  const wValid = Boolean(wClean && !isPlaceholderPlayerUsername(wClean));
+  const bValid = Boolean(bClean && !isPlaceholderPlayerUsername(bClean));
+
+  if (!humanColor) {
+    if (params.hookColor === 'white') humanColor = 'b';
+    else if (params.hookColor === 'black') humanColor = 'w';
+    else if (hookOppLower && wValid && wClean.toLowerCase() === hookOppLower) humanColor = 'b';
+    else if (hookOppLower && bValid && bClean.toLowerCase() === hookOppLower) humanColor = 'w';
+    else if (wValid && !bValid) humanColor = 'b';
+    else if (bValid && !wValid) humanColor = 'w';
+    else if ((params.plyCount ?? 0) === 1) humanColor = 'b';
+    else if (
+      typeof params.crowdWhite === 'boolean' &&
+      typeof params.crowdBlack === 'boolean' &&
+      params.crowdWhite !== params.crowdBlack
+    ) {
+      // Our own join websocket sits on play/v6 while the other seat has not yet connected
+      humanColor = params.crowdWhite ? 'w' : 'b';
+    }
+  }
+
+  const bothConnected =
+    Boolean(params.crowdWhite && params.crowdBlack) || (params.plyCount ?? 0) >= 1;
+  const opponentPresent =
+    humanColor === 'w'
+      ? Boolean(params.crowdBlack) || (params.plyCount ?? 0) >= 1
+      : humanColor === 'b'
+        ? Boolean(params.crowdWhite) || (params.plyCount ?? 0) >= 1
+        : bothConnected;
+
+  if (humanColor && opponentPresent) {
+    return { status: 'ready', humanColor, opponentPresent: true };
+  }
+
+  const elapsed = params.elapsedMs ?? 0;
+  const maxWait = params.maxWaitMs ?? 1800;
+  if (elapsed >= maxWait) {
+    if (!humanColor) {
+      return { status: 'ambiguous', opponentPresent: false };
+    }
+    return { status: 'ghost', humanColor, opponentPresent: false };
+  }
+  // If both seats are already connected without an explicit color hint, wait up to ~1.4s for White's opening move before treating as ambiguous
+  const ambiguousCutoff = bothConnected ? Math.min(1450, maxWait) : Math.min(900, maxWait);
+  if (!humanColor && elapsed >= ambiguousCutoff) {
+    return { status: 'ambiguous', opponentPresent: false };
+  }
+
+  return {
+    status: 'waiting',
+    ...(humanColor ? { humanColor } : {}),
+    opponentPresent,
+  };
+}
+
+export function selectPreferredFicsRating(
+  ratings: { standard?: number; blitz?: number; lightning?: number },
+  initialSeconds: number,
+): number | undefined {
+  const isValid = (n?: number): n is number =>
+    typeof n === 'number' && Number.isFinite(n) && n >= 100 && n <= 3500;
+  const order: Array<number | undefined> =
+    initialSeconds >= 480
+      ? [ratings.standard, ratings.blitz, ratings.lightning]
+      : initialSeconds >= 180
+        ? [ratings.blitz, ratings.standard, ratings.lightning]
+        : [ratings.lightning, ratings.blitz, ratings.standard];
+  for (const val of order) {
+    if (isValid(val)) return Math.round(val);
+  }
+  return undefined;
+}
+
+export function isMatchCandidateEligible(params: {
+  playerElo: number;
+  opponentName?: string | null;
+  opponentRating?: number;
+  requireNamedRated: boolean;
+  maxEloGap?: number;
+}): boolean {
+  const gap = params.maxEloGap ?? MAX_MATCHMAKING_ELO_GAP;
+  const cleanName = (params.opponentName ?? '').trim();
+  const hasRealRating =
+    typeof params.opponentRating === 'number' &&
+    Number.isFinite(params.opponentRating) &&
+    params.opponentRating >= 100;
+
+  if (params.requireNamedRated) {
+    if (isPlaceholderPlayerUsername(cleanName) || /^guest/i.test(cleanName)) {
+      return false;
+    }
+    if (!hasRealRating) {
+      return false;
+    }
+  }
+
+  if (hasRealRating) {
+    return isWithinFairEloBand(params.playerElo, params.opponentRating as number, gap);
+  }
+  return true;
+}
+
+
+
 
 
 

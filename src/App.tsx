@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { Color } from 'chess.js';
 import {
   Home,
@@ -12,6 +12,7 @@ import {
   Palette,
   Menu,
   ChevronRight,
+  ChevronDown,
   Flame,
   Monitor,
   Binoculars,
@@ -20,6 +21,8 @@ import {
   User,
   MessageSquare,
   Trophy,
+  Search,
+  LogOut,
 } from 'lucide-react';
 import { setSoundMuted } from './chess/sound';
 import { DEFAULT_PREP_PLAN } from './chess/content';
@@ -64,20 +67,19 @@ import { StreakView } from './components/StreakView';
 import { MessagesView } from './components/MessagesView';
 import { LeaderboardView } from './components/LeaderboardView';
 import { PlayerProfileModal } from './components/PlayerProfileModal';
+import {
+  BrandPawnIcon,
+  NavBotsIcon,
+  NavFriendsIcon,
+  NavLearnIcon,
+  NavPlayIcon,
+  NavPuzzlesIcon,
+  NavReviewIcon,
+  NavWatchIcon,
+} from './components/ChessIcons';
 
 function OpenChessLogo({ sizeClass = 'w-7 h-7' }: { sizeClass?: string }) {
-  return (
-    <svg viewBox="0 0 28 28" className={`${sizeClass} shrink-0`} aria-hidden="true">
-      <rect width="28" height="28" rx="6" fill="#81B64C" />
-      <rect x="0" y="24" width="28" height="4" rx="2" fill="#457524" opacity="0.55" />
-      <circle cx="14" cy="8.5" r="3.2" fill="#FFFFFF" />
-      <path
-        d="M11 12.2c.8-.5 5.2-.5 6 0l-1.1 5.2c1.4 1 2.4 2.3 2.6 3.9H9.5c.2-1.6 1.2-2.9 2.6-3.9L11 12.2z"
-        fill="#FFFFFF"
-      />
-      <rect x="8" y="21.8" width="12" height="2.2" rx="1.1" fill="#FFFFFF" />
-    </svg>
-  );
+  return <BrandPawnIcon className={`${sizeClass} shrink-0`} />;
 }
 
 export default function App() {
@@ -141,6 +143,7 @@ function AppContent() {
   };
   const [muted, setMuted] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [desktopMoreOpen, setDesktopMoreOpen] = useState(false);
   const [playIsActive, setPlayIsActive] = useState(false);
   const [pendingNavTab, setPendingNavTab] = useState<NavTab | null>(null);
   const [newGameTimeId, setNewGameTimeId] = useState<string>('10+0');
@@ -475,21 +478,31 @@ function AppContent() {
     navigateTo('review', true);
   };
 
-  const desktopNavItems: { id: NavTab; label: string; icon: typeof Swords }[] = [
+  const desktopPrimaryNavItems: {
+    id: NavTab;
+    label: string;
+    renderIcon: () => ReactNode;
+  }[] = [
+    { id: 'play', label: 'Play', renderIcon: () => <NavPlayIcon className="w-[26px] h-[26px] shrink-0" /> },
+    { id: 'puzzles', label: 'Puzzles', renderIcon: () => <NavPuzzlesIcon className="w-[26px] h-[26px] shrink-0" /> },
+    { id: 'learn', label: 'Learn', renderIcon: () => <NavLearnIcon className="w-[26px] h-[26px] shrink-0" /> },
+    { id: 'review', label: 'Review', renderIcon: () => <NavReviewIcon className="w-[26px] h-[26px] shrink-0" /> },
+    { id: 'watch', label: 'Watch', renderIcon: () => <NavWatchIcon className="w-[26px] h-[26px] shrink-0" /> },
+    { id: 'friends', label: 'Friends', renderIcon: () => <NavFriendsIcon className="w-[26px] h-[26px] shrink-0" /> },
+  ];
+
+  const desktopSecondaryNavItems: { id: NavTab; label: string; icon: typeof Swords }[] = [
     { id: 'home', label: 'Home', icon: Home },
-    { id: 'profile', label: 'Profile', icon: User },
-    { id: 'play', label: 'Play', icon: Swords },
-    { id: 'bots', label: 'Bots', icon: Monitor },
-    { id: 'friends', label: 'Friends', icon: Users },
+    { id: 'bots', label: 'Play Bots', icon: Monitor },
     { id: 'messages', label: 'Messages', icon: MessageSquare },
     { id: 'leaderboard', label: 'Leaderboard', icon: Trophy },
-    { id: 'puzzles', label: 'Puzzles', icon: Puzzle },
-    { id: 'learn', label: 'Learn', icon: BookOpen },
-    { id: 'watch', label: 'Watch Live', icon: Binoculars },
-    { id: 'review', label: 'Game Review', icon: SearchCheck },
     { id: 'prep', label: 'Sharping', icon: CalendarCheck2 },
     { id: 'themes', label: 'Themes', icon: Palette },
   ];
+
+  const desktopSecondaryActive = desktopSecondaryNavItems.some(
+    (item) => item.id !== 'home' && item.id === activeTab,
+  );
 
   // Exact Chess.com Bottom 5-Tab Bar: Home | Puzzles | Learn | Watch | More
   const mobilePrimaryTabs: {
@@ -521,38 +534,25 @@ function AppContent() {
 
   return (
     <div className="min-h-dvh bg-[#302E2B] text-white flex flex-col lg:flex-row">
-      {/* Desktop Left Sidebar Rail */}
-      <aside className="hidden lg:flex lg:w-52 xl:w-56 lg:sticky lg:top-0 lg:h-dvh lg:overflow-y-auto bg-[#262421] border-r border-white/[0.06] flex-col justify-between shrink-0 p-3">
-        <div className="space-y-4">
-          <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
-            <a
-              href="#home"
-              onClick={(e) => {
-                e.preventDefault();
-                navigateTo('home');
-              }}
-              className="flex items-center gap-2.5 whitespace-nowrap"
-            >
-              <OpenChessLogo />
-              <span className="text-lg font-extrabold tracking-tight font-display text-white">
-                OpenChess
-              </span>
-            </a>
-            <button
-              type="button"
-              onClick={() => navigateTo('streak')}
-              title={`Daily streak: ${dailyStreak.days} day${dailyStreak.days === 1 ? '' : 's'} opened (Best: ${dailyStreak.bestDays})`}
-              aria-label={`Daily streak ${dailyStreak.days} days`}
-              className="flex items-center gap-1 px-2 py-0.5 rounded bg-[#393734] hover:bg-[#43403C] text-xs font-mono font-bold text-[#F7C045] tabular-nums shrink-0 cursor-pointer"
-            >
-              <Flame className="w-3.5 h-3.5 fill-[#F7C045]" />
-              <span>{dailyStreak.days}</span>
-            </button>
-          </div>
+      {/* Desktop Left Sidebar Rail — Authentic Flush #262421 Rail */}
+      <aside className="hidden lg:flex lg:w-[160px] lg:sticky lg:top-0 lg:h-dvh lg:overflow-y-auto bg-[#262421] flex-col justify-between shrink-0 py-2">
+        <div>
+          <a
+            href="#home"
+            onClick={(e) => {
+              e.preventDefault();
+              navigateTo('home');
+            }}
+            className="flex items-center gap-1.5 px-3 py-2 mb-1 hover:opacity-95 whitespace-nowrap"
+          >
+            <OpenChessLogo sizeClass="w-6 h-6 shrink-0" />
+            <span className="text-[17.5px] font-black tracking-tight font-display text-white leading-none">
+              Open<span className="font-bold text-[#E6E5E2]">Chess</span>
+            </span>
+          </a>
 
-          <nav aria-label="Primary navigation" className="space-y-0.5">
-            {desktopNavItems.map((item) => {
-              const Icon = item.icon;
+          <nav aria-label="Primary navigation" className="flex flex-col">
+            {desktopPrimaryNavItems.map((item) => {
               const active =
                 activeTab === item.id ||
                 (item.id === 'play' && activeTab === 'new-game');
@@ -563,92 +563,197 @@ function AppContent() {
                   onClick={() =>
                     navigateTo(item.id === 'play' && !playIsActive ? 'new-game' : item.id)
                   }
-                  className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors whitespace-nowrap cursor-pointer ${
+                  className={`w-full h-[42px] flex items-center gap-2.5 px-3.5 text-[14px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
                     active
-                      ? 'bg-[#383530] text-white'
-                      : 'text-[#C3C0B8] hover:text-white hover:bg-white/5'
+                      ? 'bg-[#1F1E1B] text-white'
+                      : 'text-[#E7E6E4] hover:text-white hover:bg-black/20'
                   }`}
                 >
-                  <span className="flex items-center gap-3 min-w-0">
-                    <Icon
-                      className={`w-4 h-4 shrink-0 ${
-                        active ? 'text-[#81B64C]' : 'text-[#8E8980]'
-                      }`}
-                    />
-                    <span className="truncate">{item.label}</span>
-                  </span>
-                  {item.id === 'messages' && unreadDmCount > 0 && (
-                    <span className="px-1.5 py-0.5 rounded-full bg-[#81B64C] text-[#1D1B18] text-[10px] font-extrabold tabular-nums">
-                      {unreadDmCount > 99 ? '99+' : unreadDmCount}
-                    </span>
-                  )}
+                  {item.renderIcon()}
+                  <span className="truncate">{item.label}</span>
                 </button>
               );
             })}
+
+            <button
+              type="button"
+              onClick={() => setDesktopMoreOpen((prev) => !prev)}
+              aria-expanded={desktopMoreOpen || desktopSecondaryActive}
+              className={`w-full h-[40px] flex items-center justify-between gap-2 px-3.5 text-[14px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
+                desktopSecondaryActive
+                  ? 'bg-[#1F1E1B] text-white'
+                  : 'text-[#BEBDBB] hover:text-white hover:bg-black/20'
+              }`}
+            >
+              <span className="flex items-center gap-3 min-w-0">
+                <span className="w-[26px] flex items-center justify-center shrink-0">
+                  <ChevronDown
+                    className={`w-4 h-4 text-[#9B9A97] transition-transform ${
+                      desktopMoreOpen || desktopSecondaryActive ? 'rotate-180' : ''
+                    }`}
+                  />
+                </span>
+                <span className="truncate">More</span>
+              </span>
+              {unreadDmCount > 0 && !(desktopMoreOpen || desktopSecondaryActive) && (
+                <span className="w-2 h-2 rounded-full bg-[#81B64C] shrink-0" />
+              )}
+            </button>
+
+            {(desktopMoreOpen || desktopSecondaryActive) && (
+              <div className="bg-[#21201D] py-1">
+                {desktopSecondaryNavItems.map((item) => {
+                  const Icon = item.icon;
+                  const active = activeTab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => navigateTo(item.id)}
+                      className={`w-full h-[36px] flex items-center justify-between gap-2 pl-5 pr-3 text-[13px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
+                        active
+                          ? 'bg-[#302E2B] text-white'
+                          : 'text-[#B5B4B1] hover:text-white hover:bg-white/[0.04]'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2.5 min-w-0">
+                        {item.id === 'bots' ? (
+                          <NavBotsIcon className="w-4 h-4 shrink-0" />
+                        ) : (
+                          <Icon
+                            className={`w-4 h-4 shrink-0 ${
+                              active ? 'text-[#81B64C]' : 'text-[#8E8C88]'
+                            }`}
+                          />
+                        )}
+                        <span className="truncate">{item.label}</span>
+                      </span>
+                      {item.id === 'messages' && unreadDmCount > 0 && (
+                        <span className="px-1.5 py-0.5 rounded bg-[#81B64C] text-[#1D1B18] text-[10px] font-extrabold tabular-nums">
+                          {unreadDmCount > 99 ? '99+' : unreadDmCount}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </nav>
         </div>
 
-        <div className="space-y-2 pt-4 border-t border-white/10">
+        <div className="px-3 pb-1.5 space-y-2">
+          <button
+            type="button"
+            onClick={() => navigateTo('friends')}
+            className="w-full flex items-center gap-2.5 px-1.5 py-1.5 text-[13px] font-semibold text-[#9B9A97] hover:text-white transition-colors cursor-pointer"
+          >
+            <Search className="w-[18px] h-[18px] shrink-0" />
+            <span className="truncate">Search</span>
+          </button>
+
           {lichessSession ? (
-            <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => navigateTo('profile')}
+              title="Open Profile"
+              className="w-full flex items-center gap-2.5 px-1 py-1 rounded-[5px] hover:bg-white/[0.06] text-[13px] font-bold text-white cursor-pointer"
+            >
+              <PlayerAvatar
+                username={lichessSession.account.username}
+                avatarUrl={lichessSession.account.profile?.avatarUrl}
+                isCurrentUser
+                size={26}
+                rounded="rounded-[3px]"
+              />
+              <span className="truncate">{lichessSession.account.username}</span>
+            </button>
+          ) : (
+            <div className="space-y-1.5 pt-0.5">
               <button
                 type="button"
                 onClick={openAuthPage}
-                title="Account & Sync Settings"
-                className="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 rounded-lg bg-[#1E1C19] hover:bg-[#312E2A] text-xs font-semibold text-white cursor-pointer"
+                disabled={lichessConnecting}
+                className="w-full h-[36px] rounded-[5px] cc-btn-primary-sm text-[13px] font-extrabold text-white cursor-pointer"
               >
-                <PlayerAvatar
-                  username={lichessSession.account.username}
-                  avatarUrl={lichessSession.account.profile?.avatarUrl}
-                  isCurrentUser
-                  size={20}
-                  rounded="rounded-md"
-                />
-                <span className="truncate">{lichessSession.account.username}</span>
+                {lichessConnecting ? 'Signing in...' : 'Sign Up'}
               </button>
               <button
                 type="button"
-                onClick={disconnectLichess}
-                className="px-2.5 py-2 rounded-lg bg-[#1E1C19] hover:bg-[#CA3431]/20 text-[11px] font-semibold text-[#9E998F] hover:text-[#FF7D6B] shrink-0 cursor-pointer"
+                onClick={openAuthPage}
+                disabled={lichessConnecting}
+                className="w-full h-[34px] rounded-[5px] cc-btn-secondary text-[13px] font-bold text-[#DEDDD9] hover:text-white cursor-pointer"
               >
-                Sign Out
+                Log In
               </button>
             </div>
-          ) : (
-            <button
-              type="button"
-              onClick={openAuthPage}
-              disabled={lichessConnecting}
-              className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg bg-[#1E1C19] hover:bg-[#312E2A] text-xs font-semibold text-[#81B64C] cursor-pointer"
-            >
-              <span className="flex items-center gap-2 min-w-0">
-                <PlayerAvatar
-                  username="You"
-                  isCurrentUser
-                  size={24}
-                  rounded="rounded-md"
-                />
-                <span className="truncate">{lichessConnecting ? 'Signing in...' : 'Sign In'}</span>
-              </span>
-              <Globe className="w-3.5 h-3.5 shrink-0" />
-            </button>
           )}
 
-          <button
-            type="button"
-            onClick={toggleMute}
-            className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-[#1E1C19] hover:bg-[#312E2A] text-xs font-semibold text-[#C8C4BC] cursor-pointer"
-          >
-            <span className="flex items-center gap-2">
-              {muted ? (
-                <VolumeX className="w-3.5 h-3.5 text-[#FA412D]" />
-              ) : (
-                <Volume2 className="w-3.5 h-3.5 text-[#81B64C]" />
+          <div className="flex items-center justify-between pt-1 text-[#9B9A97]">
+            <button
+              type="button"
+              onClick={() => navigateTo('friends')}
+              aria-label="Friends"
+              title="Friends"
+              className="p-1 rounded hover:text-white hover:bg-white/[0.06] cursor-pointer"
+            >
+              <Users className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateTo('messages')}
+              aria-label="Messages"
+              title="Messages"
+              className="relative p-1 rounded hover:text-white hover:bg-white/[0.06] cursor-pointer"
+            >
+              <MessageSquare className="w-4 h-4" />
+              {unreadDmCount > 0 && (
+                <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-[#81B64C]" />
               )}
-              <span>Sound Effects</span>
-            </span>
-            <span className="text-white">{muted ? 'Muted' : 'On'}</span>
-          </button>
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateTo('streak')}
+              aria-label={`Daily streak ${dailyStreak.days} days`}
+              title={`Daily streak: ${dailyStreak.days} days`}
+              className="p-1 rounded hover:text-[#F7C045] hover:bg-white/[0.06] cursor-pointer"
+            >
+              <Flame className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={toggleMute}
+              aria-label={muted ? 'Unmute Sound' : 'Mute Sound'}
+              title={muted ? 'Sound Muted' : 'Sound On'}
+              className="p-1 rounded hover:text-white hover:bg-white/[0.06] cursor-pointer"
+            >
+              {muted ? (
+                <VolumeX className="w-4 h-4 text-[#FA412D]" />
+              ) : (
+                <Volume2 className="w-4 h-4" />
+              )}
+            </button>
+            {lichessSession ? (
+              <button
+                type="button"
+                onClick={disconnectLichess}
+                aria-label="Sign Out"
+                title="Sign Out"
+                className="p-1 rounded hover:text-[#FF7D6B] hover:bg-[#CA3431]/15 cursor-pointer"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={openThemeStudio}
+                aria-label="Board Themes"
+                title="Board Themes"
+                className="p-1 rounded hover:text-white hover:bg-white/[0.06] cursor-pointer"
+              >
+                <Palette className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </div>
       </aside>
 
@@ -730,6 +835,8 @@ function AppContent() {
           {activeTab === 'home' && (
             <HomeView
               stats={stats}
+              dailyStreakDays={dailyStreak.days}
+              boardTheme={boardTheme}
               lichessSession={lichessSession}
               lichessConnecting={lichessConnecting}
               lastSyncedAt={lastSyncedAt}
@@ -786,6 +893,7 @@ function AppContent() {
           {activeTab === 'new-game' && (
             <NewGameView
               initialTimeId={newGameTimeId}
+              boardTheme={boardTheme}
               lichessSession={lichessSession}
               lichessConnecting={lichessConnecting}
               lichessAuthError={lichessAuthError}
@@ -801,6 +909,9 @@ function AppContent() {
           )}
           {activeTab === 'bots' && (
             <BotsView
+              boardTheme={boardTheme}
+              playerUsername={lichessSession?.account.username ?? loadGuestPlayerName()}
+              playerAvatarUrl={lichessSession?.account.profile?.avatarUrl}
               onBack={() => navigateTo('home')}
               onStartMatch={({ botId, botElo, timeId, color, coachGuard }) =>
                 handleQuickPlay({ botId, botElo, timeId, mode: 'bot', color, coachGuard })

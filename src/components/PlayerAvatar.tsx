@@ -25,299 +25,88 @@ export interface PlayerAvatarProps {
 }
 
 /**
- * Authentic Chess.com-style Default Player Pawn Silhouette.
+ * Authentic default player pawn avatar (smooth 3D-shaded classic gray Staunton pawn on light #E6E6E6 square).
  * Displayed whenever a human player has not set their own custom photo.
  */
 function DefaultPawnAvatar({ title }: { title?: string }) {
   return (
     <svg
-      viewBox="0 0 80 80"
+      viewBox="0 0 100 100"
       className="w-full h-full block"
       role="img"
       aria-label={title || 'Default player avatar'}
     >
-      <rect width="80" height="80" fill="#DFDDD8" />
-      {/* Base shadow */}
-      <ellipse cx="40" cy="67.5" rx="22" ry="3.2" fill="#C4C1BA" />
-      {/* Pawn Body (Base + Stem + Collar + Head) */}
-      <path
-        d="M21 65.5 C21 60.5 26 57.5 31 55.5 C32.5 50 34 43 34.5 37.5 L30.5 37.5 C28.8 37.5 27.5 36.2 27.5 34.5 C27.5 32.8 28.8 31.5 30.8 31.5 L49.2 31.5 C51.2 31.5 52.5 32.8 52.5 34.5 C52.5 36.2 51.2 37.5 49.5 37.5 L45.5 37.5 C46 43 47.5 50 49 55.5 C54 57.5 59 60.5 59 65.5 Z"
-        fill="#9E9B95"
-      />
-      {/* Left 3D highlight on stem & base */}
-      <path
-        d="M23.5 65.5 C23.5 61.2 27.5 58.5 32.2 56.5 C33.8 50.8 35.2 43.5 35.8 37.5 L31.5 37.5 C30 37.5 29 36.5 29 34.8 C29 33.2 30 32.2 31.5 32.2 L39.5 32.2 L39.5 65.5 Z"
-        fill="#B7B4AE"
-      />
-      {/* Pawn Head */}
-      <circle cx="40" cy="21.5" r="10.5" fill="#9E9B95" />
-      {/* Pawn Head 3D Left Highlight */}
-      <path
-        d="M40 11 A10.5 10.5 0 0 0 29.5 21.5 A10.5 10.5 0 0 0 40 32 Z"
-        fill="#B7B4AE"
-      />
-      {/* Bottom pedestal rim */}
-      <rect x="19.5" y="63.5" width="41" height="4.5" rx="2.2" fill="#8C8983" />
-      <rect x="19.5" y="63.5" width="20.5" height="4.5" rx="2.2" fill="#A7A49E" />
-    </svg>
-  );
-}
-
-function hashUsernameSeed(name: string): number {
-  let h = 2166136261;
-  const clean = (name || 'player').trim().toLowerCase();
-  for (let i = 0; i < clean.length; i++) {
-    h ^= clean.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return (h >>> 0) & 0x7fffffff;
-}
-
-const STUDIO_BACKDROPS: Array<[string, string, string]> = [
-  ['#2A3E2E', '#18241B', '#81B64C'],
-  ['#24354A', '#141E2B', '#59A5D8'],
-  ['#422E24', '#241812', '#E59A28'],
-  ['#3B2842', '#1F1524', '#B87DE8'],
-  ['#223D3C', '#122221', '#4ECDC4'],
-  ['#44262A', '#261417', '#E06C75'],
-  ['#3A3522', '#201D12', '#F7C045'],
-  ['#283044', '#161B26', '#7D92D6'],
-  ['#2E3B2B', '#192117', '#AEE076'],
-  ['#453029', '#261A16', '#E88D67'],
-  ['#253842', '#131E24', '#63B8D4'],
-  ['#3D2B38', '#21171E', '#D97BA6'],
-];
-
-const SKIN_PALETTES: Array<{ base: string; shadow: string; ear: string }> = [
-  { base: '#F4D2B8', shadow: '#DFB393', ear: '#E6BC9E' },
-  { base: '#E8BC96', shadow: '#CE9B72', ear: '#D6A67F' },
-  { base: '#D49E73', shadow: '#B87E53', ear: '#C1895E' },
-  { base: '#BA7D52', shadow: '#9A6039', ear: '#A66A42' },
-  { base: '#8D5837', shadow: '#6E4023', ear: '#7A492B' },
-  { base: '#6B4129', shadow: '#4F2D1A', ear: '#5B3520' },
-  { base: '#F7DEC8', shadow: '#E2BFA3', ear: '#EBCAB0' },
-  { base: '#C68B59', shadow: '#A66E3F', ear: '#B37A4A' },
-];
-
-const HAIR_COLORS = [
-  '#1C1917',
-  '#2C221E',
-  '#4A3326',
-  '#6E472B',
-  '#9A6838',
-  '#B88648',
-  '#7C3626',
-  '#373A40',
-  '#232023',
-  '#593E2E',
-];
-
-const OUTFIT_COLORS: Array<{ main: string; trim: string }> = [
-  { main: '#253329', trim: '#81B64C' },
-  { main: '#1F2D3D', trim: '#59A5D8' },
-  { main: '#382924', trim: '#E59A28' },
-  { main: '#2E2538', trim: '#B87DE8' },
-  { main: '#1F3332', trim: '#4ECDC4' },
-  { main: '#3A2326', trim: '#E06C75' },
-  { main: '#2A2825', trim: '#F7C045' },
-  { main: '#232B3B', trim: '#8FA4E8' },
-];
-
-function HumanPlayerPortrait({ username }: { username: string }) {
-  const seed = hashUsernameSeed(username);
-  const [bgTop, bgBot, accent] =
-    STUDIO_BACKDROPS[(seed >>> 0) % STUDIO_BACKDROPS.length] ?? STUDIO_BACKDROPS[0];
-  const skin = SKIN_PALETTES[(seed >>> 3) % SKIN_PALETTES.length] ?? SKIN_PALETTES[0];
-  const hairColor = HAIR_COLORS[(seed >>> 6) % HAIR_COLORS.length] ?? HAIR_COLORS[0];
-  const outfit = OUTFIT_COLORS[(seed >>> 9) % OUTFIT_COLORS.length] ?? OUTFIT_COLORS[0];
-  const hairStyle = (seed >>> 12) % 6;
-  const outfitStyle = (seed >>> 15) % 4;
-  const hasGlasses = (seed >>> 18) % 4 === 0;
-  const gradId = `hp-bg-${(seed >>> 0) % 99991}`;
-
-  return (
-    <svg
-      viewBox="0 0 80 80"
-      className="w-full h-full block"
-      role="img"
-      aria-label={`${username} player portrait`}
-    >
       <defs>
-        <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor={bgTop} />
-          <stop offset="100%" stopColor={bgBot} />
+        <linearGradient id="oc-default-pawn-body" x1="20%" y1="12%" x2="82%" y2="92%">
+          <stop offset="0%" stopColor="#C8C8C8" />
+          <stop offset="46%" stopColor="#A6A6A6" />
+          <stop offset="100%" stopColor="#7F7F7F" />
+        </linearGradient>
+        <radialGradient id="oc-default-pawn-head" cx="38%" cy="32%" r="65%">
+          <stop offset="0%" stopColor="#D6D6D6" />
+          <stop offset="52%" stopColor="#A8A8A8" />
+          <stop offset="100%" stopColor="#828282" />
+        </radialGradient>
+        <linearGradient id="oc-default-pawn-base" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor="#B8B8B8" />
+          <stop offset="50%" stopColor="#9A9A9A" />
+          <stop offset="100%" stopColor="#7B7B7B" />
         </linearGradient>
       </defs>
-
-      {/* Studio Backdrop */}
-      <rect width="80" height="80" fill={`url(#${gradId})`} />
-      <circle cx="40" cy="42" r="31" fill={accent} opacity="0.11" />
-
-      {/* Back Hair for longer styles */}
-      {hairStyle === 2 && (
-        <path
-          d="M21 34 C19 48 20 62 24 68 L56 68 C60 62 61 48 59 34 Z"
-          fill={hairColor}
-        />
-      )}
-
-      {/* Shoulders & Attire */}
+      <rect width="100" height="100" fill="#E6E6E6" />
+      {/* Subtle contact shadow under base */}
+      <ellipse cx="50" cy="83.5" rx="26.5" ry="3.2" fill="#CECECE" />
+      {/* Smooth flared Staunton pawn body & curved dome base */}
       <path
-        d="M12 80 C13 62 24 55 40 55 C56 55 67 62 68 80 Z"
-        fill={outfit.main}
+        d="M50 38.5
+           C43.2 38.5 39.2 40.6 39.2 43.4
+           C39.2 45.4 40.8 46.8 42.6 47.4
+           C41.8 54.4 39.1 61.8 33.4 67.2
+           C28.2 71.8 24.5 75.4 24.5 79.6
+           C24.5 81.6 26.2 82.8 29.2 82.8
+           L70.8 82.8
+           C73.8 82.8 75.5 81.6 75.5 79.6
+           C75.5 75.4 71.8 71.8 66.6 67.2
+           C60.9 61.8 58.2 54.4 57.4 47.4
+           C59.2 46.8 60.8 45.4 60.8 43.4
+           C60.8 40.6 56.8 38.5 50 38.5 Z"
+        fill="url(#oc-default-pawn-body)"
       />
-      {/* Outfit Collar / Lapels */}
-      {outfitStyle === 0 ? (
-        <>
-          {/* Grandmaster Blazer + Shirt + Tie */}
-          <path d="M32 55 L40 69 L48 55 Z" fill="#F2EFE9" />
-          <path d="M38.5 58 L41.5 58 L42.5 72 L40 75 L37.5 72 Z" fill={outfit.trim} />
-          <path
-            d="M27 56 L36 72 M53 56 L44 72"
-            stroke={outfit.trim}
-            strokeWidth="1.6"
-            opacity="0.7"
-          />
-        </>
-      ) : outfitStyle === 1 ? (
-        <>
-          {/* Club Hoodie / Drawstrings */}
-          <path
-            d="M28 56 C32 63 48 63 52 56"
-            stroke={outfit.trim}
-            strokeWidth="2.2"
-            fill="none"
-          />
-          <line x1="35" y1="61" x2="35" y2="71" stroke="#EAE6DF" strokeWidth="1.5" strokeLinecap="round" />
-          <line x1="45" y1="61" x2="45" y2="71" stroke="#EAE6DF" strokeWidth="1.5" strokeLinecap="round" />
-        </>
-      ) : outfitStyle === 2 ? (
-        <>
-          {/* Crewneck / Varsity Trim */}
-          <path
-            d="M31 55.5 Q40 63 49 55.5"
-            stroke={outfit.trim}
-            strokeWidth="2.8"
-            fill="none"
-          />
-        </>
-      ) : (
-        <>
-          {/* Polo Collar */}
-          <path d="M31 55 L38 63 L40 59 Z" fill={outfit.trim} />
-          <path d="M49 55 L42 63 L40 59 Z" fill={outfit.trim} />
-        </>
-      )}
-
-      {/* Neck & Chin Shadow */}
-      <rect x="34" y="45" width="12" height="14" rx="5" fill={skin.shadow} />
-      <path d="M34 49 Q40 55 46 49 L46 56 L34 56 Z" fill={skin.base} opacity="0.85" />
-
-      {/* Ears */}
-      <circle cx="23.5" cy="37" r="4.2" fill={skin.ear} />
-      <circle cx="56.5" cy="37" r="4.2" fill={skin.ear} />
-
-      {/* Head / Face Shape */}
-      <rect x="24.5" y="19" width="31" height="32" rx="14.5" fill={skin.base} />
-      {/* Subtle Cheek/Jaw shading */}
+      {/* Gentle curved bottom rim highlight */}
       <path
-        d="M25 36 C25 45 32 51 40 51 C48 51 55 45 55 36 C55 43 48 48.5 40 48.5 C32 48.5 25 43 25 36 Z"
-        fill={skin.shadow}
+        d="M26.2 80.2 C34 78.6 66 78.6 73.8 80.2 C74.4 81.8 73.2 82.8 70.8 82.8 L29.2 82.8 C26.8 82.8 25.6 81.8 26.2 80.2 Z"
+        fill="url(#oc-default-pawn-base)"
         opacity="0.55"
       />
-
-      {/* Eyebrows */}
-      <path
-        d="M30 31.5 Q33.5 29.8 36.8 31.3 M43.2 31.3 Q46.5 29.8 50 31.5"
-        stroke={hairColor}
-        strokeWidth="1.9"
-        strokeLinecap="round"
-        fill="none"
-      />
-
-      {/* Eyes */}
-      <circle cx="33.5" cy="35.5" r="2.1" fill="#1E1B18" />
-      <circle cx="46.5" cy="35.5" r="2.1" fill="#1E1B18" />
-      <circle cx="32.9" cy="34.9" r="0.7" fill="#FFFFFF" />
-      <circle cx="45.9" cy="34.9" r="0.7" fill="#FFFFFF" />
-
-      {/* Optional Glasses */}
-      {hasGlasses && (
-        <g stroke="#E6E2DA" strokeWidth="1.35" fill="none" opacity="0.9">
-          <rect x="28.5" y="32.2" width="10" height="6.8" rx="2.2" />
-          <rect x="41.5" y="32.2" width="10" height="6.8" rx="2.2" />
-          <line x1="38.5" y1="35.2" x2="41.5" y2="35.2" />
-        </g>
-      )}
-
-      {/* Nose */}
-      <path
-        d="M40 35.5 L38.8 40.2 L41.2 40.6"
-        stroke={skin.shadow}
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill="none"
-      />
-
-      {/* Confident Smile */}
-      <path
-        d="M35.2 43.8 Q40 46.8 44.8 43.8"
-        stroke="#5A3424"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        fill="none"
-      />
-
-      {/* Hair Styles */}
-      {hairStyle === 0 && (
-        /* Classic Side-Part Grandmaster Cut */
-        <path
-          d="M23 33 C22 20 30 14 41 14 C51 14 58 20 57 33 C55 25 50 22 43 22 C35 22 28 25 23 33 Z"
-          fill={hairColor}
-        />
-      )}
-      {hairStyle === 1 && (
-        /* Textured Modern Crop / Curls */
-        <g fill={hairColor}>
-          <path d="M23 31 C22 19 30 14 40 14 C50 14 58 19 57 31 C53 23 27 23 23 31 Z" />
-          <circle cx="29" cy="21" r="5.5" />
-          <circle cx="36" cy="18.5" r="6" />
-          <circle cx="44" cy="18.5" r="6" />
-          <circle cx="51" cy="21" r="5.5" />
-        </g>
-      )}
-      {hairStyle === 2 && (
-        /* Long Wavy Frame */
-        <path
-          d="M22 36 C21 20 29 13 40 13 C51 13 59 20 58 36 C55 25 49 21 40 21 C31 21 25 25 22 36 Z"
-          fill={hairColor}
-        />
-      )}
-      {hairStyle === 3 && (
-        /* Swept Quiff */
-        <path
-          d="M23 32 C22 19 31 12 44 13 C55 14 58 21 57 32 C54 24 46 20 35 22 C28 23 25 27 23 32 Z"
-          fill={hairColor}
-        />
-      )}
-      {hairStyle === 4 && (
-        /* Center-Part Waves */
-        <path
-          d="M22.5 34 C22 19 30 14 40 14 C50 14 58 19 57.5 34 C54 24 45 21 40 24 C35 21 26 24 22.5 34 Z"
-          fill={hairColor}
-        />
-      )}
-      {hairStyle === 5 && (
-        /* Sleek Tapered Cut */
-        <path
-          d="M24 30 C24 19 31 15 40 15 C49 15 56 19 56 30 C52 23 46 21 40 21 C34 21 28 23 24 30 Z"
-          fill={hairColor}
-        />
-      )}
+      {/* Smooth spherical pawn head */}
+      <circle cx="50" cy="27.2" r="12.6" fill="url(#oc-default-pawn-head)" />
+      {/* Soft top-left specular gleam on head */}
+      <ellipse cx="45.8" cy="22.8" rx="4.2" ry="2.8" transform="rotate(-24 45.8 22.8)" fill="#FFFFFF" opacity="0.22" />
     </svg>
   );
 }
+
+/**
+ * Unmatched Opponent silhouette avatar (dark charcoal bust on muted slate square).
+ */
+function DefaultOpponentAvatar({ title }: { title?: string }) {
+  return (
+    <svg
+      viewBox="0 0 100 100"
+      className="w-full h-full block"
+      role="img"
+      aria-label={title || 'Opponent avatar'}
+    >
+      <rect width="100" height="100" fill="#4B4845" />
+      <circle cx="50" cy="36" r="17" fill="#2A2825" />
+      <path
+        d="M18 90 C18 68 31 58 50 58 C69 58 82 68 82 90 L82 100 L18 100 Z"
+        fill="#2A2825"
+      />
+    </svg>
+  );
+}
+
 
 export function PlayerAvatar({
   username,
@@ -420,20 +209,27 @@ export function PlayerAvatar({
     }
   }
 
-  // 4. Explicit pawn preset or completely anonymous placeholder
+  // 4. Unmatched Opponent placeholder seat uses the dark bust silhouette
   const cleanName = (username ?? '').trim();
-  if (effectiveValue === 'pawn' || !cleanName || cleanName.toLowerCase() === 'waiting for friend...') {
+  const normalizedName = cleanName.toLowerCase();
+  const isOpponentPlaceholder =
+    normalizedName === 'opponent' ||
+    normalizedName === 'waiting for friend...' ||
+    normalizedName === 'searching...' ||
+    normalizedName === 'live opponent';
+
+  if (isOpponentPlaceholder) {
     return (
       <div style={sizeStyle} className={wrapperClass}>
-        <DefaultPawnAvatar title={cleanName ? `${cleanName} avatar` : 'Player default avatar'} />
+        <DefaultOpponentAvatar title={cleanName ? `${cleanName} avatar` : 'Opponent avatar'} />
       </div>
     );
   }
 
-  // 5. Distinct illustrated human player portrait seeded by username
+  // 5. All human players without a custom photo or explicit preset display the iconic shaded gray pawn
   return (
     <div style={sizeStyle} className={wrapperClass}>
-      <HumanPlayerPortrait username={cleanName} />
+      <DefaultPawnAvatar title={cleanName ? `${cleanName} avatar` : 'Default player avatar'} />
     </div>
   );
 }

@@ -10,9 +10,11 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  Cpu,
   Eye,
   FileText,
   Flame,
+  GitBranch,
   GraduationCap,
   History,
   Loader2,
@@ -22,11 +24,13 @@ import {
   RotateCcw,
   Search,
   Sparkles,
+  Undo2,
   UserSearch,
   Zap,
 } from 'lucide-react';
 import { ChessBoard, type BoardTheme } from './ChessBoard';
 import { EvaluationBar } from './EvaluationBar';
+import { EvalAdvantageChart } from './EvalAdvantageChart';
 import { BottomSheet } from './BottomSheet';
 import { CoachWorkspace } from './CoachWorkspace';
 import { BotAvatar } from './BotAvatar';
@@ -34,12 +38,21 @@ import { PlayerAvatar } from './PlayerAvatar';
 import { CoachPickerModal } from './CoachPickerModal';
 import { GameReviewSummaryScreen } from './GameReviewSummaryScreen';
 import { MOVE_QUALITY_META, MoveBadge } from './MoveBadge';
+import { NavReviewIcon } from './ChessIcons';
 import {
-  evaluateMovesBatch,
   extractGameSkeleton,
   summarizeGameReview,
   type EvaluatedMove,
 } from '../chess/engine';
+import {
+  REVIEW_SPEED_PRESETS,
+  formatEvalDisplay,
+  type ReviewSpeedPreset,
+} from '../chess/reviewAnalysis';
+import {
+  scanGameWithStockfish19,
+  type ScanProgressTelemetry,
+} from '../chess/stockfishWorker';
 import {
   FEATURED_MASTER_GAMES,
   buildReviewedGameRecord,
@@ -51,6 +64,7 @@ import {
 } from '../chess/analytics';
 import type { LichessUserGame } from '../chess/lichess';
 import type { LichessSession } from '../chess/useLichessAuth';
+import { playMoveSound } from '../chess/sound';
 import {
   buildSmartGameInsights,
   buildSmartMoveAnalysis,
@@ -135,7 +149,7 @@ function countMovesInPgn(pgn: string): number {
 function gameResultLabel(game: LichessUserGame): string {
   if (game.winner === 'white') return '1-0';
   if (game.winner === 'black') return '0-1';
-  if (game.status === 'draw' || game.status === 'stalemate') return '½-½';
+  if (game.status === 'draw' || game.status === 'stalemate') return '1/2-1/2';
   return '*';
 }
 
@@ -204,9 +218,24 @@ export function ReviewView({
 
   const [moves, setMoves] = useState<EvaluatedMove[]>([]);
   const [analyzedCount, setAnalyzedCount] = useState(0);
+  const [scanSpeed, setScanSpeed] = useState<ReviewSpeedPreset>('standard');
+  const [scanTelemetry, setScanTelemetry] = useState<ScanProgressTelemetry | null>(null);
   const [selectedPly, setSelectedPly] = useState(1);
   const [pgnError, setPgnError] = useState<string | null>(null);
   const [cloudArrow, setCloudArrow] = useState<{ from: string; to: string } | null>(null);
+
+  // What-If Variation Exploration state (drag any piece in review to test lines with live Stockfish 19)
+  const [explorationSteps, setExplorationSteps] = useState<
+    Array<{ fen: string; san: string; from: string; to: string }>
+  >([]);
+  const [liveExploreEval, setLiveExploreEval] = useState<{
+    evalCp: number;
+    mateIn: number | null;
+    bestMoveFrom: string;
+    bestMoveTo: string;
+    bestMoveSan: string;
+    depth: number;
+  } | null>(null);
 
   // Auto-Review (Play/Pause walkthrough from beginning to end) & Retry Move state
   const [autoPlaying, setAutoPlaying] = useState(false);
@@ -337,10 +366,11 @@ export function ReviewView({
   }, [viewStage]);
 
   const recordedIdRef = useRef<string | null>(null);
-  const runProgressiveAnalysis = useCallback((pgn: string) => {
+  const runProgressiveAnalysis = useCallback((pgn: string, preset: ReviewSpeedPreset) => {
     if (!pgn.trim()) {
       setMoves([]);
       setAnalyzedCount(0);
+      setScanTelemetry(null);
       setSelectedPly(0);
       return null;
     }
@@ -352,6 +382,7 @@ export function ReviewView({
       setPgnError('Could not parse PGN. Please check move formatting.');
       setMoves([]);
       setAnalyzedCount(0);
+      setScanTelemetry(null);
       setSelectedPly(0);
       return null;
     }
@@ -360,6 +391,7 @@ export function ReviewView({
       setPgnError('No valid moves found in PGN.');
       setMoves([]);
       setAnalyzedCount(0);
+      setScanTelemetry(null);
       setSelectedPly(0);
       return null;
     }
@@ -367,84 +399,57 @@ export function ReviewView({
     setPgnError(null);
     setMoves(skeleton);
     setAnalyzedCount(0);
+    setScanTelemetry({
+      analyzedPlies: 0,
+      totalPlies: skeleton.length,
+      analyzedPositions: 0,
+      totalPositions: skeleton.length + 1,
+      currentMoveSan: `${skeleton[0].moveNumber}. ${skeleton[0].san}`,
+      currentPly: 1,
+      activeDepth: REVIEW_SPEED_PRESETS[preset].depth,
+      nps: 0,
+      cacheHits: 0,
+      cloudHits: 0,
+      engineLabel: 'Analysis Engine',
+      preset,
+      isComplete: false,
+    });
     // Start Game Review at Move 1 (ply 1) so the user reviews from the beginning to the end!
     setSelectedPly(1);
     recordedIdRef.current = null;
 
-    let cancelled = false;
-    let index = 0;
-    const working = [...skeleton];
-    let timerId = 0;
+    const controller = new AbortController();
+    void scanGameWithStockfish19({
+      skeleton,
+      preset,
+      signal: controller.signal,
+      onMovesUpdate: (updated, telemetry) => {
+        if (controller.signal.aborted) return;
+        setMoves(updated);
+        setAnalyzedCount(telemetry.analyzedPlies);
+        setScanTelemetry(telemetry);
+      },
+    });
 
-    const step = () => {
-      if (cancelled || index >= working.length) return;
-      index = evaluateMovesBatch(working, index, 10, 12);
-      setMoves([...working]);
-      setAnalyzedCount(index);
-      if (index < working.length) {
-        timerId = window.setTimeout(step, 16);
-      } else {
-        // Refine positions with Stockfish 17 NNUE / Master Cloud Stockfish
-        const fensToQuery = working.slice(0, 48).map((m) => m.fenBefore);
-        void fetch('/api/engine/batch-eval', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fens: fensToQuery }),
-        })
-          .then((r) => (r.ok ? r.json() : null))
-          .then((data) => {
-            if (cancelled || !Array.isArray(data?.evaluations)) return;
-            const sfByFen = new Map<
-              string,
-              {
-                evalCp: number;
-                bestMoveSan: string;
-                bestMoveFrom: string;
-                bestMoveTo: string;
-              }
-            >();
-            for (const item of data.evaluations) {
-              if (item?.fen && item.bestMoveSan) {
-                sfByFen.set(item.fen, item);
-              }
-            }
-            const refined = working.map((m) => {
-              const sf = sfByFen.get(m.fenBefore);
-              if (!sf) return m;
-              return {
-                ...m,
-                bestMoveSan: sf.bestMoveSan || m.bestMoveSan,
-                bestMoveFrom: sf.bestMoveFrom || m.bestMoveFrom,
-                bestMoveTo: sf.bestMoveTo || m.bestMoveTo,
-              };
-            });
-            setMoves(refined);
-          })
-          .catch(() => {});
-      }
-    };
-
-    timerId = window.setTimeout(step, 16);
     return () => {
-      cancelled = true;
-      window.clearTimeout(timerId);
+      controller.abort();
     };
   }, []);
 
   // Only analyze & evaluate when user enters the board stage
   useEffect(() => {
     if (viewStage !== 'board' || !pgnInput.trim()) return;
-    const cancel = runProgressiveAnalysis(pgnInput);
+    const cancel = runProgressiveAnalysis(pgnInput, scanSpeed);
     return () => {
       cancel?.();
     };
-  }, [pgnInput, runProgressiveAnalysis, viewStage]);
+  }, [pgnInput, runProgressiveAnalysis, scanSpeed, viewStage]);
 
   const analysis = useMemo(() => summarizeGameReview(moves), [moves]);
 
   useEffect(() => {
     if (viewStage === 'board' && moves.length > 0 && analyzedCount === moves.length) {
-      const signature = `${pgnInput.slice(0, 64)}-${playerColor}-${moves.length}`;
+      const signature = `${pgnInput.slice(0, 64)}-${playerColor}-${moves.length}-${scanSpeed}`;
       if (recordedIdRef.current !== signature) {
         recordedIdRef.current = signature;
         const record = buildReviewedGameRecord(`rev-${Date.now()}`, moves, playerColor);
@@ -452,7 +457,7 @@ export function ReviewView({
         onReviewRecorded?.();
       }
     }
-  }, [analyzedCount, moves, onReviewRecorded, pgnInput, playerColor, viewStage]);
+  }, [analyzedCount, moves, onReviewRecorded, pgnInput, playerColor, scanSpeed, viewStage]);
 
   const currentMove =
     selectedPly > 0 && selectedPly <= analysis.moves.length
@@ -478,6 +483,8 @@ export function ReviewView({
     setCloudArrow(null);
     setForceShowBestArrow(false);
     setRetryState(null);
+    setExplorationSteps([]);
+    setLiveExploreEval(null);
   }, [selectedPly, pgnInput]);
 
   const moveRibbonRef = useRef<HTMLDivElement | null>(null);
@@ -532,10 +539,34 @@ export function ReviewView({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [analysis.moves.length, summaryOpen, viewStage]);
 
+  const prevSoundPlyRef = useRef<number>(selectedPly);
+  useEffect(() => {
+    const prev = prevSoundPlyRef.current;
+    prevSoundPlyRef.current = selectedPly;
+    if (viewStage !== 'board' || summaryOpen || prev === selectedPly) return;
+    if (selectedPly > prev) {
+      const moved = moves[selectedPly - 1];
+      if (moved) {
+        const san = moved.san ?? '';
+        playMoveSound({
+          capture: san.includes('x'),
+          check: san.includes('+') || san.includes('#'),
+          castle: san.startsWith('O-O'),
+          promotion: san.includes('='),
+          toSquare: moved.to,
+        });
+      }
+    } else if (selectedPly < prev) {
+      const undone = moves[prev - 1];
+      playMoveSound({ toSquare: undone?.from });
+    }
+  }, [moves, selectedPly, summaryOpen, viewStage]);
+
   const isRetryingCurrent =
     Boolean(retryState?.active && currentMove && retryState.ply === currentMove.ply && !retryState.solved);
+  const isExploring = !isRetryingCurrent && explorationSteps.length > 0;
 
-  const displayFen = useMemo(() => {
+  const basePositionFen = useMemo(() => {
     if (isRetryingCurrent && currentMove) {
       return currentMove.fenBefore;
     }
@@ -544,10 +575,23 @@ export function ReviewView({
     return new Chess().fen();
   }, [currentMove, isRetryingCurrent, moves, selectedPly]);
 
-  const displayEval = currentMove ? currentMove.evalCp : 25;
+  const displayFen = isExploring
+    ? explorationSteps[explorationSteps.length - 1].fen
+    : basePositionFen;
+
+  const displayEval = isExploring && liveExploreEval
+    ? liveExploreEval.evalCp
+    : currentMove
+      ? currentMove.evalCp
+      : 20;
+
+  const displayMateIn = isExploring && liveExploreEval
+    ? liveExploreEval.mateIn
+    : currentMove?.mateIn ?? null;
 
   const canRetryCurrentMove = Boolean(
-    currentMove &&
+    !isExploring &&
+      currentMove &&
       currentMove.bestMoveSan &&
       currentMove.bestMoveSan !== currentMove.san &&
       (currentMove.quality === 'Inaccuracy' ||
@@ -558,6 +602,7 @@ export function ReviewView({
 
   const showBestMoveArrow =
     !isRetryingCurrent &&
+    !isExploring &&
     currentMove &&
     currentMove.bestMoveSan !== currentMove.san &&
     (forceShowBestArrow ||
@@ -567,11 +612,14 @@ export function ReviewView({
       currentMove.quality === 'Blunder');
 
   const bestMoveArrow = useMemo(() => {
+    if (isExploring && liveExploreEval?.bestMoveFrom && liveExploreEval?.bestMoveTo) {
+      return { from: liveExploreEval.bestMoveFrom, to: liveExploreEval.bestMoveTo };
+    }
     if (showBestMoveArrow && currentMove?.bestMoveFrom && currentMove.bestMoveTo) {
       return { from: currentMove.bestMoveFrom, to: currentMove.bestMoveTo };
     }
     return null;
-  }, [currentMove, showBestMoveArrow]);
+  }, [currentMove, isExploring, liveExploreEval, showBestMoveArrow]);
 
   const extraArrows = useMemo(() => {
     const out: Array<{ from: string; to: string; color?: 'green' | 'red' | 'yellow' | 'blue' }> = [];
@@ -585,38 +633,100 @@ export function ReviewView({
     return out;
   }, [cloudArrow]);
 
-  const handleBoardRetryMove = useCallback(
+  const handlePlayVariationLine = useCallback((lineSan: string[], baseFen: string) => {
+    if (!lineSan.length) return;
+    setAutoPlaying(false);
+    setRetryState(null);
+    const probe = new Chess(baseFen);
+    const steps: Array<{ fen: string; san: string; from: string; to: string }> = [];
+    for (const san of lineSan.slice(0, 4)) {
+      try {
+        const played = probe.move(san);
+        if (!played) break;
+        steps.push({
+          fen: probe.fen(),
+          san: played.san,
+          from: played.from,
+          to: played.to,
+        });
+      } catch {
+        break;
+      }
+    }
+    if (steps.length > 0) {
+      setExplorationSteps(steps);
+    }
+  }, []);
+
+  const handleBoardMove = useCallback(
     (from: string, to: string, promotion: PieceSymbol = 'q'): boolean => {
-      if (!isRetryingCurrent || !currentMove) return false;
-      const probe = new Chess(currentMove.fenBefore);
+      // 1. Retry mistake puzzle mode
+      if (isRetryingCurrent && currentMove) {
+        const probe = new Chess(currentMove.fenBefore);
+        try {
+          const played = probe.move({ from, to, promotion });
+          if (!played) return false;
+          if (
+            played.san === currentMove.bestMoveSan ||
+            (from === currentMove.bestMoveFrom && to === currentMove.bestMoveTo)
+          ) {
+            playMoveSound({
+              capture: Boolean(played.captured) || played.flags.includes('e'),
+              check: probe.inCheck(),
+              castle: played.flags.includes('k') || played.flags.includes('q'),
+              promotion: Boolean(played.promotion),
+              toSquare: played.to,
+            });
+            setRetryState({
+              active: false,
+              ply: currentMove.ply,
+              solved: true,
+              feedback: `Spot on! ${currentMove.bestMoveSan} is the best move here.`,
+            });
+            setForceShowBestArrow(true);
+            return true;
+          }
+          setRetryState({
+            active: true,
+            ply: currentMove.ply,
+            solved: false,
+            feedback: `${played.san} isn't the strongest continuation—look for a move starting from ${currentMove.bestMoveFrom}.`,
+          });
+          return false;
+        } catch {
+          return false;
+        }
+      }
+
+      // 2. What-If Free Exploration mode directly from any reviewed position
+      const probe = new Chess(displayFen);
       try {
         const played = probe.move({ from, to, promotion });
         if (!played) return false;
-        if (
-          played.san === currentMove.bestMoveSan ||
-          (from === currentMove.bestMoveFrom && to === currentMove.bestMoveTo)
-        ) {
-          setRetryState({
-            active: false,
-            ply: currentMove.ply,
-            solved: true,
-            feedback: `Spot on! ${currentMove.bestMoveSan} is the best move here.`,
-          });
-          setForceShowBestArrow(true);
-          return true;
-        }
-        setRetryState({
-          active: true,
-          ply: currentMove.ply,
-          solved: false,
-          feedback: `${played.san} isn't the strongest continuation—look for a move starting from ${currentMove.bestMoveFrom}.`,
+        playMoveSound({
+          capture: Boolean(played.captured) || played.flags.includes('e'),
+          check: probe.inCheck(),
+          castle: played.flags.includes('k') || played.flags.includes('q'),
+          promotion: Boolean(played.promotion),
+          toSquare: played.to,
         });
-        return false;
+        setAutoPlaying(false);
+        setCloudArrow(null);
+        setExplorationSteps((prev) => [
+          ...prev,
+          {
+            fen: probe.fen(),
+            san: played.san,
+            from: played.from,
+            to: played.to,
+          },
+        ]);
+        return true;
       } catch {
         return false;
       }
     },
-    [currentMove, isRetryingCurrent],
+    [currentMove, displayFen, isRetryingCurrent],
   );
 
   const keyMoves = useMemo(
@@ -871,58 +981,96 @@ export function ReviewView({
   };
 
   // ============================================================================
-  // STAGE 1: FULL-SCREEN GAME SELECTION UI (SHOWN FIRST BEFORE THE CHESSBOARD)
+  // STAGE 1: CHESS.COM 2-COLUMN ANALYSIS BOARD + GAME REVIEW PICKER PANEL
   // ============================================================================
   if (viewStage === 'select') {
     return (
-      <div className="max-w-5xl mx-auto px-3 py-3 sm:p-5 pb-20 lg:pb-10 space-y-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="space-y-1">
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white font-display tracking-tight">
-              Game Review
-            </h1>
-            <p className="text-xs sm:text-sm text-[#B8B4AC]">
-              Choose a game below to step from Move 1 to the end with Smart Coach Analysis and accuracy scoring.
-            </p>
+      <div className="max-w-[1160px] mx-auto px-2.5 sm:px-4 py-3 pb-20 lg:pb-4">
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_390px] xl:grid-cols-[minmax(0,1fr)_420px] gap-4 lg:gap-5 items-start">
+          {/* Left Column (Desktop): Analysis Board + Eval Bar */}
+          <div className="hidden lg:flex flex-col gap-2 w-full max-w-[min(calc(100dvh-112px),760px)] mx-auto">
+            <div className="flex items-center gap-2.5 pl-[34px]">
+              <div className="w-[36px] h-[36px] rounded-[3px] bg-[#454340] flex items-center justify-center shrink-0">
+                <svg viewBox="0 0 36 36" className="w-6 h-6" aria-hidden="true">
+                  <circle cx="18" cy="13" r="6" fill="#2A2825" />
+                  <path d="M7 33c1.5-6.5 6-10 11-10s9.5 3.5 11 10H7z" fill="#2A2825" />
+                </svg>
+              </div>
+              <span className="text-[14px] font-bold text-white">Black</span>
+            </div>
+
+            <div className="flex items-stretch gap-2">
+              <EvaluationBar evalCp={30} orientation="w" />
+              <div className="flex-1 aspect-square pointer-events-none select-none">
+                <ChessBoard
+                  fen="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+                  theme={boardTheme}
+                  interactive={false}
+                  onMove={() => false}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2.5 pl-[34px]">
+              <PlayerAvatar
+                username={username || 'White'}
+                avatarUrl={userAvatarUrl}
+                isCurrentUser={Boolean(username)}
+                size={36}
+                rounded="rounded-[3px]"
+              />
+              <span className="text-[14px] font-bold text-white">
+                {username || 'White'}
+              </span>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setCoachModalOpen(true)}
-              className="min-h-[40px] px-3 py-2 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 text-xs font-bold text-white flex items-center gap-2 cursor-pointer"
-              title="Choose Review Coach"
-            >
-              <BotAvatar botId={activeCoach.id} size={22} />
-              <span>Coach: {activeCoach.name}</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleLoadSampleGame}
-              className="min-h-[40px] px-3.5 py-2 rounded-xl bg-[#393734] hover:bg-[#45423E] text-xs font-bold text-[#E6E2DA] cursor-pointer whitespace-nowrap"
-            >
-              Sample Game
-            </button>
-          </div>
-        </div>
+          {/* Right Column: Flush #262421 Analysis / Game Review Panel */}
+          <aside className="w-full rounded-[5px] bg-[#262421] overflow-hidden flex flex-col lg:min-h-[min(calc(100dvh-2rem),836px)] shadow-[0_6px_22px_rgba(0,0,0,0.28)]">
+            {/* Flush Dark Header */}
+            <div className="h-[52px] bg-[#1F1E1B] px-4 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2">
+                <NavReviewIcon className="w-6 h-6 shrink-0" />
+                <h1 className="text-[17px] font-extrabold text-white font-display tracking-tight">
+                  Game Review
+                </h1>
+              </div>
 
-        <section className="rounded-2xl bg-[#21201D] border border-white/[0.08] p-4 sm:p-5 space-y-4">
-          {/* Source Tabs */}
-          <div className="flex flex-wrap items-center justify-between gap-2.5">
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setCoachModalOpen(true)}
+                  className="h-[32px] px-2.5 rounded-[5px] bg-[#2D2B28] hover:bg-[#3A3834] text-[11px] font-bold text-white flex items-center gap-1.5 cursor-pointer"
+                  title="Choose Review Coach"
+                >
+                  <BotAvatar botId={activeCoach.id} size={18} />
+                  <span className="truncate max-w-[90px]">{activeCoach.name}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLoadSampleGame}
+                  className="h-[32px] px-2.5 rounded-[5px] cc-btn-secondary text-[11px] font-extrabold text-white cursor-pointer whitespace-nowrap"
+                >
+                  Sample
+                </button>
+              </div>
+            </div>
+
+            {/* Flush 3-Tab Source Switcher */}
             <div
               role="tablist"
               aria-label="Game source"
-              className="grid grid-cols-3 w-full sm:w-auto sm:inline-flex rounded-xl bg-[#1A1917] p-1 gap-1 border border-white/[0.06]"
+              className="grid grid-cols-3 bg-[#1F1E1B] border-t border-white/[0.05] shrink-0"
             >
               <button
                 type="button"
                 role="tab"
                 aria-selected={pickerTab === 'mine'}
                 onClick={() => setPickerTab('mine')}
-                className={`min-h-[38px] px-1.5 sm:px-3.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-extrabold cursor-pointer flex items-center justify-center gap-1 sm:gap-1.5 transition-colors whitespace-nowrap min-w-0 ${
+                className={`py-2.5 px-1.5 text-[12px] font-bold cursor-pointer flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap min-w-0 ${
                   pickerTab === 'mine'
-                    ? 'bg-[#393734] text-white'
-                    : 'text-[#9E998F] hover:text-white'
+                    ? 'bg-[#262421] text-white'
+                    : 'text-[#9B9A97] hover:text-white'
                 }`}
               >
                 <History className="w-3.5 h-3.5 text-[#81B64C] shrink-0" />
@@ -933,13 +1081,13 @@ export function ReviewView({
                 role="tab"
                 aria-selected={pickerTab === 'player'}
                 onClick={() => setPickerTab('player')}
-                className={`min-h-[38px] px-1.5 sm:px-3.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-extrabold cursor-pointer flex items-center justify-center gap-1 sm:gap-1.5 transition-colors whitespace-nowrap min-w-0 ${
+                className={`py-2.5 px-1.5 text-[12px] font-bold cursor-pointer flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap min-w-0 ${
                   pickerTab === 'player'
-                    ? 'bg-[#393734] text-white'
-                    : 'text-[#9E998F] hover:text-white'
+                    ? 'bg-[#262421] text-white'
+                    : 'text-[#9B9A97] hover:text-white'
                 }`}
               >
-                <UserSearch className="w-3.5 h-3.5 text-[#81B64C] shrink-0" />
+                <UserSearch className="w-3.5 h-3.5 text-[#58A3D1] shrink-0" />
                 <span className="truncate">Search Player</span>
               </button>
               <button
@@ -947,184 +1095,183 @@ export function ReviewView({
                 role="tab"
                 aria-selected={pickerTab === 'pgn'}
                 onClick={() => setPickerTab('pgn')}
-                className={`min-h-[38px] px-1.5 sm:px-3.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-extrabold cursor-pointer flex items-center justify-center gap-1 sm:gap-1.5 transition-colors whitespace-nowrap min-w-0 ${
+                className={`py-2.5 px-1.5 text-[12px] font-bold cursor-pointer flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap min-w-0 ${
                   pickerTab === 'pgn'
-                    ? 'bg-[#393734] text-white'
-                    : 'text-[#9E998F] hover:text-white'
+                    ? 'bg-[#262421] text-white'
+                    : 'text-[#9B9A97] hover:text-white'
                 }`}
               >
-                <FileText className="w-3.5 h-3.5 text-[#81B64C] shrink-0" />
+                <FileText className="w-3.5 h-3.5 text-[#F7C045] shrink-0" />
                 <span className="truncate">Paste PGN</span>
               </button>
             </div>
 
-            {pickerTab === 'mine' && (
-              <button
-                type="button"
-                onClick={() => void refreshMyGames()}
-                disabled={myGamesLoading}
-                className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-white/10 text-xs font-bold text-[#C8C4BC] flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${myGamesLoading ? 'animate-spin' : ''}`} />
-                <span>Sync Games</span>
-              </button>
-            )}
-          </div>
-
-          {pickerTab === 'mine' && (
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="relative flex-1 min-w-[200px]">
-                  <Search className="w-4 h-4 text-[#9E998F] absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={gameSearchFilter}
-                    onChange={(e) => setGameSearchFilter(e.target.value)}
-                    placeholder="Filter by opponent, opening, or speed..."
-                    aria-label="Filter recent games"
-                    className="w-full min-h-[40px] pl-9 pr-3 py-2 rounded-xl bg-[#1A1917] border border-white/[0.08] text-xs text-white placeholder:text-[#847F76] focus:outline-none focus:border-[#81B64C]"
-                  />
-                </div>
-                <div className="inline-flex rounded-xl bg-[#1A1917] p-1 gap-0.5 border border-white/[0.06]">
-                  {(['all', 'win', 'loss', 'draw'] as const).map((f) => (
-                    <button
-                      key={f}
-                      type="button"
-                      onClick={() => setOutcomeFilter(f)}
-                      className={`min-h-[32px] px-3 py-1 rounded-lg text-xs font-bold cursor-pointer ${
-                        outcomeFilter === f
-                          ? 'bg-[#393734] text-white'
-                          : 'text-[#9E998F] hover:text-white'
-                      }`}
-                    >
-                      {f === 'all' ? 'All' : f === 'win' ? 'Wins' : f === 'loss' ? 'Losses' : 'Draws'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {myGamesLoading && myGames.length === 0 ? (
-                <div className="py-10 flex items-center justify-center gap-2 text-sm text-[#9E998F]">
-                  <Loader2 className="w-4 h-4 animate-spin text-[#81B64C]" />
-                  <span>Syncing your recent games...</span>
-                </div>
-              ) : filteredMyGames.length === 0 ? (
+            <div className="p-4 flex-1 flex flex-col gap-3.5 overflow-y-auto">
+              {pickerTab === 'mine' && (
                 <div className="space-y-3">
-                  <div className="p-4 rounded-xl bg-[#1A1917] border border-white/[0.06] text-xs sm:text-sm text-[#9E998F] flex flex-wrap items-center justify-between gap-3">
-                    <span>
-                      {myGames.length === 0
-                        ? username
-                          ? `No synced games found yet for ${username}. Select any featured master game below or look up any handle.`
-                          : 'Select any featured master game below to launch the interactive Stockfish Game Viewer, or play a match to save your own.'
-                        : 'No games match that filter.'}
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setPickerTab('player')}
-                        className="px-3.5 py-2 rounded-lg bg-[#393734] hover:bg-[#45423E] text-xs text-white font-bold cursor-pointer"
-                      >
-                        Search Player
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleLoadSampleGame}
-                        className="px-3.5 py-2 rounded-lg bg-[#81B64C] hover:bg-[#8EC556] text-xs text-white font-extrabold cursor-pointer"
-                      >
-                        Review Sample
-                      </button>
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1 min-w-0">
+                      <Search className="w-3.5 h-3.5 text-[#9B9A97] absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={gameSearchFilter}
+                        onChange={(e) => setGameSearchFilter(e.target.value)}
+                        placeholder="Filter opponent or opening..."
+                        aria-label="Filter recent games"
+                        className="w-full h-[38px] pl-8 pr-3 rounded-[6px] bg-[#1F1E1B] text-xs text-white placeholder:text-[#847F76] focus:outline-none focus:ring-1 focus:ring-[#81B64C]"
+                      />
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => void refreshMyGames()}
+                      disabled={myGamesLoading}
+                      aria-label="Sync Games"
+                      title="Sync Games"
+                      className="h-[38px] px-2.5 rounded-[6px] bg-[#363431] hover:bg-[#43403C] text-xs font-bold text-[#DEDAD2] flex items-center gap-1 cursor-pointer disabled:opacity-50 shrink-0"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${myGamesLoading ? 'animate-spin' : ''}`} />
+                    </button>
                   </div>
 
-                  {myGames.length === 0 && (
-                    <div className="space-y-2">
-                      <div className="text-xs font-extrabold uppercase tracking-wider text-[#9E998F] px-0.5">
-                        Featured Master Games · Instant Replay
+                  <div className="grid grid-cols-4 gap-1 bg-[#1F1E1B] p-1 rounded-[6px]">
+                    {(['all', 'win', 'loss', 'draw'] as const).map((f) => (
+                      <button
+                        key={f}
+                        type="button"
+                        onClick={() => setOutcomeFilter(f)}
+                        className={`py-1.5 rounded-[4px] text-[11px] font-bold cursor-pointer ${
+                          outcomeFilter === f
+                            ? 'bg-[#363431] text-white'
+                            : 'text-[#9B9A97] hover:text-white'
+                        }`}
+                      >
+                        {f === 'all' ? 'All' : f === 'win' ? 'Wins' : f === 'loss' ? 'Losses' : 'Draws'}
+                      </button>
+                    ))}
+                  </div>
+
+                  {myGamesLoading && myGames.length === 0 ? (
+                    <div className="py-10 flex items-center justify-center gap-2 text-sm text-[#9B9A97]">
+                      <Loader2 className="w-4 h-4 animate-spin text-[#81B64C]" />
+                      <span>Syncing your recent games...</span>
+                    </div>
+                  ) : filteredMyGames.length === 0 ? (
+                    <div className="space-y-3">
+                      <div className="p-3.5 rounded-[7px] bg-[#1F1E1B] text-xs text-[#9B9A97] space-y-2.5">
+                        <p>
+                          {myGames.length === 0
+                            ? username
+                              ? `No saved games yet for ${username}. Open a master game below or search any player.`
+                              : 'Play a match to review it here, or inspect a master game below.'
+                            : 'No games match that filter.'}
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={handleLoadSampleGame}
+                            className="flex-1 h-[36px] rounded-[6px] cc-btn-primary-sm text-xs text-white font-extrabold cursor-pointer"
+                          >
+                            Review Sample Game
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPickerTab('player')}
+                            className="flex-1 h-[36px] rounded-[6px] cc-btn-secondary text-xs text-white font-bold cursor-pointer"
+                          >
+                            Search Player
+                          </button>
+                        </div>
                       </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                        {FEATURED_MASTER_GAMES.map((g) => renderGamePickerRow(g, null))}
-                      </div>
+
+                      {myGames.length === 0 && (
+                        <div className="space-y-2">
+                          <div className="text-[11px] font-extrabold uppercase tracking-wider text-[#9B9A97] px-0.5">
+                            Featured Master Games
+                          </div>
+                          <div className="space-y-2">
+                            {FEATURED_MASTER_GAMES.map((g) => renderGamePickerRow(g, null))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-[520px] overflow-y-auto pr-0.5">
+                      {filteredMyGames.slice(0, 20).map((g) => renderGamePickerRow(g, username))}
                     </div>
                   )}
                 </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-[54vh] overflow-y-auto pr-1">
-                  {filteredMyGames.slice(0, 20).map((g) => renderGamePickerRow(g, username))}
-                </div>
               )}
-            </div>
-          )}
 
-          {pickerTab === 'player' && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={playerSearchQuery}
-                  onChange={(e) => setPlayerSearchQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') void handleSearchPlayerGames();
-                  }}
-                  placeholder="Enter player username (e.g. DrNykterstein)..."
-                  aria-label="Search player username"
-                  className="flex-1 min-w-0 min-h-[42px] bg-[#1A1917] border border-white/[0.08] rounded-xl px-3.5 py-2 text-xs sm:text-sm text-white placeholder:text-[#847F76] focus:outline-none focus:border-[#81B64C]"
-                />
-                <button
-                  type="button"
-                  onClick={() => void handleSearchPlayerGames()}
-                  disabled={playerSearchLoading || playerSearchQuery.trim().length < 2}
-                  className="min-h-[42px] px-3.5 sm:px-4 py-2 rounded-xl bg-[#81B64C] hover:bg-[#8EC556] border-b-[3px] border-[#457524] text-xs font-extrabold text-white disabled:opacity-45 cursor-pointer flex items-center gap-1.5 shrink-0 whitespace-nowrap"
-                >
-                  {playerSearchLoading ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Search className="w-3.5 h-3.5" />
+              {pickerTab === 'player' && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={playerSearchQuery}
+                      onChange={(e) => setPlayerSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') void handleSearchPlayerGames();
+                      }}
+                      placeholder="Player username (e.g. DrNykterstein)..."
+                      aria-label="Search player username"
+                      className="flex-1 min-w-0 h-[40px] bg-[#1F1E1B] rounded-[6px] px-3 text-xs text-white placeholder:text-[#847F76] focus:outline-none focus:ring-1 focus:ring-[#81B64C]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void handleSearchPlayerGames()}
+                      disabled={playerSearchLoading || playerSearchQuery.trim().length < 2}
+                      className="h-[40px] px-3.5 rounded-[6px] cc-btn-primary-sm text-xs font-extrabold text-white disabled:opacity-45 cursor-pointer flex items-center gap-1.5 shrink-0 whitespace-nowrap"
+                    >
+                      {playerSearchLoading ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Search className="w-3.5 h-3.5" />
+                      )}
+                      <span>Find</span>
+                    </button>
+                  </div>
+                  {playerSearchError && (
+                    <p className="text-xs text-[#F5B8B0]">{playerSearchError}</p>
                   )}
-                  <span>Find Games</span>
-                </button>
-              </div>
-              {playerSearchError && (
-                <p className="text-xs text-[#F5B8B0]">{playerSearchError}</p>
-              )}
-              {playerSearchGames.length > 0 && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-[50vh] overflow-y-auto pr-1">
-                  {playerSearchGames.map((g) =>
-                    renderGamePickerRow(g, playerSearchQuery.trim()),
+                  {playerSearchGames.length > 0 && (
+                    <div className="space-y-2 max-h-[520px] overflow-y-auto pr-0.5">
+                      {playerSearchGames.map((g) =>
+                        renderGamePickerRow(g, playerSearchQuery.trim()),
+                      )}
+                    </div>
                   )}
                 </div>
               )}
-            </div>
-          )}
 
-          {pickerTab === 'pgn' && (
-            <div className="space-y-3">
-              <textarea
-                value={customPgnDraft}
-                onChange={(e) => {
-                  setCustomPgnDraft(e.target.value);
-                  if (customPgnError) setCustomPgnError(null);
-                }}
-                rows={5}
-                placeholder="Paste full PGN moves here (e.g. 1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 ...)"
-                aria-label="Paste PGN moves"
-                className="w-full bg-[#1A1917] border border-white/[0.08] rounded-xl p-3 text-xs font-mono text-white placeholder:text-[#847F76] focus:outline-none focus:border-[#81B64C]"
-              />
-              {customPgnError && (
-                <p className="text-xs text-[#F5B8B0]">{customPgnError}</p>
+              {pickerTab === 'pgn' && (
+                <div className="space-y-3">
+                  <textarea
+                    value={customPgnDraft}
+                    onChange={(e) => {
+                      setCustomPgnDraft(e.target.value);
+                      if (customPgnError) setCustomPgnError(null);
+                    }}
+                    rows={7}
+                    placeholder="Paste a PGN or moves (e.g. 1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 ...)"
+                    aria-label="Paste PGN moves"
+                    className="w-full bg-[#1F1E1B] rounded-[6px] p-3 text-xs font-mono text-white placeholder:text-[#847F76] focus:outline-none focus:ring-1 focus:ring-[#81B64C]"
+                  />
+                  {customPgnError && (
+                    <p className="text-xs text-[#F5B8B0]">{customPgnError}</p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleLoadCustomPgn}
+                    disabled={!customPgnDraft.trim()}
+                    className="w-full h-[46px] rounded-[8px] cc-btn-primary text-sm font-extrabold font-display text-white cursor-pointer disabled:opacity-45"
+                  >
+                    Load &amp; Review PGN
+                  </button>
+                </div>
               )}
-              <div className="flex justify-end">
-                <button
-                  type="button"
-                  onClick={handleLoadCustomPgn}
-                  disabled={!customPgnDraft.trim()}
-                  className="min-h-[42px] px-5 py-2 rounded-xl bg-[#81B64C] hover:bg-[#8EC556] border-b-[3px] border-[#457524] text-xs font-extrabold text-white cursor-pointer disabled:opacity-45"
-                >
-                  Load &amp; Review PGN
-                </button>
-              </div>
             </div>
-          )}
-        </section>
+          </aside>
+        </div>
 
         <CoachPickerModal
           open={coachModalOpen}
@@ -1149,9 +1296,15 @@ export function ReviewView({
       ? 0
       : Math.ceil(selectedPly / 2);
   const totalMoveCount = Math.max(1, Math.ceil(totalPlies / 2));
+  const isScanning = totalPlies > 0 && analyzedCount < totalPlies;
+  const scanPct =
+    totalPlies > 0 ? Math.min(100, Math.round((analyzedCount / totalPlies) * 100)) : 100;
+  const activeStepExplore = isExploring
+    ? explorationSteps[explorationSteps.length - 1]
+    : null;
 
   // ============================================================================
-  // STAGE 2: ACTIVE GAME REVIEW BOARD + SMART COACH ANALYSIS + COACH WORKSPACE
+  // STAGE 2: ACTIVE GAME REVIEW BOARD + STOCKFISH 19 WASM + WHAT-IF EXPLORATION
   // ============================================================================
   return (
     <div className="flex-1 flex flex-col bg-[#302E2B] min-h-[calc(100dvh-6.5rem)] lg:h-dvh lg:overflow-hidden">
@@ -1189,7 +1342,34 @@ export function ReviewView({
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Stockfish 19 Engine Depth/Speed Preset Selector */}
+            <div
+              role="group"
+              aria-label="Analysis speed"
+              className="hidden sm:inline-flex items-center rounded-lg bg-[#1A1917] border border-white/[0.08] p-0.5"
+            >
+              {(['fast', 'standard', 'deep'] as const).map((presetKey) => {
+                const preset = REVIEW_SPEED_PRESETS[presetKey];
+                const active = scanSpeed === presetKey;
+                return (
+                  <button
+                    key={presetKey}
+                    type="button"
+                    onClick={() => setScanSpeed(presetKey)}
+                    title={preset.shortDesc}
+                    className={`px-2 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
+                      active
+                        ? 'bg-[#81B64C] text-white'
+                        : 'text-[#9E998F] hover:text-white'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                );
+              })}
+            </div>
+
             <button
               type="button"
               onClick={() => {
@@ -1236,6 +1416,95 @@ export function ReviewView({
         </div>
       </div>
 
+      {/* Visualized Stockfish 19 WASM Analysis Progress Banner */}
+      {totalPlies > 0 && (
+        <div
+          data-testid="review-scan-banner"
+          className="shrink-0 bg-[#1E1C19] border-b border-white/[0.06] px-3 sm:px-5 py-1.5"
+        >
+          <div className="flex items-center justify-between gap-2 sm:gap-3 text-[11px] font-mono tabular-nums">
+            <div className="flex items-center gap-2 min-w-0">
+              {isScanning ? (
+                <Loader2 className="w-3.5 h-3.5 text-[#81B64C] animate-spin shrink-0" />
+              ) : (
+                <Cpu className="w-3.5 h-3.5 text-[#81B64C] shrink-0" />
+              )}
+              <span className="font-bold text-[#E6E2DA] truncate">
+                {isScanning
+                  ? `Engine · Analyzing ${scanTelemetry?.currentMoveSan || `move ${Math.max(1, Math.ceil((analyzedCount + 1) / 2))}`}...`
+                  : `Engine · Depth ${REVIEW_SPEED_PRESETS[scanSpeed].depth}`}
+              </span>
+              {scanTelemetry && scanTelemetry.nps > 0 && isScanning && (
+                <span className="hidden md:inline text-[#9E998F] shrink-0">
+                  {Math.round(scanTelemetry.nps / 1000)} kn/s
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Compact mobile speed preset switcher */}
+              <div
+                role="group"
+                aria-label="Mobile analysis speed"
+                className="inline-flex sm:hidden items-center rounded bg-[#262421] border border-white/[0.08] p-0.5 font-sans"
+              >
+                {(['fast', 'standard', 'deep'] as const).map((presetKey) => {
+                  const active = scanSpeed === presetKey;
+                  const shortLbl = presetKey === 'fast' ? 'Fast' : presetKey === 'standard' ? 'Std' : 'Deep';
+                  return (
+                    <button
+                      key={presetKey}
+                      type="button"
+                      onClick={() => setScanSpeed(presetKey)}
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold cursor-pointer ${
+                        active ? 'bg-[#81B64C] text-white' : 'text-[#9E998F]'
+                      }`}
+                    >
+                      {shortLbl}
+                    </button>
+                  );
+                })}
+              </div>
+              {!isScanning && (
+                <div className="hidden sm:flex items-center gap-2 text-[10px]">
+                  {analysis.counts.Brilliant > 0 && (
+                    <span className="text-[#26C6BE] font-bold">
+                      !! {analysis.counts.Brilliant}
+                    </span>
+                  )}
+                  {analysis.counts.Great > 0 && (
+                    <span className="text-[#74A7CE] font-bold">
+                      ! {analysis.counts.Great}
+                    </span>
+                  )}
+                  {analysis.counts.Mistake > 0 && (
+                    <span className="text-[#E68F3C] font-bold">
+                      ? {analysis.counts.Mistake}
+                    </span>
+                  )}
+                  {analysis.counts.Blunder > 0 && (
+                    <span className="text-[#E0524B] font-bold">
+                      ?? {analysis.counts.Blunder}
+                    </span>
+                  )}
+                </div>
+              )}
+              <span className="text-[#AEE076] font-bold">
+                {analyzedCount}/{totalPlies} · {scanPct}%
+              </span>
+            </div>
+          </div>
+          {isScanning && (
+            <div className="mt-1 h-1 w-full rounded-full bg-[#2C2925] overflow-hidden">
+              <div
+                className="h-full bg-[#81B64C] transition-all duration-150"
+                style={{ width: `${scanPct}%` }}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
       {pgnError && (
         <div className="px-4 py-2 bg-[#5C2320] text-xs font-semibold text-[#F7C7C1] text-center">
           {pgnError}
@@ -1244,8 +1513,8 @@ export function ReviewView({
 
       {/* Main Board + Coach Inspector Split */}
       <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
-        <div className="flex-1 flex flex-col items-center justify-start lg:justify-center p-2 sm:p-3 lg:px-5 lg:py-2 overflow-y-auto min-h-0">
-          <div className="w-full max-w-[540px] lg:max-w-[min(560px,calc(100dvh-16rem))] space-y-1.5">
+        <div className="flex-1 flex flex-col items-center justify-start p-2 pb-24 sm:p-3 sm:pb-24 lg:px-5 lg:py-2 lg:pb-2 overflow-y-auto min-h-0">
+          <div className="w-full max-w-[540px] lg:max-w-[min(640px,calc(100dvh-16rem))] lg:my-auto space-y-1.5">
             {/* Top Player Bar with Player Photo */}
             <div className="px-2.5 py-1.5 rounded-lg bg-[#262421] flex items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-2 min-w-0">
@@ -1332,28 +1601,76 @@ export function ReviewView({
               </div>
             )}
 
-            {/* Eval Bar + Chess Board */}
+            {/* What-If Variation Breadcrumb Bar (visible whenever user drags pieces or plays a line) */}
+            {isExploring && (
+              <div
+                data-testid="whatif-variation-bar"
+                className="px-2.5 py-1.5 rounded-lg bg-[#2A3323] border border-[#81B64C]/40 flex items-center justify-between gap-2 text-xs"
+              >
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <GitBranch className="w-3.5 h-3.5 text-[#AEE076] shrink-0" />
+                  <span className="font-bold text-[#AEE076] shrink-0">Variation:</span>
+                  <span className="font-mono text-white truncate">
+                    {explorationSteps.map((s) => s.san).join(' ')}
+                  </span>
+                  {liveExploreEval && (
+                    <span className="font-mono font-bold text-[#C8E89C] tabular-nums shrink-0">
+                      ({formatEvalDisplay(liveExploreEval.evalCp, liveExploreEval.mateIn)} · d{liveExploreEval.depth})
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setExplorationSteps((prev) => prev.slice(0, -1))}
+                    className="px-2 py-1 rounded bg-[#1E2419] hover:bg-[#2E3827] text-[11px] font-bold text-[#E6E2DA] flex items-center gap-1 cursor-pointer"
+                    title="Step back one variation move"
+                  >
+                    <Undo2 className="w-3 h-3" />
+                    <span>Undo</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExplorationSteps([]);
+                      setLiveExploreEval(null);
+                    }}
+                    className="px-2 py-1 rounded bg-[#81B64C] hover:bg-[#8EC556] text-[11px] font-extrabold text-white cursor-pointer"
+                  >
+                    Back to Game
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Eval Bar + Interactive Chess Board */}
             <div className="flex items-stretch justify-center gap-2 sm:gap-3">
-              <EvaluationBar evalCp={displayEval} orientation={flipped ? 'b' : 'w'} />
+              <EvaluationBar
+                evalCp={displayEval}
+                mateIn={displayMateIn}
+                orientation={flipped ? 'b' : 'w'}
+              />
               <div className="flex-1 aspect-square min-w-0">
                 <ChessBoard
                   fen={displayFen}
                   orientation={flipped ? 'b' : 'w'}
-                  interactive={isRetryingCurrent}
+                  interactive={true}
                   theme={boardTheme}
                   lastMove={
-                    !isRetryingCurrent && currentMove
-                      ? { from: currentMove.from, to: currentMove.to }
-                      : null
+                    activeStepExplore
+                      ? { from: activeStepExplore.from, to: activeStepExplore.to }
+                      : !isRetryingCurrent && currentMove
+                        ? { from: currentMove.from, to: currentMove.to }
+                        : null
                   }
                   bestMoveArrow={bestMoveArrow}
                   extraArrows={extraArrows}
                   moveBadge={
-                    !isRetryingCurrent && currentMove
+                    !isRetryingCurrent && !isExploring && currentMove
                       ? { square: currentMove.to, quality: currentMove.quality }
                       : null
                   }
-                  onMove={handleBoardRetryMove}
+                  onMove={handleBoardMove}
                 />
               </div>
             </div>
@@ -1393,78 +1710,129 @@ export function ReviewView({
               </span>
             </div>
 
-            {/* On-Board Smart Coach Analysis Card (Always Visible on Mobile & Desktop) */}
+            {/* Interactive Evaluation Advantage Graph on Mobile/Tablet (Desktop displays it cleanly in right Coach dock) */}
+            {analysis.moves.length > 0 && (
+              <div className="lg:hidden">
+                <EvalAdvantageChart
+                  moves={analysis.moves}
+                  selectedPly={selectedPly}
+                  analyzedCount={analyzedCount}
+                  heightClass="h-[52px]"
+                  onSelectPly={(ply) => {
+                    setAutoPlaying(false);
+                    setSelectedPly(ply);
+                  }}
+                />
+              </div>
+            )}
+
+            {/* On-Board Smart Coach Analysis Card — Authentic Chess.com White Speech Bubble */}
             <div
               data-testid="smart-coach-review-card"
-              className="rounded-xl bg-[#21201D] border border-white/10 p-2.5 space-y-2 shadow-sm"
+              className="rounded-[8px] bg-[#262421] p-2.5 space-y-2 shadow-sm"
             >
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex items-start gap-2.5 min-w-0">
-                  <div className="shrink-0 mt-0.5">
-                    <BotAvatar botId={activeCoach.id} size={32} />
+              <div className="flex items-start justify-between gap-2.5">
+                <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                  <div className="w-11 h-11 rounded-[5px] overflow-hidden bg-[#1F1E1B] shrink-0 mt-0.5">
+                    <BotAvatar botId={activeCoach.id} size={44} />
                   </div>
-                  <div className="min-w-0 space-y-0.5">
+                  <div className="relative flex-1 min-w-0 cc-speech-bubble rounded-[10px] px-3 py-2 space-y-0.5">
+                    <svg
+                      viewBox="0 0 10 14"
+                      className="w-2.5 h-3.5 absolute -left-2 top-4 text-white fill-current"
+                      aria-hidden="true"
+                    >
+                      <path d="M10 0 L0 7 L10 14 Z" />
+                    </svg>
                     <div className="flex flex-wrap items-center gap-1.5">
-                      {currentMove && <MoveBadge quality={currentMove.quality} size="sm" />}
-                      <span
-                        className={`text-xs sm:text-sm font-extrabold ${
-                          currentMove
-                            ? MOVE_QUALITY_META[currentMove.quality].textColor
-                            : 'text-[#AEE076]'
-                        }`}
-                      >
-                        {smartMove ? smartMove.headline : smartInsights.summaryHeadline}
+                      {!isExploring && currentMove && (
+                        <MoveBadge quality={currentMove.quality} size="sm" />
+                      )}
+                      <span className="text-xs sm:text-[13px] font-extrabold text-[#262421]">
+                        {isExploring
+                          ? `Exploring ${activeStepExplore?.san ?? 'Variation'}`
+                          : smartMove
+                            ? smartMove.headline
+                            : smartInsights.summaryHeadline}
                       </span>
-                      {smartMove && (
-                        <span className="px-1.5 py-0.5 rounded bg-[#1A1917] font-mono text-[10px] font-bold text-[#C8C4BC] tabular-nums">
+                      {!isExploring && smartMove && (
+                        <span className="px-1.5 py-0.5 rounded bg-[#EAE8E4] font-mono text-[10px] font-bold text-[#4A4742] tabular-nums">
                           Win {smartMove.winChanceMover}%
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-[#E6E2DA] leading-snug">
-                      {retryState?.feedback
-                        ? retryState.feedback
-                        : smartMove
-                          ? smartMove.why
-                          : smartInsights.coachVerdict}
+                    <p className="text-[12px] text-[#3B3936] font-medium leading-snug">
+                      {isExploring
+                        ? liveExploreEval
+                          ? `Top reply: ${liveExploreEval.bestMoveSan} (${formatEvalDisplay(liveExploreEval.evalCp, liveExploreEval.mateIn)} at depth ${liveExploreEval.depth}). Keep playing moves to test this line.`
+                          : 'Move any piece on the board to test a variation.'
+                        : retryState?.feedback
+                          ? retryState.feedback
+                          : currentMove?.classificationNote && currentMove.quality !== 'Book'
+                            ? `${currentMove.classificationNote}. ${smartMove?.why ?? ''}`
+                            : smartMove
+                              ? smartMove.why
+                              : smartInsights.coachVerdict}
                     </p>
-                    {smartMove?.betterPlan && !retryState?.active && (
-                      <p className="text-[11px] font-semibold text-[#AEE076] leading-snug">
+                    {!isExploring && smartMove?.betterPlan && !retryState?.active && (
+                      <p className="text-[11px] font-bold text-[#457524] leading-snug">
                         {smartMove.betterPlan}
                       </p>
                     )}
                   </div>
                 </div>
 
-                {/* Retry Move / Show Best Action Buttons */}
-                {canRetryCurrentMove && currentMove && (
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAutoPlaying(false);
-                        setRetryState((prev) =>
-                          prev?.active
-                            ? null
-                            : {
-                                active: true,
-                                ply: currentMove.ply,
-                                solved: false,
-                                feedback: `Play a better move for ${
-                                  currentMove.color === 'w' ? 'White' : 'Black'
-                                } on the board instead of ${currentMove.san}.`,
-                              },
-                        );
-                      }}
-                      className={`px-2.5 py-1.5 rounded-lg text-[11px] font-extrabold flex items-center gap-1 cursor-pointer ${
-                        isRetryingCurrent
-                          ? 'bg-[#E59A28] text-[#1A1917]'
-                          : 'bg-[#393734] hover:bg-[#45423E] text-white'
-                      }`}
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                      <span>{isRetryingCurrent ? 'Cancel Retry' : 'Retry'}</span>
-                    </button>
+                {/* Retry Move / Show Follow-Up / Show Answer Buttons */}
+                {!isExploring && currentMove && (
+                  <div className="flex flex-wrap items-center justify-end gap-1.5 shrink-0">
+                    {!isRetryingCurrent &&
+                      currentMove.bestLineSan &&
+                      currentMove.bestLineSan.length > 0 &&
+                      currentMove.bestMoveSan !== currentMove.san && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handlePlayVariationLine(
+                              currentMove.bestLineSan ?? [currentMove.bestMoveSan],
+                              currentMove.fenBefore,
+                            )
+                          }
+                          className="px-2 py-1.5 rounded-lg bg-[#2E3628] hover:bg-[#3A4532] text-[11px] font-bold text-[#AEE076] flex items-center gap-1 cursor-pointer"
+                          title={`Play engine follow-up: ${currentMove.bestLineSan.slice(0, 4).join(' ')}`}
+                        >
+                          <GitBranch className="w-3 h-3" />
+                          <span>Follow-Up</span>
+                        </button>
+                      )}
+                    {canRetryCurrentMove && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAutoPlaying(false);
+                          setExplorationSteps([]);
+                          setRetryState((prev) =>
+                            prev?.active
+                              ? null
+                              : {
+                                  active: true,
+                                  ply: currentMove.ply,
+                                  solved: false,
+                                  feedback: `Play a better move for ${
+                                    currentMove.color === 'w' ? 'White' : 'Black'
+                                  } on the board instead of ${currentMove.san}.`,
+                                },
+                          );
+                        }}
+                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-extrabold flex items-center gap-1 cursor-pointer ${
+                          isRetryingCurrent
+                            ? 'bg-[#E59A28] text-[#1A1917]'
+                            : 'bg-[#393734] hover:bg-[#45423E] text-white'
+                        }`}
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>{isRetryingCurrent ? 'Cancel Retry' : 'Retry'}</span>
+                      </button>
+                    )}
                     {isRetryingCurrent && (
                       <button
                         type="button"
@@ -1493,7 +1861,7 @@ export function ReviewView({
                   <span>
                     {selectedPly === 0
                       ? 'Start Position'
-                      : `Ply ${selectedPly} of ${totalPlies} (Move ${currentMoveNum}/${totalMoveCount})`}
+                      : `Move ${currentMoveNum} of ${totalMoveCount}`}
                   </span>
                   <div className="flex items-center gap-1.5">
                     {smartMove?.tags.map((tag) => (
@@ -1561,7 +1929,7 @@ export function ReviewView({
                       setAutoPlaying(false);
                       setSelectedPly((p) => Math.min(totalPlies, p + 1));
                     }}
-                    className="min-h-[36px] col-span-2 rounded-lg bg-[#81B64C] hover:bg-[#8EC556] border-b-2 border-[#457524] text-white text-xs font-extrabold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40"
+                    className="min-h-[36px] col-span-2 rounded-[6px] cc-btn-primary-sm text-white text-xs font-extrabold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40"
                   >
                     <span>Next Move</span>
                     <ChevronRight className="w-4 h-4" />
@@ -1628,8 +1996,12 @@ export function ReviewView({
             playerColor={playerColor}
             resultLabel={resultLabel}
             evalCp={displayEval}
-            lastMoveSan={currentMove?.san ?? ''}
-            suggestedMoveSan={currentMove?.bestMoveSan ?? ''}
+            lastMoveSan={activeStepExplore?.san ?? currentMove?.san ?? ''}
+            suggestedMoveSan={
+              isExploring && liveExploreEval
+                ? liveExploreEval.bestMoveSan
+                : currentMove?.bestMoveSan ?? ''
+            }
             externalMoves={moves}
             externalAnalyzedCount={analyzedCount}
             selectedPly={selectedPly}
@@ -1638,6 +2010,9 @@ export function ReviewView({
               setSelectedPly(ply);
             }}
             onHighlightArrow={setCloudArrow}
+            onPlayVariation={handlePlayVariationLine}
+            onLiveEvalUpdate={setLiveExploreEval}
+            isExploring={isExploring}
             defaultTab="report"
             coachId={activeCoachId}
           />
@@ -1658,8 +2033,12 @@ export function ReviewView({
             playerColor={playerColor}
             resultLabel={resultLabel}
             evalCp={displayEval}
-            lastMoveSan={currentMove?.san ?? ''}
-            suggestedMoveSan={currentMove?.bestMoveSan ?? ''}
+            lastMoveSan={activeStepExplore?.san ?? currentMove?.san ?? ''}
+            suggestedMoveSan={
+              isExploring && liveExploreEval
+                ? liveExploreEval.bestMoveSan
+                : currentMove?.bestMoveSan ?? ''
+            }
             externalMoves={moves}
             externalAnalyzedCount={analyzedCount}
             selectedPly={selectedPly}
@@ -1668,6 +2047,12 @@ export function ReviewView({
               setSelectedPly(ply);
             }}
             onHighlightArrow={setCloudArrow}
+            onPlayVariation={(lineSan, baseFen) => {
+              handlePlayVariationLine(lineSan, baseFen);
+              setMobileSheet('none');
+            }}
+            onLiveEvalUpdate={setLiveExploreEval}
+            isExploring={isExploring}
             defaultTab="report"
             onMoveStepCloseSheet={() => setMobileSheet('none')}
             coachId={activeCoachId}
@@ -1698,6 +2083,9 @@ export function ReviewView({
           whiteRating={loadedMeta.whiteRating}
           blackRating={loadedMeta.blackRating}
           currentUsername={username}
+          coachId={activeCoachId}
+          initialMoves={moves}
+          initialAnalyzedCount={analyzedCount}
           whiteAvatarUrl={
             isPlayerCurrentUser(loadedMeta.whiteName)
               ? userAvatarUrl || loadedMeta.whiteAvatarUrl
@@ -1708,6 +2096,10 @@ export function ReviewView({
               ? userAvatarUrl || loadedMeta.blackAvatarUrl
               : loadedMeta.blackAvatarUrl
           }
+          onSelectPly={(ply) => {
+            setAutoPlaying(false);
+            setSelectedPly(ply);
+          }}
           onStartReview={() => {
             setSummaryOpen(false);
             setSelectedPly(totalPlies > 0 ? 1 : 0);

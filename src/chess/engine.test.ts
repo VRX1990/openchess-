@@ -229,7 +229,7 @@ test('chooseBotMove and tier helpers support 18 bots across full 100 to 3200 ELO
   assert.equal(MAX_BOT_ELO, 3200);
   assert.equal(BOT_PROFILES.length, 18);
   assert.equal(getNearestBotForElo(100).id, 'pip');
-  assert.equal(getNearestBotForElo(2950).name, 'Stockfish');
+  assert.equal(getNearestBotForElo(2950).name, 'Chronos');
   assert.equal(getNearestBotForElo(3200).id, 'apex');
   assert.equal(getNearestBotForElo(3200).name, 'Cat');
   assert.equal(getBotTierMeta(100).title, 'New to Chess');
@@ -598,6 +598,14 @@ test('isGamePlayedAsBlack and authoritativeRemote account merging handle Lichess
   assert.equal(isGamePlayedAsBlack(game, 'OpponentA'), false);
   assert.equal(isGamePlayedAsBlack({ white: { name: 'Bot' }, black: { name: 'You' } }, null), true);
   assert.equal(isGamePlayedAsBlack({ white: { name: 'You' }, black: { name: 'Bot' } }, null), false);
+  assert.equal(
+    isGamePlayedAsBlack({ white: { name: 'Guest Opponent' }, black: { name: 'Guest Player' } }, null),
+    true,
+  );
+  assert.equal(
+    isGamePlayedAsBlack({ white: { name: 'Guest Player' }, black: { name: 'Guest Opponent' } }, null),
+    false,
+  );
 
   const synced = mergeSyncedAccountStats({
     localPerfs: {
@@ -980,7 +988,7 @@ test('upsertPendingInvite, pruneExpiredInvites, and removePendingInvite handle l
 });
 
 test('computeClientStockfish19NnueMultiPv runs Stockfish 19 NNUE on client side with Multi-PV lines', () => {
-  assert.equal(STOCKFISH_19_NNUE_ENGINE_VERSION, 'Stockfish 19 NNUE');
+  assert.equal(STOCKFISH_19_NNUE_ENGINE_VERSION, 'OpenChess Engine');
   const startFen = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
   const result = computeClientStockfish19NnueMultiPv(startFen, 19, 3, 25);
 
@@ -994,24 +1002,24 @@ test('computeClientStockfish19NnueMultiPv runs Stockfish 19 NNUE on client side 
   assert.match(result.lines[0].firstMoveTo, /^[a-h][1-8]$/);
 });
 
-test('getFairMatchmakingEloBand and clampOpponentEloToBand enforce strict ±200 Elo matchmaking', () => {
-  // User at 187 Elo must only face opponents within [100, 387] Elo (never 1800!)
+test('getFairMatchmakingEloBand and clampOpponentEloToBand enforce ±300 Elo matchmaking', () => {
+  // User at 187 Elo must only face opponents within [100, 487] Elo (never 1800!)
   const band187 = getFairMatchmakingEloBand(187);
-  assert.deepEqual(band187, { minElo: 100, maxElo: 387 });
+  assert.deepEqual(band187, { minElo: 100, maxElo: 487 });
   assert.equal(isWithinFairEloBand(187, 1800), false);
-  assert.equal(isWithinFairEloBand(187, 220), true);
+  assert.equal(isWithinFairEloBand(187, 300), true);
 
   const clamped187 = clampOpponentEloToBand(187, 1800, 'OpponentX');
-  assert.ok(clamped187 >= 100 && clamped187 <= 387);
-  assert.ok(Math.abs(clamped187 - 187) <= 200);
+  assert.ok(clamped187 >= 100 && clamped187 <= 487);
+  assert.ok(Math.abs(clamped187 - 187) <= 300);
 
-  // User at 1500 Elo must only face opponents within [1300, 1700] Elo
+  // User at 1500 Elo must only face opponents within [1200, 1800] Elo
   const band1500 = getFairMatchmakingEloBand(1500);
-  assert.deepEqual(band1500, { minElo: 1300, maxElo: 1700 });
-  assert.equal(isWithinFairEloBand(1500, 1300), true);
-  assert.equal(isWithinFairEloBand(1500, 1700), true);
-  assert.equal(isWithinFairEloBand(1500, 1750), false);
-  assert.equal(isWithinFairEloBand(1500, 1250), false);
+  assert.deepEqual(band1500, { minElo: 1200, maxElo: 1800 });
+  assert.equal(isWithinFairEloBand(1500, 1200), true);
+  assert.equal(isWithinFairEloBand(1500, 1800), true);
+  assert.equal(isWithinFairEloBand(1500, 1850), false);
+  assert.equal(isWithinFairEloBand(1500, 1150), false);
 });
 
 test('chooseBotMove and pickCalibratedEngineLine enforce realistic human-like strength per Elo tier', () => {

@@ -42,17 +42,32 @@ import {
 } from './src/chess/syncHelpers.ts';
 import {
   appendRatingHistoryPoint,
+  buildMatchmakingPassConfig,
   canonicalizeGmailAddress,
   computeLeagueInfo,
+  flushPendingBridgeMoves,
+  getFairMatchmakingEloBand,
   isGoogleMxHost,
+  isMatchCandidateEligible,
+  isPlaceholderPlayerUsername,
+  isTimeControlCompatibleForFallback,
+  isWithinFairEloBand,
+  MAX_MATCHMAKING_ELO_GAP,
   mergeLocalAccountProgress,
   mergeOpenChessAccountProgress,
+  parseFicsCreatingLine,
+  parseFicsFingerRatingLine,
   parseFicsGameEndLine,
   parseFicsSoughtOutput,
   parseFicsStyle12Line,
   parseFicsWhoOutput,
+  parseLichessGameStreamInitial,
+  resolveLichessSeatAndReadiness,
+  resolveOnlineEndOutcome,
   sanitizePublicAvatar,
+  selectPreferredFicsRating,
   STARTING_SKILL_TIERS,
+  stripPlatformFromText,
   upsertDirectMessage,
   validateGoogleOrGmailEmail,
   type AccountProgressSyncPayload,
@@ -62,6 +77,7 @@ import {
   type FicsSoughtAd,
   type FicsStyle12State,
   type OpenChallengeItem,
+  type OpponentPresenceStatus,
   type RatingHistoryMap,
   type RatingSpeed,
 } from './src/chess/onlineHelpers.ts';
@@ -1419,8 +1435,8 @@ function buildStockfishCoachReply(params: {
 
   const engineLabel =
     sfEval?.source === 'lichess-cloud'
-      ? `Stockfish Cloud (Depth ${sfEval.depth})`
-      : `Stockfish 17 NNUE (Depth ${sfEval?.depth || 18})`;
+      ? `Cloud Engine (Depth ${sfEval.depth})`
+      : `Grandmaster Engine (Depth ${sfEval?.depth || 18})`;
 
   // Detect hanging pieces & board phase
   const hanging: string[] = [];
@@ -1456,20 +1472,20 @@ function buildStockfishCoachReply(params: {
 
   const studentLabel = playerColor === 'w' ? 'White' : 'Black';
   const turnLabel = boardSummary.turn;
-  const activeCoach = coachName || 'Stockfish Coach';
+  const activeCoach = coachName || 'OpenChess Coach';
 
   if (boardSummary.isCheckmate) {
     return `Checkmate is on the board! ${turnLabel === 'White' ? 'Black' : 'White'} delivered the decisive blow. Open **Game Review** to step through the critical turning points with ${engineLabel}.`;
   }
 
   if (isGreeting) {
-    const moveHint = bestSan ? ` Top Stockfish move right now is **${bestSan}** (${evalText}).` : '';
+    const moveHint = bestSan ? ` Top engine move right now is **${bestSan}** (${evalText}).` : '';
     const threatHint = boardSummary.inCheck
       ? ` ${turnLabel}'s King is in **check**—resolve that immediately.`
       : hanging.length > 0
         ? ` Keep an eye on the undefended **${hanging[0]}**.`
         : '';
-    return `Hi! I'm **${activeCoach}**, powered by **${engineLabel}**. You're playing **${studentLabel}** in the **${phase}** and it's **${turnLabel} to move** (eval **${evalText}**).${threatHint}${moveHint}\n\nTap **Explain Plan**, **Best Moves**, or **Blunder Check** anytime for instant Stockfish analysis.`;
+    return `Hi! I'm **${activeCoach}**, powered by **${engineLabel}**. You're playing **${studentLabel}** in the **${phase}** and it's **${turnLabel} to move** (eval **${evalText}**).${threatHint}${moveHint}\n\nTap **Explain Plan**, **Best Moves**, or **Blunder Check** anytime for instant engine analysis.`;
   }
 
   // Blunder Guard / Threat Check
@@ -1494,7 +1510,7 @@ function buildStockfishCoachReply(params: {
       parts.push(`- **No Hanging Pieces:** Structure is intact in this ${phase.toLowerCase()} position.`);
     }
     if (bestSan) {
-      parts.push(`- **Stockfish Best Continuation:** Play **${bestSan}** (\`${lineStr}\`).`);
+      parts.push(`- **Best Continuation:** Play **${bestSan}** (\`${lineStr}\`).`);
     }
     return parts.join('\n');
   }
@@ -1524,7 +1540,7 @@ function buildStockfishCoachReply(params: {
   );
   if (bestSan) {
     lines.push(
-      `- **Stockfish Top Move:** **${bestSan}** (principal line: \`${lineStr}\`).`,
+      `- **Top Engine Move:** **${bestSan}** (principal line: \`${lineStr}\`).`,
     );
   }
   if (secondSf && secondSf.firstMoveSan && secondSf.firstMoveSan !== bestSan) {
@@ -1573,6 +1589,7 @@ interface LiveRoom {
   whiteClockMs: number;
   blackClockMs: number;
   lastMoveAt: number | null;
+  clockSyncedAt?: number | null;
   whiteSocket: WebSocket | null;
   blackSocket: WebSocket | null;
   whiteName: string;
@@ -1589,33 +1606,55 @@ interface LiveRoom {
   blackTitle?: string;
   rated?: boolean;
   finalized?: boolean;
+  everHadBothPlayers?: boolean;
+  opponentDisconnectedAt?: number | null;
   drawOfferBy: 'w' | 'b' | null;
   rematchOfferBy?: 'w' | 'b' | null;
-  winner: 'w' | 'b' | 'draw' | null;
+  winner: 'w' | 'b' | 'draw' | 'aborted' | null;
   endReason: string | null;
+  createdAt?: number;
   historyMeta: Array<{ from: string; to: string; san: string; captured?: boolean }>;
   chatMessages: RoomChatMessage[];
   spectators?: Set<WebSocket>;
   lichessFullId?: string;
+  lichessGameId?: string;
   lichessSide?: 'w' | 'b' | null;
   lichessOpponentPresent?: boolean;
+  lichessOpponentEverSeen?: boolean;
+  lichessOpponentGoneAt?: number | null;
+  lichessOpponentGoneDurationSec?: number | null;
+  lichessLastPingAt?: number;
+  bridgeLagMs?: number | null;
   lichessSocket?: WebSocket | null;
   lichessHeartbeat?: ReturnType<typeof setInterval> | null;
+  lichessStreamAbort?: AbortController | null;
   lichessVersion?: number;
   lichessAck?: number;
   lichessCookie?: string;
   lichessSri?: string;
   lichessReconnectCount?: number;
+  lichessStreamRetries?: number;
+  lichessLastResyncAt?: number;
   lichessGoneTimer?: ReturnType<typeof setTimeout> | null;
+  lichessInitCheckTimer?: ReturnType<typeof setTimeout> | null;
+  pendingLichessMoves?: string[];
+  lichessPendingMoveAck?: { uci: string; ack: number; sentAt: number; ply: number; retries: number } | null;
   ficsSocket?: net.Socket | null;
   ficsSide?: 'w' | 'b' | null;
   ficsOpponentPresent?: boolean;
+  ficsOpponentGoneAt?: number | null;
+  ficsHeartbeat?: ReturnType<typeof setInterval> | null;
+  ficsInitCheckTimer?: ReturnType<typeof setTimeout> | null;
   ficsGameNumber?: number;
   ficsBuffer?: string;
+  ficsPendingRefresh?: boolean;
+  ficsLastBoardSyncAt?: number;
+  ficsFingerRequested?: boolean;
+  ficsFingerRatings?: { standard?: number; blitz?: number; lightning?: number };
+  pendingFicsMoves?: string[];
+  requestedRated?: boolean;
   serverSource?: ChessServerSource;
 }
-
-const MAX_MATCHMAKING_ELO_GAP = 200;
 
 function isWithinMatchmakingEloBand(
   ratingA: number,
@@ -1692,7 +1731,7 @@ let ficsRefreshPromise: Promise<void> | null = null;
 let lastFicsRefresh = 0;
 
 function triggerFicsBackgroundRefresh(): void {
-  if (ficsRefreshPromise || Date.now() - lastFicsRefresh < 42_000) return;
+  if (ficsRefreshPromise || Date.now() - lastFicsRefresh < 15_000) return;
   lastFicsRefresh = Date.now();
   ficsRefreshPromise = new Promise<void>((resolve) => {
     let buffer = '';
@@ -1753,6 +1792,181 @@ function triggerFicsBackgroundRefresh(): void {
     sock.on('error', done);
     sock.on('close', done);
   });
+}
+
+interface WarmFicsSession {
+  socket: net.Socket;
+  localFicsName: string;
+  createdAt: number;
+  keepaliveTimer: ReturnType<typeof setInterval>;
+}
+
+let warmFicsSession: WarmFicsSession | null = null;
+let warmFicsInFlight: Promise<WarmFicsSession | null> | null = null;
+let lastWarmFicsAttempt = 0;
+
+function destroyWarmFicsSession(session: WarmFicsSession | null) {
+  if (!session) return;
+  clearInterval(session.keepaliveTimer);
+  session.socket.removeAllListeners();
+  try {
+    session.socket.write('quit\n');
+  } catch {
+    // ignore
+  }
+  try {
+    session.socket.destroy();
+  } catch {
+    // ignore
+  }
+}
+
+function ensureWarmFicsSession(): void {
+  if (warmFicsSession && !warmFicsSession.socket.destroyed) return;
+  if (warmFicsInFlight) return;
+  const now = Date.now();
+  if (now - lastWarmFicsAttempt < 8_000) return;
+  lastWarmFicsAttempt = now;
+
+  warmFicsInFlight = new Promise<WarmFicsSession | null>((resolve) => {
+    let settled = false;
+    let buffer = '';
+    let sentLogin = false;
+    let sentReturn = false;
+    let readyAtPrompt = false;
+    let localFicsName = 'guest';
+    const sock = net.createConnection({ host: 'freechess.org', port: 5000 });
+
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      sock.removeAllListeners();
+      try {
+        sock.destroy();
+      } catch {
+        // ignore
+      }
+      warmFicsInFlight = null;
+      resolve(null);
+    };
+
+    const timer = setTimeout(fail, 8_000);
+
+    sock.on('data', (chunk) => {
+      if (settled) return;
+      buffer += chunk.toString('latin1');
+      if (!sentLogin && /login:/i.test(buffer)) {
+        sentLogin = true;
+        sock.write('guest\n');
+      } else if (sentLogin && !sentReturn && /Press return to enter/i.test(buffer)) {
+        const guestM = buffer.match(/Logging you in as "(Guest[A-Za-z0-9]+)"/i);
+        if (guestM) localFicsName = guestM[1];
+        sentReturn = true;
+        sock.write('\n');
+      } else if (sentReturn && !readyAtPrompt && /fics%/i.test(buffer)) {
+        const guestM = buffer.match(/(?:Logging you in as "|Starting FICS session as )"?([A-Za-z0-9_]+)/i);
+        if (guestM) localFicsName = guestM[1];
+        readyAtPrompt = true;
+        settled = true;
+        clearTimeout(timer);
+        sock.write(
+          'set seek 0\nset style 12\nset echo 0\nset shout 0\nset pin 0\nset gin 0\nset kibitz 0\nset tell 0\nset ctell 0\n',
+        );
+        const keepaliveTimer = setInterval(() => {
+          if (sock.destroyed) {
+            if (warmFicsSession?.socket === sock) warmFicsSession = null;
+            clearInterval(keepaliveTimer);
+            return;
+          }
+          try {
+            sock.write('date\n');
+          } catch {
+            // ignore
+          }
+        }, 45_000);
+        const session: WarmFicsSession = {
+          socket: sock,
+          localFicsName,
+          createdAt: Date.now(),
+          keepaliveTimer,
+        };
+        sock.removeAllListeners();
+        sock.on('close', () => {
+          clearInterval(keepaliveTimer);
+          if (warmFicsSession?.socket === sock) warmFicsSession = null;
+        });
+        sock.on('error', () => {
+          clearInterval(keepaliveTimer);
+          if (warmFicsSession?.socket === sock) warmFicsSession = null;
+        });
+        warmFicsSession = session;
+        warmFicsInFlight = null;
+        resolve(session);
+      }
+    });
+
+    sock.on('error', fail);
+    sock.on('close', fail);
+  });
+}
+
+function acquireWarmFicsSession(): { socket: net.Socket; localFicsName: string } | null {
+  const s = warmFicsSession;
+  if (!s || s.socket.destroyed || !s.socket.writable || Date.now() - s.createdAt > 180_000) {
+    if (s) {
+      warmFicsSession = null;
+      destroyWarmFicsSession(s);
+    }
+    setTimeout(() => ensureWarmFicsSession(), 50);
+    return null;
+  }
+  warmFicsSession = null;
+  clearInterval(s.keepaliveTimer);
+  s.socket.removeAllListeners();
+  // Re-arm next warm session in background so subsequent matches are instant
+  setTimeout(() => ensureWarmFicsSession(), 150);
+  return { socket: s.socket, localFicsName: s.localFicsName };
+}
+
+async function fetchLichessGameStreamSnapshot(
+  gameId: string,
+  timeoutMs = 850,
+): Promise<ReturnType<typeof parseLichessGameStreamInitial>> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`https://lichess.org/api/stream/game/${encodeURIComponent(gameId)}`, {
+      headers: {
+        Accept: 'application/x-ndjson',
+        'User-Agent': 'OpenChess/1.0',
+      },
+      signal: ctrl.signal,
+    });
+    if (!res.ok || !res.body) return null;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let acc = '';
+    while (acc.length < 16384) {
+      const { done, value } = await reader.read();
+      if (value) acc += decoder.decode(value, { stream: true });
+      const nl = acc.indexOf('\n');
+      if (nl !== -1) {
+        return parseLichessGameStreamInitial(acc.slice(0, nl));
+      }
+      if (done) break;
+    }
+    return parseLichessGameStreamInitial(acc);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    try {
+      ctrl.abort();
+    } catch {
+      // ignore
+    }
+  }
 }
 
 let lastPlayStrategyRefresh = 0;
@@ -2177,6 +2391,32 @@ interface LichessJoinedMatch {
   version: number;
   cookie?: string;
   initialMovesUci: string[];
+  socket?: WebSocket;
+  bufferedEvents?: Array<Record<string, any>>;
+  opponentPresent?: boolean;
+  initialLagMs?: number;
+}
+
+const RECENTLY_SKIPPED_LICHESS_SRI = new Map<string, number>();
+function markSkippedLichessSri(sri?: string) {
+  if (!sri) return;
+  const now = Date.now();
+  RECENTLY_SKIPPED_LICHESS_SRI.set(sri, now + 90_000);
+  if (RECENTLY_SKIPPED_LICHESS_SRI.size > 200) {
+    for (const [k, exp] of RECENTLY_SKIPPED_LICHESS_SRI.entries()) {
+      if (exp <= now) RECENTLY_SKIPPED_LICHESS_SRI.delete(k);
+    }
+  }
+}
+function isSkippedLichessSri(sri?: string): boolean {
+  if (!sri) return false;
+  const exp = RECENTLY_SKIPPED_LICHESS_SRI.get(sri);
+  if (!exp) return false;
+  if (exp <= Date.now()) {
+    RECENTLY_SKIPPED_LICHESS_SRI.delete(sri);
+    return false;
+  }
+  return true;
 }
 
 const LICHESS_LIVE_HOOKS = new Map<string, LichessLobbyHook & { updatedAt: number }>();
@@ -2186,7 +2426,7 @@ let cachedLichessGuestCookie: { cookie: string; expiresAt: number } | null = nul
 
 async function getLichessGuestCookie(): Promise<string | undefined> {
   if (cachedLichessGuestCookie && Date.now() < cachedLichessGuestCookie.expiresAt) {
-    return cachedLichessGuestCookie.cookie;
+    return cachedLichessGuestCookie.cookie || undefined;
   }
   try {
     const res = await fetch('https://lichess.org/', {
@@ -2195,7 +2435,7 @@ async function getLichessGuestCookie(): Promise<string | undefined> {
         'User-Agent':
           'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36',
       },
-      signal: AbortSignal.timeout(2500),
+      signal: AbortSignal.timeout(1200),
     });
     const setCookies =
       typeof res.headers.getSetCookie === 'function'
@@ -2211,7 +2451,9 @@ async function getLichessGuestCookie(): Promise<string | undefined> {
   } catch {
     // ignore
   }
-  return cachedLichessGuestCookie?.cookie;
+  // Cache negative result (e.g. 403/no cookie) so matchmaking never stalls repeatedly on homepage fetches
+  cachedLichessGuestCookie = { cookie: '', expiresAt: Date.now() + 300_000 };
+  return undefined;
 }
 
 async function refreshLichessLiveHooks(
@@ -2335,322 +2577,520 @@ async function joinRealLichessLobbyGame(params: {
   onlineToken?: string;
   timeoutMs?: number;
   specificHookId?: string;
+  allowUnratedGuest?: boolean;
+  maxEloGap?: number;
+  allowSpeedFallback?: boolean;
 }): Promise<LichessJoinedMatch | null> {
-  const timeoutMs = params.timeoutMs ?? 3500;
-  const sri = crypto.randomBytes(9).toString('base64url').slice(0, 12);
+  const timeoutMs = params.timeoutMs ?? 4200;
   const startedAt = Date.now();
+  const targetElo = Math.max(100, Math.min(3200, Math.round(params.playerElo ?? 1200)));
+  const maxEloGap = params.maxEloGap ?? MAX_MATCHMAKING_ELO_GAP;
+  const requireNamedRated =
+    !params.allowUnratedGuest && !params.onlineToken && !params.specificHookId;
   const reqSpeed: 'bullet' | 'blitz' | 'rapid' =
     params.initialSeconds < 180 ? 'bullet' : params.initialSeconds < 480 ? 'blitz' : 'rapid';
   const lilaCookie = await getLichessGuestCookie();
 
-  const redirectResult = await new Promise<{
+  const triedHookIds = new Set<string>();
+
+  const verifyPlaySocketReady = async (redirect: {
     fullId: string;
     cookie?: string;
+    sri: string;
     joinedHook?: LichessLobbyHook & { fresh?: boolean };
-  } | null>((resolve) => {
-    let settled = false;
-    let lastJoinedHook: (LichessLobbyHook & { fresh?: boolean }) | undefined;
-    const triedHookIds = new Set<string>();
-    const candidateHooks = new Map<string, LichessLobbyHook & { fresh?: boolean }>();
+  }): Promise<LichessJoinedMatch | null> => {
+    const gameId = redirect.fullId.slice(0, 8);
+    const cookieToUse = redirect.cookie || lilaCookie;
+    const hookClock = redirect.joinedHook
+      ? parseHookClockSeconds(redirect.joinedHook)
+      : { initial: params.initialSeconds, increment: params.incrementSeconds };
 
-    const finish = (
-      val: { fullId: string; cookie?: string; joinedHook?: LichessLobbyHook & { fresh?: boolean } } | null,
-    ) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      clearInterval(retryInterval);
-      try {
-        lobbyWs.close();
-      } catch {
-        // ignore
-      }
-      resolve(val);
-    };
-
-    const lobbyHeaders: Record<string, string> = {
+    const headers: Record<string, string> = {
       Origin: 'https://lichess.org',
       'User-Agent':
         'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36',
     };
-    if (lilaCookie) lobbyHeaders.Cookie = lilaCookie;
-    if (params.onlineToken) lobbyHeaders.Authorization = `Bearer ${params.onlineToken}`;
+    if (cookieToUse) headers.Cookie = cookieToUse;
+    if (params.onlineToken) headers.Authorization = `Bearer ${params.onlineToken}`;
 
-    const lobbyWs = new WebSocket(`wss://socket.lichess.org/lobby/socket/v5?sri=${sri}`, {
-      headers: lobbyHeaders,
-    });
+    const playWs = new WebSocket(
+      `wss://socket.lichess.org/play/${redirect.fullId}/v6?sri=${redirect.sri}&v=0`,
+      { headers },
+    );
 
-    const targetElo = Math.max(100, Math.min(3200, Math.round(params.playerElo ?? 1200)));
+    const bufferedEvents: Array<Record<string, any>> = [];
+    const streamState: { meta: ReturnType<typeof parseLichessGameStreamInitial> } = { meta: null };
+    let crowdWhite: boolean | undefined;
+    let crowdBlack: boolean | undefined;
+    let knownColor: 'w' | 'b' | undefined =
+      redirect.joinedHook?.c === 'white'
+        ? 'b'
+        : redirect.joinedHook?.c === 'black'
+          ? 'w'
+          : undefined;
+    let plyCount = 0;
+    let pingSentAt: number | undefined;
+    let measuredLagMs: number | undefined;
+    let terminalStatus = false;
+    const verifyStart = Date.now();
 
-    const isNamedHook = (h: LichessLobbyHook & { fresh?: boolean }): boolean => {
-      const u = typeof h.u === 'string' ? h.u.trim() : '';
-      return Boolean(u && u.toLowerCase() !== 'anonymous');
-    };
-
-    const isEligibleStandardHook = (
-      h: LichessLobbyHook & { fresh?: boolean },
-      requireNamed = false,
-    ): boolean => {
-      if (!h || typeof h.id !== 'string' || triedHookIds.has(h.id)) return false;
-      if (h.ra && !params.onlineToken) return false; // Unauthenticated Lichess lobby bridge joins open casual hooks
-      if (requireNamed && !isNamedHook(h)) return false;
-      const varKey = typeof h.variant === 'string' ? h.variant : h.variant?.key;
-      if (varKey && varKey !== 'standard') return false;
-      if (params.preferredColor === 'w' && h.c === 'white') return false;
-      if (params.preferredColor === 'b' && h.c === 'black') return false;
-      if (typeof h.rating === 'number' && !isWithinMatchmakingEloBand(targetElo, h.rating)) {
-        return false;
-      }
-      const { initial, increment } = parseHookClockSeconds(h);
-      const elapsed = Date.now() - startedAt;
-      if (elapsed < 450) {
-        return initial === params.initialSeconds && increment === params.incrementSeconds;
-      }
-      if (elapsed < 1600) {
-        return (
-          Math.abs(initial - params.initialSeconds) <= 120 &&
-          Math.abs(increment - params.incrementSeconds) <= 3
-        );
-      }
-      const hookSpeed: 'bullet' | 'blitz' | 'rapid' =
-        initial < 180 ? 'bullet' : initial < 480 ? 'blitz' : 'rapid';
-      return hookSpeed === reqSpeed;
-    };
-
-    const scoreHook = (h: LichessLobbyHook & { fresh?: boolean }): number => {
-      const { initial, increment } = parseHookClockSeconds(h);
-      const namedBonus = isNamedHook(h) ? -250 : 100;
-      const freshBonus = h.fresh ? -500 : 0;
-      const ratingDiff = typeof h.rating === 'number' ? Math.abs(h.rating - targetElo) * 0.5 : 80;
-      return (
-        Math.abs(params.initialSeconds - initial) +
-        Math.abs(params.incrementSeconds - increment) * 15 +
-        ratingDiff +
-        namedBonus +
-        freshBonus
-      );
-    };
-
-    const tryJoinBestHook = () => {
-      if (settled || lobbyWs.readyState !== WebSocket.OPEN) return;
-      if (params.specificHookId) {
-        if (!triedHookIds.has(params.specificHookId)) {
-          triedHookIds.add(params.specificHookId);
-          lastJoinedHook = candidateHooks.get(params.specificHookId);
-          lobbyWs.send(JSON.stringify({ t: 'join', d: params.specificHookId }));
+    const streamPromise = fetchLichessGameStreamSnapshot(gameId, 750).then((meta) => {
+      streamState.meta = meta;
+      if (meta) {
+        plyCount = Math.max(plyCount, meta.initialMovesUci.length);
+        if (
+          typeof meta.statusName === 'string' &&
+          ['aborted', 'mate', 'resign', 'stalemate', 'draw', 'outoftime', 'cheat', 'noStart'].includes(
+            meta.statusName,
+          )
+        ) {
+          terminalStatus = true;
         }
-        return;
       }
-      const allHooks = [...candidateHooks.values()];
-      // Prefer named Lichess hooks first; only fall back to anonymous hooks after 1200ms
-      let eligible = allHooks.filter((h) => isEligibleStandardHook(h, true));
-      if (eligible.length === 0 && Date.now() - startedAt >= 1200) {
-        eligible = allHooks.filter((h) => isEligibleStandardHook(h, false));
-      }
-      if (eligible.length === 0) return;
-      eligible.sort((a, b) => scoreHook(a) - scoreHook(b));
-      const best = eligible[0];
-      triedHookIds.add(best.id);
-      lastJoinedHook = best;
-      lobbyWs.send(JSON.stringify({ t: 'join', d: best.id }));
-    };
-
-    const timer = setTimeout(() => finish(null), timeoutMs);
-    const retryInterval = setInterval(() => tryJoinBestHook(), 180);
-
-    lobbyWs.on('open', () => {
-      lobbyWs.send(JSON.stringify({ t: 'hookIn' }));
-      if (params.specificHookId) {
-        setTimeout(() => tryJoinBestHook(), 60);
-      }
+      return meta;
     });
 
-    lobbyWs.on('message', (raw) => {
-      try {
-        const msg = JSON.parse(String(raw));
-        const hookList: LichessLobbyHook[] | null =
-          msg.t === 'hooks'
-            ? Array.isArray(msg.d)
-              ? (msg.d as LichessLobbyHook[])
-              : Array.isArray(msg.d?.list)
-                ? (msg.d.list as LichessLobbyHook[])
-                : null
-            : null;
-        if (hookList) {
-          for (const h of hookList) {
-            if (h?.id) {
-              candidateHooks.set(h.id, { ...h, fresh: false });
-              if (h.u) recordLiveDiscoveredPlayer({ username: h.u, rating: h.rating });
+    const readyOutcome = await new Promise<{
+      ok: boolean;
+      humanColor?: 'w' | 'b';
+      opponentPresent?: boolean;
+    }>((resolveReady) => {
+      let settled = false;
+      const done = (val: { ok: boolean; humanColor?: 'w' | 'b'; opponentPresent?: boolean }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(hardTimer);
+        clearInterval(checkTimer);
+        playWs.removeAllListeners();
+        // Keep buffering incoming packets during the handoff into startBridgedLichessRoom so no move/v/end event is dropped
+        if (val.ok) {
+          playWs.on('message', (raw) => {
+            const rawStr = String(raw).trim();
+            if (!rawStr || rawStr === '0' || rawStr === 'pong') return;
+            try {
+              const pkt = JSON.parse(rawStr);
+              if (pkt?.t === 'b' && Array.isArray(pkt.d)) {
+                for (const sub of pkt.d) {
+                  if (sub && typeof sub === 'object') bufferedEvents.push(sub);
+                }
+              } else if (pkt && typeof pkt === 'object') {
+                bufferedEvents.push(pkt);
+              }
+            } catch {
+              // ignore
             }
-          }
-          tryJoinBestHook();
-        } else if (msg.t === 'had' && msg.d?.id) {
-          const h = msg.d as LichessLobbyHook;
-          candidateHooks.set(h.id, { ...h, fresh: true });
-          if (h.u) recordLiveDiscoveredPlayer({ username: h.u, rating: h.rating });
-          tryJoinBestHook();
-        } else if (msg.t === 'hrm' && typeof msg.d === 'string') {
-          for (let i = 0; i < msg.d.length; i += 8) {
-            candidateHooks.delete(msg.d.slice(i, i + 8));
-          }
-        } else if (msg.t === 'redirect' && msg.d?.id) {
-          const fullId = String(msg.d.id).replace(/^\//, '');
-          const cookie =
-            msg.d.cookie?.name && msg.d.cookie?.value
-              ? `${msg.d.cookie.name}=${msg.d.cookie.value}`
-              : undefined;
-          finish({ fullId, cookie, joinedHook: lastJoinedHook });
+          });
+          playWs.on('error', () => {});
         }
+        resolveReady(val);
+      };
+
+      const evaluateReadiness = () => {
+        if (terminalStatus) {
+          markSkippedLichessSri(redirect.joinedHook?.sri);
+          done({ ok: false });
+          return;
+        }
+        const readiness = resolveLichessSeatAndReadiness({
+          hookColor: redirect.joinedHook?.c,
+          hookOpponentName: redirect.joinedHook?.u,
+          whiteName: streamState.meta?.whiteName,
+          blackName: streamState.meta?.blackName,
+          knownColor,
+          crowdWhite,
+          crowdBlack,
+          plyCount,
+          elapsedMs: Date.now() - verifyStart,
+          maxWaitMs: params.specificHookId ? 2400 : 1850,
+        });
+        if (readiness.humanColor) {
+          knownColor = readiness.humanColor;
+        }
+        if (readiness.status === 'ready' && readiness.humanColor) {
+          done({ ok: true, humanColor: readiness.humanColor, opponentPresent: true });
+        } else if (readiness.status === 'ghost' || readiness.status === 'ambiguous') {
+          markSkippedLichessSri(redirect.joinedHook?.sri);
+          done({ ok: false });
+        }
+      };
+
+      const hardTimer = setTimeout(evaluateReadiness, params.specificHookId ? 2450 : 1900);
+      const checkTimer = setInterval(evaluateReadiness, 60);
+
+      const ingestVerifyEvent = (ev: Record<string, any>) => {
+        if (!ev || typeof ev !== 'object') return;
+        bufferedEvents.push(ev);
+        if (ev.t === 'crowd' && ev.d) {
+          crowdWhite = Boolean(ev.d.white);
+          crowdBlack = Boolean(ev.d.black);
+        } else if (ev.t === 'move' && ev.d) {
+          const movePly = typeof ev.d.ply === 'number' ? ev.d.ply : plyCount + 1;
+          plyCount = Math.max(plyCount, movePly);
+          if (movePly === 1 && !knownColor) {
+            knownColor = 'b';
+          }
+        } else if (ev.t === 'endData' || ev.t === 'end') {
+          terminalStatus = true;
+        }
+      };
+
+      playWs.on('open', () => {
+        pingSentAt = Date.now();
+        try {
+          playWs.send(JSON.stringify({ t: 'p', v: 0 }));
+        } catch {
+          // ignore
+        }
+      });
+
+      playWs.on('message', (raw) => {
+        const rawStr = String(raw).trim();
+        if (rawStr === '0' || rawStr === 'pong') {
+          if (pingSentAt) {
+            measuredLagMs = Math.max(12, Math.min(2000, Date.now() - pingSentAt));
+            pingSentAt = undefined;
+          }
+          return;
+        }
+        try {
+          const pkt = JSON.parse(rawStr);
+          if (pkt === 0) {
+            if (pingSentAt) {
+              measuredLagMs = Math.max(12, Math.min(2000, Date.now() - pingSentAt));
+              pingSentAt = undefined;
+            }
+            return;
+          }
+          if (pkt?.t === 'b' && Array.isArray(pkt.d)) {
+            for (const sub of pkt.d) ingestVerifyEvent(sub);
+          } else if (pkt && typeof pkt === 'object') {
+            ingestVerifyEvent(pkt);
+          }
+          evaluateReadiness();
+        } catch {
+          // ignore
+        }
+      });
+
+      playWs.on('close', () => done({ ok: false }));
+      playWs.on('error', () => done({ ok: false }));
+
+      void streamPromise.then(() => {
+        evaluateReadiness();
+      });
+    });
+
+    if (!readyOutcome.ok || !readyOutcome.humanColor) {
+      try {
+        if (playWs.readyState === WebSocket.OPEN) {
+          playWs.send(JSON.stringify({ t: 'abort' }));
+        }
+        playWs.close();
       } catch {
         // ignore
       }
-    });
-
-    lobbyWs.on('error', () => finish(null));
-    lobbyWs.on('close', () => finish(null));
-  });
-
-  if (!redirectResult?.fullId) return null;
-
-  const gameId = redirectResult.fullId.slice(0, 8);
-  const hookClock = redirectResult.joinedHook
-    ? parseHookClockSeconds(redirectResult.joinedHook)
-    : { initial: params.initialSeconds, increment: params.incrementSeconds };
-
-  let v5Data: Record<string, any> | null = null;
-  try {
-    const v5Headers: Record<string, string> = {
-      Accept: 'application/vnd.lichess.v5+json',
-      'User-Agent':
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36',
-    };
-    if (redirectResult.cookie) v5Headers.Cookie = redirectResult.cookie;
-    const res = await fetch(`https://lichess.org/${encodeURIComponent(redirectResult.fullId)}`, {
-      headers: v5Headers,
-      signal: AbortSignal.timeout(2200),
-    });
-    if (res.ok) {
-      v5Data = (await res.json()) as Record<string, any>;
+      return null;
     }
-  } catch {
-    // continue with hook metadata
-  }
 
-  const statusName =
-    typeof v5Data?.game?.status === 'object' ? v5Data.game.status?.name : v5Data?.game?.status;
-  if (
-    typeof statusName === 'string' &&
-    ['aborted', 'mate', 'resign', 'stalemate', 'draw', 'outoftime', 'cheat', 'noStart'].includes(
-      statusName,
-    )
-  ) {
-    return null;
-  }
+    const resolvedStreamMeta = streamState.meta;
+    const humanColor = readyOutcome.humanColor;
+    const streamOppName = humanColor === 'w' ? resolvedStreamMeta?.blackName : resolvedStreamMeta?.whiteName;
+    const streamOppRating = humanColor === 'w' ? resolvedStreamMeta?.blackRating : resolvedStreamMeta?.whiteRating;
+    const streamOppTitle = humanColor === 'w' ? resolvedStreamMeta?.blackTitle : resolvedStreamMeta?.whiteTitle;
 
-  const initSec =
-    typeof v5Data?.clock?.initial === 'number' && v5Data.clock.initial > 0
-      ? v5Data.clock.initial
-      : hookClock.initial;
-  const incSec =
-    typeof v5Data?.clock?.increment === 'number' ? v5Data.clock.increment : hookClock.increment;
+    const rawOppName = String(redirect.joinedHook?.u || streamOppName || '').trim();
+    const cachedDiscovered = rawOppName
+      ? LIVE_DISCOVERED_PLAYERS.get(rawOppName.toLowerCase())
+      : undefined;
+    const opponentName = rawOppName && !isPlaceholderPlayerUsername(rawOppName)
+      ? rawOppName
+      : 'Guest Opponent';
+    const opponentRating: number | undefined =
+      typeof redirect.joinedHook?.rating === 'number'
+        ? redirect.joinedHook.rating
+        : typeof streamOppRating === 'number'
+          ? streamOppRating
+          : cachedDiscovered?.rating;
 
-  const humanColor: 'w' | 'b' =
-    v5Data?.player?.color === 'black'
-      ? 'b'
-      : v5Data?.player?.color === 'white'
-        ? 'w'
-        : redirectResult.joinedHook?.c === 'white'
-          ? 'b'
-          : redirectResult.joinedHook?.c === 'black'
-            ? 'w'
-            : params.preferredColor === 'b'
-              ? 'b'
-              : 'w';
-
-  const v5OppUser =
-    v5Data?.opponent?.user?.username ||
-    v5Data?.opponent?.user?.name ||
-    v5Data?.opponent?.user?.id ||
-    v5Data?.opponent?.username ||
-    v5Data?.opponent?.name;
-  const v5OppRating =
-    typeof v5Data?.opponent?.rating === 'number' ? v5Data.opponent.rating : undefined;
-
-  const targetElo = Math.max(100, Math.min(3200, Math.round(params.playerElo ?? 1200)));
-  const rawOppName = String(redirectResult.joinedHook?.u || v5OppUser || '').trim();
-  const oppPub = rawOppName
-    ? await Promise.race([
-        fetchPublicLichessUser(rawOppName, false),
-        new Promise<null>((r) => setTimeout(() => r(null), 1600)),
-      ])
-    : null;
-
-  const opponentName = rawOppName || oppPub?.username || 'Anonymous (Guest)';
-  const rawOppPubPerfRating =
-    typeof oppPub?.perfs?.[reqSpeed]?.rating === 'number'
-      ? oppPub.perfs[reqSpeed].rating
-      : typeof oppPub?.perfs?.rapid?.rating === 'number'
-        ? oppPub.perfs.rapid.rating
-        : typeof oppPub?.perfs?.blitz?.rating === 'number'
-          ? oppPub.perfs.blitz.rating
-          : typeof oppPub?.perfs?.bullet?.rating === 'number'
-            ? oppPub.perfs.bullet.rating
-            : undefined;
-  const opponentRating: number | undefined =
-    typeof redirectResult.joinedHook?.rating === 'number'
-      ? redirectResult.joinedHook.rating
-      : typeof v5OppRating === 'number'
-        ? v5OppRating
-        : rawOppPubPerfRating;
-  if (
-    !params.specificHookId &&
-    typeof opponentRating === 'number' &&
-    !isWithinMatchmakingEloBand(targetElo, opponentRating)
-  ) {
-    return null;
-  }
-
-  const opponentFlag = oppPub?.profile?.flag || oppPub?.profile?.country || undefined;
-  const opponentTitle = oppPub?.title || v5Data?.opponent?.user?.title || undefined;
-  const opponentAvatarUrl = sanitizePublicAvatar(oppPub?.profile?.avatarUrl);
-
-  const parsedInitialMovesUci: string[] = [];
-  if (Array.isArray(v5Data?.steps)) {
-    for (const step of v5Data.steps) {
-      if (step && typeof step.ply === 'number' && step.ply > 0 && typeof step.uci === 'string') {
-        parsedInitialMovesUci.push(step.uci);
+    if (
+      !isMatchCandidateEligible({
+        playerElo: targetElo,
+        opponentName,
+        opponentRating,
+        requireNamedRated,
+        maxEloGap,
+      })
+    ) {
+      try {
+        if (playWs.readyState === WebSocket.OPEN) {
+          playWs.send(JSON.stringify({ t: 'abort' }));
+        }
+        playWs.close();
+      } catch {
+        // ignore
       }
+      return null;
+    }
+
+    const initSec =
+      typeof resolvedStreamMeta?.initialSeconds === 'number' && resolvedStreamMeta.initialSeconds > 0
+        ? resolvedStreamMeta.initialSeconds
+        : hookClock.initial;
+    const incSec =
+      typeof resolvedStreamMeta?.incrementSeconds === 'number'
+        ? resolvedStreamMeta.incrementSeconds
+        : hookClock.increment;
+
+    const opponentFlag = cachedDiscovered?.flag;
+    const opponentTitle = streamOppTitle || cachedDiscovered?.title || undefined;
+    const opponentAvatarUrl = sanitizePublicAvatar(cachedDiscovered?.avatarUrl);
+
+    const parsedInitialMovesUci = resolvedStreamMeta?.initialMovesUci ?? [];
+    const whiteClockMs =
+      typeof resolvedStreamMeta?.whiteClockMs === 'number'
+        ? resolvedStreamMeta.whiteClockMs
+        : initSec * 1000;
+    const blackClockMs =
+      typeof resolvedStreamMeta?.blackClockMs === 'number'
+        ? resolvedStreamMeta.blackClockMs
+        : initSec * 1000;
+    const version = parsedInitialMovesUci.length;
+
+    return {
+      fullId: redirect.fullId,
+      gameId,
+      sri: redirect.sri,
+      humanColor,
+      opponentName,
+      opponentRating,
+      opponentFlag,
+      opponentTitle,
+      opponentAvatarUrl,
+      initialSeconds: initSec,
+      incrementSeconds: incSec,
+      whiteClockMs,
+      blackClockMs,
+      version,
+      cookie: cookieToUse,
+      initialMovesUci: parsedInitialMovesUci,
+      socket: playWs,
+      bufferedEvents,
+      opponentPresent: true,
+      initialLagMs: measuredLagMs,
+    };
+  };
+
+  while (Date.now() - startedAt < timeoutMs - 250) {
+    const remainingBudgetMs = Math.max(700, timeoutMs - (Date.now() - startedAt) - 1200);
+    const sri = crypto.randomBytes(9).toString('base64url').slice(0, 12);
+
+    const redirectResult = await new Promise<{
+      fullId: string;
+      cookie?: string;
+      joinedHook?: LichessLobbyHook & { fresh?: boolean };
+    } | null>((resolve) => {
+      let settled = false;
+      let lastJoinedHook: (LichessLobbyHook & { fresh?: boolean }) | undefined;
+      const candidateHooks = new Map<string, LichessLobbyHook & { fresh?: boolean }>();
+
+      const finish = (
+        val: { fullId: string; cookie?: string; joinedHook?: LichessLobbyHook & { fresh?: boolean } } | null,
+      ) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearInterval(retryInterval);
+        try {
+          lobbyWs.close();
+        } catch {
+          // ignore
+        }
+        resolve(val);
+      };
+
+      const lobbyHeaders: Record<string, string> = {
+        Origin: 'https://lichess.org',
+        'User-Agent':
+          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36',
+      };
+      if (lilaCookie) lobbyHeaders.Cookie = lilaCookie;
+      if (params.onlineToken) lobbyHeaders.Authorization = `Bearer ${params.onlineToken}`;
+
+      const lobbyWs = new WebSocket(`wss://socket.lichess.org/lobby/socket/v5?sri=${sri}`, {
+        headers: lobbyHeaders,
+      });
+
+      const isNamedHook = (h: LichessLobbyHook & { fresh?: boolean }): boolean => {
+        const u = typeof h.u === 'string' ? h.u.trim() : '';
+        return Boolean(u && !isPlaceholderPlayerUsername(u));
+      };
+
+      const isEligibleStandardHook = (
+        h: LichessLobbyHook & { fresh?: boolean },
+        requireNamed = false,
+      ): boolean => {
+        if (!h || typeof h.id !== 'string' || triedHookIds.has(h.id)) return false;
+        if (isSkippedLichessSri(h.sri)) return false;
+        if (h.ra && !params.onlineToken) return false;
+        if (requireNamed && !isNamedHook(h)) return false;
+        if (
+          requireNamedRated &&
+          !isMatchCandidateEligible({
+            playerElo: targetElo,
+            opponentName: h.u,
+            opponentRating: typeof h.rating === 'number' ? h.rating : undefined,
+            requireNamedRated: true,
+            maxEloGap,
+          })
+        ) {
+          return false;
+        }
+        const varKey = typeof h.variant === 'string' ? h.variant : h.variant?.key;
+        if (varKey && varKey !== 'standard') return false;
+        if (params.preferredColor === 'w' && h.c === 'white') return false;
+        if (params.preferredColor === 'b' && h.c === 'black') return false;
+        if (typeof h.rating === 'number' && !isWithinFairEloBand(targetElo, h.rating, maxEloGap)) {
+          return false;
+        }
+        const { initial, increment } = parseHookClockSeconds(h);
+        const elapsed = Date.now() - startedAt;
+        if (elapsed < 650) {
+          return initial === params.initialSeconds && increment === params.incrementSeconds;
+        }
+        if (elapsed < 1600 || params.allowSpeedFallback === false) {
+          return (
+            Math.abs(initial - params.initialSeconds) <= 120 &&
+            Math.abs(increment - params.incrementSeconds) <= 3
+          );
+        }
+        return isTimeControlCompatibleForFallback(
+          params.initialSeconds,
+          params.incrementSeconds,
+          initial,
+          increment,
+        );
+      };
+
+      const scoreHook = (h: LichessLobbyHook & { fresh?: boolean }): number => {
+        const { initial, increment } = parseHookClockSeconds(h);
+        const namedBonus = isNamedHook(h) ? -800 : 140;
+        const freshBonus = h.fresh ? -1200 : 350;
+        const explicitColorBonus = h.c ? -120 : 0;
+        const ratingDiff = typeof h.rating === 'number' ? Math.abs(h.rating - targetElo) * 0.6 : 100;
+        return (
+          Math.abs(params.initialSeconds - initial) +
+          Math.abs(params.incrementSeconds - increment) * 15 +
+          ratingDiff +
+          namedBonus +
+          freshBonus +
+          explicitColorBonus
+        );
+      };
+
+      const tryJoinBestHook = () => {
+        if (settled || lobbyWs.readyState !== WebSocket.OPEN) return;
+        if (params.specificHookId) {
+          if (!triedHookIds.has(params.specificHookId)) {
+            triedHookIds.add(params.specificHookId);
+            lastJoinedHook = candidateHooks.get(params.specificHookId);
+            lobbyWs.send(JSON.stringify({ t: 'join', d: params.specificHookId }));
+          }
+          return;
+        }
+        const allHooks = [...candidateHooks.values()];
+        const elapsed = Date.now() - startedAt;
+        let eligible = allHooks.filter((h) => isEligibleStandardHook(h, true));
+        if (eligible.length === 0 && !requireNamedRated) {
+          const freshThresholdMs = params.onlineToken ? 900 : 280;
+          const freshPool = allHooks.filter((h) => h.fresh && isEligibleStandardHook(h, false));
+          if (freshPool.length > 0 && (elapsed >= 120 || !params.onlineToken)) {
+            eligible = freshPool;
+          } else if (elapsed >= freshThresholdMs) {
+            eligible = allHooks.filter((h) => isEligibleStandardHook(h, false));
+          }
+        }
+        if (eligible.length === 0) return;
+        eligible.sort((a, b) => scoreHook(a) - scoreHook(b));
+        const best = eligible[0];
+        triedHookIds.add(best.id);
+        lastJoinedHook = best;
+        lobbyWs.send(JSON.stringify({ t: 'join', d: best.id }));
+      };
+
+      const timer = setTimeout(() => finish(null), Math.min(remainingBudgetMs, 2200));
+      const retryInterval = setInterval(() => tryJoinBestHook(), 140);
+
+      lobbyWs.on('open', () => {
+        lobbyWs.send(JSON.stringify({ t: 'hookIn' }));
+        if (params.specificHookId) {
+          setTimeout(() => tryJoinBestHook(), 40);
+        }
+      });
+
+      lobbyWs.on('message', (raw) => {
+        try {
+          const msg = JSON.parse(String(raw));
+          const hookList: LichessLobbyHook[] | null =
+            msg.t === 'hooks'
+              ? Array.isArray(msg.d)
+                ? (msg.d as LichessLobbyHook[])
+                : Array.isArray(msg.d?.list)
+                  ? (msg.d.list as LichessLobbyHook[])
+                  : null
+              : null;
+          if (hookList) {
+            for (const h of hookList) {
+              if (h?.id) {
+                candidateHooks.set(h.id, { ...h, fresh: false });
+                if (h.u) recordLiveDiscoveredPlayer({ username: h.u, rating: h.rating });
+              }
+            }
+            tryJoinBestHook();
+          } else if (msg.t === 'had' && msg.d?.id) {
+            const h = msg.d as LichessLobbyHook;
+            candidateHooks.set(h.id, { ...h, fresh: true });
+            if (h.u) recordLiveDiscoveredPlayer({ username: h.u, rating: h.rating });
+            tryJoinBestHook();
+          } else if (msg.t === 'hrm' && typeof msg.d === 'string') {
+            for (let i = 0; i < msg.d.length; i += 8) {
+              candidateHooks.delete(msg.d.slice(i, i + 8));
+            }
+          } else if (msg.t === 'redirect' && msg.d?.id) {
+            const fullId = String(msg.d.id).replace(/^\//, '');
+            const cookie =
+              msg.d.cookie?.name && msg.d.cookie?.value
+                ? `${msg.d.cookie.name}=${msg.d.cookie.value}`
+                : undefined;
+            finish({ fullId, cookie, joinedHook: lastJoinedHook });
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      lobbyWs.on('error', () => finish(null));
+      lobbyWs.on('close', () => finish(null));
+    });
+
+    if (!redirectResult?.fullId) {
+      break;
+    }
+
+    const verifiedMatch = await verifyPlaySocketReady({
+      fullId: redirectResult.fullId,
+      cookie: redirectResult.cookie,
+      sri,
+      joinedHook: redirectResult.joinedHook,
+    });
+    if (verifiedMatch) {
+      return verifiedMatch;
+    }
+    if (params.specificHookId) {
+      return null;
     }
   }
 
-  const whiteClockMs =
-    typeof v5Data?.clock?.white === 'number'
-      ? Math.max(0, Math.round(v5Data.clock.white * 1000))
-      : initSec * 1000;
-  const blackClockMs =
-    typeof v5Data?.clock?.black === 'number'
-      ? Math.max(0, Math.round(v5Data.clock.black * 1000))
-      : initSec * 1000;
-  const version = typeof v5Data?.player?.version === 'number' ? v5Data.player.version : 0;
-
-  return {
-    fullId: redirectResult.fullId,
-    gameId,
-    sri,
-    humanColor,
-    opponentName,
-    opponentRating,
-    opponentFlag,
-    opponentTitle,
-    opponentAvatarUrl,
-    initialSeconds: initSec,
-    incrementSeconds: incSec,
-    whiteClockMs,
-    blackClockMs,
-    version,
-    cookie: redirectResult.cookie || lilaCookie,
-    initialMovesUci: parsedInitialMovesUci,
-  };
+  return null;
 }
 
 interface FicsJoinedMatch {
@@ -2674,11 +3114,19 @@ async function joinRealFicsGame(params: {
   preferredColor: 'w' | 'b' | 'random';
   playerElo?: number;
   specificAdId?: string;
+  allowUnratedGuest?: boolean;
+  maxEloGap?: number;
+  preferExactClock?: boolean;
+  allowSpeedFallback?: boolean;
   timeoutMs?: number;
   isCancelled?: () => boolean;
 }): Promise<FicsJoinedMatch | null> {
   const timeoutMs = params.timeoutMs ?? 6500;
   const targetElo = Math.max(100, Math.min(3200, Math.round(params.playerElo ?? 1200)));
+  const maxEloGap = params.maxEloGap ?? MAX_MATCHMAKING_ELO_GAP;
+  const preferExactClock = params.preferExactClock ?? true;
+  const allowSpeedFallback = params.allowSpeedFallback ?? true;
+  const requireNamedRated = !params.allowUnratedGuest && !params.specificAdId;
   const reqMins = Math.max(1, Math.round(params.initialSeconds / 60));
   const reqInc = Math.max(0, Math.round(params.incrementSeconds));
   const reqSpeed: 'bullet' | 'blitz' | 'rapid' =
@@ -2687,16 +3135,17 @@ async function joinRealFicsGame(params: {
   return new Promise<FicsJoinedMatch | null>((resolve) => {
     let settled = false;
     let buffer = '';
-    let sentLogin = false;
-    let sentReturn = false;
-    let readyAtPrompt = false;
-    let localFicsName = 'guest';
+    const warm = acquireWarmFicsSession();
+    let sentLogin = Boolean(warm);
+    let sentReturn = Boolean(warm);
+    let readyAtPrompt = Boolean(warm);
+    let localFicsName = warm?.localFicsName ?? 'guest';
     let soughtHandled = false;
-    let triedAdIds = new Set<string>();
+    const triedAdIds = new Set<string>();
     let lastAttemptedAd: FicsSoughtAd | null = null;
     const creatingRatings = new Map<string, number>();
 
-    const sock = net.createConnection({ host: 'freechess.org', port: 5000 });
+    const sock = warm?.socket ?? net.createConnection({ host: 'freechess.org', port: 5000 });
 
     const cleanupAndFail = () => {
       if (settled) return;
@@ -2732,13 +3181,21 @@ async function joinRealFicsGame(params: {
         if (triedAdIds.has(ad.adId)) return false;
         if (params.preferredColor === 'w' && ad.color === 'white') return false;
         if (params.preferredColor === 'b' && ad.color === 'black') return false;
-        if (typeof ad.rating === 'number' && !isWithinMatchmakingEloBand(targetElo, ad.rating)) {
+        if (
+          !isMatchCandidateEligible({
+            playerElo: targetElo,
+            opponentName: ad.username,
+            opponentRating: ad.rating,
+            requireNamedRated,
+            maxEloGap,
+          })
+        ) {
           return false;
         }
         if (mode === 'exact') {
           return (
-            Math.abs(ad.initialSeconds - params.initialSeconds) <= 180 &&
-            Math.abs(ad.incrementSeconds - reqInc) <= 5
+            Math.abs(ad.initialSeconds - params.initialSeconds) <= 120 &&
+            Math.abs(ad.incrementSeconds - reqInc) <= 3
           );
         }
         if (mode === 'speed') return ad.speed === reqSpeed;
@@ -2746,17 +3203,35 @@ async function joinRealFicsGame(params: {
       });
       if (eligible.length === 0) return null;
       eligible.sort((a, b) => {
+        const aRatedNamed = (typeof a.rating === 'number' ? -450 : 0) + (/^Guest/i.test(a.username) ? 150 : -150);
+        const bRatedNamed = (typeof b.rating === 'number' ? -450 : 0) + (/^Guest/i.test(b.username) ? 150 : -150);
         const diffA =
+          aRatedNamed +
           Math.abs(a.initialSeconds - params.initialSeconds) +
           Math.abs(a.incrementSeconds - reqInc) * 15 +
           (typeof a.rating === 'number' ? Math.abs(a.rating - targetElo) * 0.25 : 40);
         const diffB =
+          bRatedNamed +
           Math.abs(b.initialSeconds - params.initialSeconds) +
           Math.abs(b.incrementSeconds - reqInc) * 15 +
           (typeof b.rating === 'number' ? Math.abs(b.rating - targetElo) * 0.25 : 40);
         return diffA - diffB;
       });
       return eligible[0];
+    };
+
+    const tryNextFallbackAd = (includeAny: boolean) => {
+      if (settled || !readyAtPrompt) return;
+      const pool = cachedAds.length > 0 ? cachedAds : FICS_LIVE_SOUGHT;
+      const nextAd =
+        pickBestAd(pool, 'exact') ??
+        (allowSpeedFallback ? pickBestAd(pool, 'speed') : null) ??
+        (includeAny && allowSpeedFallback ? pickBestAd(pool, 'any') : null);
+      if (nextAd) {
+        triedAdIds.add(nextAd.adId);
+        lastAttemptedAd = nextAd;
+        sock.write(`play ${nextAd.adId}\n`);
+      }
     };
 
     const sendSeekAndCheckSought = () => {
@@ -2770,31 +3245,32 @@ async function joinRealFicsGame(params: {
       const ads = parseFicsSoughtOutput(buffer);
       cachedAds = ads;
       if (ads.length > 0) FICS_LIVE_SOUGHT = ads;
-      const ad = pickBestAd(ads, 'exact') ?? pickBestAd(ads, 'speed');
-      if (ad) {
-        triedAdIds.add(ad.adId);
-        lastAttemptedAd = ad;
-        sock.write(`play ${ad.adId}\n`);
+      const exactAd = pickBestAd(ads, 'exact');
+      const immediateAd =
+        exactAd ?? (!preferExactClock && allowSpeedFallback ? pickBestAd(ads, 'speed') : null);
+      if (immediateAd) {
+        triedAdIds.add(immediateAd.adId);
+        lastAttemptedAd = immediateAd;
+        sock.write(`play ${immediateAd.adId}\n`);
       }
-      const colorWord =
-        params.preferredColor === 'w' ? ' white' : params.preferredColor === 'b' ? ' black' : '';
-      sock.write(`seek ${reqMins} ${reqInc} u${colorWord}\n`);
-      setTimeout(() => {
-        if (settled || !readyAtPrompt) return;
-        const fallbackAd = pickBestAd(cachedAds.length > 0 ? cachedAds : FICS_LIVE_SOUGHT, 'any');
-        if (fallbackAd) {
-          triedAdIds.add(fallbackAd.adId);
-          lastAttemptedAd = fallbackAd;
-          sock.write(`play ${fallbackAd.adId}\n`);
+      if (!requireNamedRated) {
+        const colorWord =
+          params.preferredColor === 'w' ? ' white' : params.preferredColor === 'b' ? ' black' : '';
+        sock.write(`seek ${reqMins} ${reqInc} u${colorWord}\n`);
+        if (allowSpeedFallback) {
+          setTimeout(() => tryNextFallbackAd(false), preferExactClock ? 2000 : 1200);
+          setTimeout(() => tryNextFallbackAd(true), 3200);
         }
-      }, 3200);
+      } else if (!immediateAd) {
+        cleanupAndFail();
+      }
     };
 
     const soughtFallbackTimer = setTimeout(() => {
       if (!settled && readyAtPrompt && !soughtHandled) {
         sendSeekAndCheckSought();
       }
-    }, 2400);
+    }, warm ? 750 : 2200);
 
     const finishWithStyle12 = (s12: FicsStyle12State, remainingBuffer: string) => {
       if (settled) return;
@@ -2802,10 +3278,6 @@ async function joinRealFicsGame(params: {
         cleanupAndFail();
         return;
       }
-      settled = true;
-      clearTimeout(hardTimer);
-      clearTimeout(soughtFallbackTimer);
-      clearInterval(cancelCheckTimer);
 
       const whiteLower = s12.whiteName.toLowerCase();
       const blackLower = s12.blackName.toLowerCase();
@@ -2832,6 +3304,26 @@ async function joinRealFicsGame(params: {
           : undefined) ??
         soughtMatch?.rating ??
         cachedOpp?.rating;
+      const validatedRating =
+        typeof rawRating === 'number' && rawRating >= 100 ? rawRating : undefined;
+
+      if (
+        !isMatchCandidateEligible({
+          playerElo: targetElo,
+          opponentName,
+          opponentRating: validatedRating,
+          requireNamedRated,
+          maxEloGap,
+        })
+      ) {
+        cleanupAndFail();
+        return;
+      }
+
+      settled = true;
+      clearTimeout(hardTimer);
+      clearTimeout(soughtFallbackTimer);
+      clearInterval(cancelCheckTimer);
 
       const initSec = Math.max(60, Math.round((s12.initialMinutes || reqMins) * 60));
       const incSec = Math.max(0, Math.round(s12.incrementSeconds ?? reqInc));
@@ -2844,7 +3336,7 @@ async function joinRealFicsGame(params: {
         gameNumber: s12.gameNumber,
         humanColor,
         opponentName,
-        opponentRating: typeof rawRating === 'number' && rawRating >= 100 ? rawRating : undefined,
+        opponentRating: validatedRating,
         initialSeconds: initSec,
         incrementSeconds: incSec,
         whiteClockMs: Math.max(0, s12.whiteClockMs),
@@ -2870,11 +3362,13 @@ async function joinRealFicsGame(params: {
         return;
       }
       if (sentReturn && !readyAtPrompt && /fics%/i.test(buffer)) {
-        const guestM = buffer.match(/(?:Logging you in as "|Starting FICS session as )"(?:"?)([A-Za-z0-9_]+)/i);
+        const guestM = buffer.match(/(?:Logging you in as "|Starting FICS session as )"?([A-Za-z0-9_]+)/i);
         if (guestM) localFicsName = guestM[1];
         readyAtPrompt = true;
         buffer = '';
-        sock.write('set seek 0\nset style 12\nset echo 0\nset shout 0\nset pin 0\n');
+        sock.write(
+          'set seek 0\nset style 12\nset echo 0\nset shout 0\nset pin 0\nset gin 0\nset kibitz 0\nset tell 0\nset ctell 0\n',
+        );
         if (params.specificAdId) {
           sendSeekAndCheckSought();
         } else {
@@ -2892,20 +3386,23 @@ async function joinRealFicsGame(params: {
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
         if (!line) continue;
-        const createM = line.match(
-          /Creating:\s+([A-Za-z0-9_]+)\s+\((?:\+\+\+\+|----|\s*(\d{3,4})\s*)\)\s+([A-Za-z0-9_]+)\s+\((?:\+\+\+\+|----|\s*(\d{3,4})\s*)\)/i,
-        );
-        if (createM) {
-          if (createM[2]) creatingRatings.set(createM[1].toLowerCase(), Number(createM[2]));
-          if (createM[4]) creatingRatings.set(createM[3].toLowerCase(), Number(createM[4]));
+        const created = parseFicsCreatingLine(line);
+        if (created) {
+          if (typeof created.whiteRating === 'number') {
+            creatingRatings.set(created.whiteName.toLowerCase(), created.whiteRating);
+          }
+          if (typeof created.blackRating === 'number') {
+            creatingRatings.set(created.blackName.toLowerCase(), created.blackRating);
+          }
         }
         if (line.includes('is not available') || line.includes('You cannot accept your own seek')) {
           if (params.specificAdId) {
             cleanupAndFail();
             return;
           }
+          tryNextFallbackAd(false);
         }
-        if (line.startsWith('<12> ')) {
+        if (line.includes('<12> ')) {
           const s12 = parseFicsStyle12Line(line);
           if (s12 && (s12.myRelation === 1 || s12.myRelation === -1)) {
             const rest = [...lines.slice(i + 1), buffer].join('\n');
@@ -2918,6 +3415,15 @@ async function joinRealFicsGame(params: {
 
     sock.on('error', cleanupAndFail);
     sock.on('close', cleanupAndFail);
+
+    // If using an already-logged-in warm socket, immediately execute seek/play in ~180ms!
+    if (warm && readyAtPrompt && !settled) {
+      if (params.specificAdId) {
+        sendSeekAndCheckSought();
+      } else {
+        sock.write('sought\n');
+      }
+    }
   });
 }
 
@@ -2950,6 +3456,10 @@ function setupLiveWebSocketServer(
       incrementSeconds: number;
       preferredColor: 'w' | 'b' | 'random';
       playerElo: number;
+      rated?: boolean;
+      allowUnratedFallback?: boolean;
+      startedAt?: number;
+      timedOutRatedNotified?: boolean;
       cancelled?: boolean;
       retryTimer?: ReturnType<typeof setInterval>;
     }>
@@ -3024,14 +3534,37 @@ function setupLiveWebSocketServer(
     return 1200;
   };
 
+  // Kick off background FICS session warmup so Quick Match has zero telnet login lag
+  ensureWarmFicsSession();
+
   const cleanupRoomLichessBridge = (room: LiveRoom) => {
     if (room.lichessHeartbeat) {
       clearInterval(room.lichessHeartbeat);
       room.lichessHeartbeat = null;
     }
+    if (room.ficsHeartbeat) {
+      clearInterval(room.ficsHeartbeat);
+      room.ficsHeartbeat = null;
+    }
     if (room.lichessGoneTimer) {
       clearTimeout(room.lichessGoneTimer);
       room.lichessGoneTimer = null;
+    }
+    if (room.lichessInitCheckTimer) {
+      clearTimeout(room.lichessInitCheckTimer);
+      room.lichessInitCheckTimer = null;
+    }
+    if (room.ficsInitCheckTimer) {
+      clearTimeout(room.ficsInitCheckTimer);
+      room.ficsInitCheckTimer = null;
+    }
+    if (room.lichessStreamAbort) {
+      try {
+        room.lichessStreamAbort.abort();
+      } catch {
+        // ignore
+      }
+      room.lichessStreamAbort = null;
     }
     if (room.lichessSocket) {
       try {
@@ -3095,7 +3628,7 @@ function setupLiveWebSocketServer(
   };
 
   const finalizeRoomResult = (room: LiveRoom) => {
-    if (!room.winner || room.finalized) return;
+    if (!room.winner || room.winner === 'aborted' || room.finalized) return;
     room.finalized = true;
     if (room.historyMeta.length === 0 && room.winner === 'draw') return;
 
@@ -3208,15 +3741,73 @@ function setupLiveWebSocketServer(
     const now = Date.now();
     let wClock = room.whiteClockMs;
     let bClock = room.blackClockMs;
+    if (room.whiteSocket && room.blackSocket) {
+      room.everHadBothPlayers = true;
+      room.opponentDisconnectedAt = null;
+    }
     const bothPresent = Boolean(
       (room.whiteSocket && room.blackSocket) ||
         (room.lichessSide && (room.whiteSocket || room.blackSocket) && room.lichessOpponentPresent !== false) ||
         (room.ficsSide && (room.whiteSocket || room.blackSocket) && room.ficsOpponentPresent !== false),
     );
-    if (room.lastMoveAt && !room.winner && bothPresent && room.chess.history().length > 0) {
-      const elapsed = now - room.lastMoveAt;
+    const clockBaseAt = room.clockSyncedAt ?? room.lastMoveAt;
+    if (clockBaseAt && !room.winner && bothPresent && room.chess.history().length > 0) {
+      const elapsed = Math.max(0, now - clockBaseAt);
       if (room.chess.turn() === 'w') wClock = Math.max(0, wClock - elapsed);
       else bClock = Math.max(0, bClock - elapsed);
+    }
+
+    let opponentStatus: OpponentPresenceStatus = 'active';
+    let opponentGoneSeconds: number | null = null;
+    if (room.lichessSide) {
+      if (room.lichessOpponentPresent === false) {
+        opponentStatus = 'disconnected';
+        if (room.lichessOpponentGoneAt && room.lichessOpponentGoneDurationSec) {
+          opponentGoneSeconds = Math.max(
+            0,
+            Math.ceil(
+              (room.lichessOpponentGoneAt + room.lichessOpponentGoneDurationSec * 1000 - now) /
+                1000,
+            ),
+          );
+        }
+      } else if (
+        !room.lichessOpponentEverSeen &&
+        room.historyMeta.length === 0 &&
+        now - (room.createdAt ?? now) < 4_500
+      ) {
+        opponentStatus = 'joining';
+      } else {
+        opponentStatus = 'active';
+      }
+    } else if (room.ficsSide) {
+      opponentStatus = room.ficsOpponentPresent === false ? 'disconnected' : 'active';
+      if (opponentStatus === 'disconnected' && room.ficsOpponentGoneAt) {
+        opponentGoneSeconds = Math.max(
+          0,
+          Math.ceil((room.ficsOpponentGoneAt + 12_000 - now) / 1000),
+        );
+      }
+    } else {
+      const bothNamed =
+        room.whiteName !== 'Waiting for Friend...' &&
+        room.blackName !== 'Waiting for Friend...';
+      if (!bothPresent) {
+        if (room.everHadBothPlayers || room.historyMeta.length > 0) {
+          opponentStatus = 'disconnected';
+          if (room.opponentDisconnectedAt) {
+            const graceWindowMs = room.historyMeta.length > 0 ? 15_000 : 6_500;
+            opponentGoneSeconds = Math.max(
+              0,
+              Math.ceil((room.opponentDisconnectedAt + graceWindowMs - now) / 1000),
+            );
+          }
+        } else if (bothNamed) {
+          opponentStatus = 'joining';
+        } else {
+          opponentStatus = 'joining';
+        }
+      }
     }
 
     const basePayload = {
@@ -3229,6 +3820,7 @@ function setupLiveWebSocketServer(
       history: room.historyMeta,
       whiteClockMs: wClock,
       blackClockMs: bClock,
+      serverTimeMs: now,
       whiteName: room.whiteName,
       blackName: room.blackName,
       whiteRating: room.whiteRating,
@@ -3241,10 +3833,14 @@ function setupLiveWebSocketServer(
       blackTitle: room.blackTitle,
       rated: room.rated !== false,
       opponentConnected: bothPresent,
+      opponentStatus,
+      opponentGoneSeconds,
+      bridgeLagMs: room.bridgeLagMs ?? null,
       drawOfferBy: room.drawOfferBy,
       rematchOfferBy: room.rematchOfferBy ?? null,
       winner: room.winner,
-      endReason: room.endReason,
+      aborted: room.winner === 'aborted',
+      endReason: stripPlatformFromText(room.endReason) || room.endReason,
       initialSeconds: room.initialSeconds,
       incrementSeconds: room.incrementSeconds,
       serverSource:
@@ -3262,10 +3858,359 @@ function setupLiveWebSocketServer(
     }
   };
 
-  const connectRoomToLichessPlaySocket = (room: LiveRoom) => {
+  const applyLichessUciMoveToRoom = (
+    room: LiveRoom,
+    uci: string,
+    clocks?: { whiteSec?: number; blackSec?: number },
+  ): boolean => {
+    if (!uci || uci.length < 4 || room.winner) return false;
+    const from = uci.slice(0, 2);
+    const to = uci.slice(2, 4);
+    const promotion = uci.length > 4 ? uci[4] : 'q';
+
+    if (typeof clocks?.whiteSec === 'number') {
+      room.whiteClockMs = Math.max(0, Math.round(clocks.whiteSec * 1000));
+      room.clockSyncedAt = Date.now();
+    }
+    if (typeof clocks?.blackSec === 'number') {
+      room.blackClockMs = Math.max(0, Math.round(clocks.blackSec * 1000));
+      room.clockSyncedAt = Date.now();
+    }
+
+    const lastMeta = room.historyMeta[room.historyMeta.length - 1];
+    if (lastMeta && lastMeta.from === from && lastMeta.to === to) {
+      return false;
+    }
+    try {
+      const moved = room.chess.move({ from, to, promotion });
+      if (!moved) return false;
+      const now = Date.now();
+      room.lastMoveAt = now;
+      room.clockSyncedAt = now;
+      room.drawOfferBy = null;
+      room.historyMeta.push({
+        from: moved.from,
+        to: moved.to,
+        san: moved.san,
+        captured: Boolean(moved.captured) || moved.flags.includes('e'),
+      });
+      if (moved.color === room.lichessSide) {
+        room.lichessOpponentEverSeen = true;
+        room.lichessOpponentPresent = true;
+        room.lichessOpponentGoneAt = null;
+        room.lichessOpponentGoneDurationSec = null;
+        if (room.lichessGoneTimer) {
+          clearTimeout(room.lichessGoneTimer);
+          room.lichessGoneTimer = null;
+        }
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleRemoteLichessTerminalStatus = (
+    room: LiveRoom,
+    statusName: string,
+    winnerSide?: string,
+  ) => {
+    if (room.winner) return;
+    const endedSet = new Set([
+      'aborted',
+      'mate',
+      'resign',
+      'stalemate',
+      'draw',
+      'outoftime',
+      'cheat',
+      'noStart',
+      'variantEnd',
+    ]);
+    if (!endedSet.has(statusName)) return;
+    const endMsg =
+      statusName === 'aborted' || statusName === 'noStart'
+        ? 'Game aborted before starting'
+        : statusName === 'resign'
+          ? `${winnerSide === 'white' ? 'Black' : 'White'} resigned`
+          : statusName === 'outoftime'
+            ? `${winnerSide === 'white' ? 'Black' : 'White'} ran out of time`
+            : statusName === 'mate'
+              ? `${winnerSide === 'white' ? 'White' : 'Black'} wins by checkmate`
+              : `Match ended (${statusName})`;
+    const resolved = resolveOnlineEndOutcome({
+      statusName,
+      winnerSide,
+      moveCount: room.historyMeta.length,
+      endReason: endMsg,
+    });
+    room.winner = resolved.winner;
+    room.endReason = resolved.reason;
+    cleanupRoomLichessBridge(room);
+    if (!resolved.aborted) finalizeRoomResult(room);
+    broadcastRoomState(room);
+  };
+
+  const attachLichessBackupStream = (room: LiveRoom) => {
+    if (!room.lichessGameId || room.winner) return;
+    if (room.lichessStreamAbort) {
+      try {
+        room.lichessStreamAbort.abort();
+      } catch {
+        // ignore
+      }
+    }
+    const ctrl = new AbortController();
+    room.lichessStreamAbort = ctrl;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `https://lichess.org/api/stream/game/${encodeURIComponent(room.lichessGameId!)}`,
+          {
+            headers: {
+              Accept: 'application/x-ndjson',
+              'User-Agent': 'OpenChess/1.0',
+            },
+            signal: ctrl.signal,
+          },
+        );
+        if (!res.ok || !res.body) return;
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let acc = '';
+        let firstLineParsed = false;
+        while (!ctrl.signal.aborted && !room.winner) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          acc += decoder.decode(value, { stream: true });
+          const lines = acc.split(/\r?\n/);
+          acc = lines.pop() ?? '';
+          for (const rawLine of lines) {
+            const trimmed = rawLine.trim();
+            if (!trimmed || room.winner || room.lichessStreamAbort !== ctrl) continue;
+            if (!firstLineParsed) {
+              firstLineParsed = true;
+              const meta = parseLichessGameStreamInitial(trimmed);
+              if (meta) {
+                let updatedIdentity = false;
+                const oppName = room.lichessSide === 'w' ? meta.whiteName : meta.blackName;
+                const oppRating = room.lichessSide === 'w' ? meta.whiteRating : meta.blackRating;
+                const oppTitle = room.lichessSide === 'w' ? meta.whiteTitle : meta.blackTitle;
+                if (oppName && (room.lichessSide === 'w' ? room.whiteName === 'Guest Opponent' : room.blackName === 'Guest Opponent')) {
+                  if (room.lichessSide === 'w') room.whiteName = oppName;
+                  else room.blackName = oppName;
+                  updatedIdentity = true;
+                }
+                if (typeof oppRating === 'number') {
+                  if (room.lichessSide === 'w' && room.whiteRating === undefined) {
+                    room.whiteRating = oppRating;
+                    room.rated = true;
+                    updatedIdentity = true;
+                  } else if (room.lichessSide === 'b' && room.blackRating === undefined) {
+                    room.blackRating = oppRating;
+                    room.rated = true;
+                    updatedIdentity = true;
+                  }
+                }
+                if (oppTitle) {
+                  if (room.lichessSide === 'w' && !room.whiteTitle) room.whiteTitle = oppTitle;
+                  else if (room.lichessSide === 'b' && !room.blackTitle) room.blackTitle = oppTitle;
+                }
+                for (const uci of meta.initialMovesUci) {
+                  if (applyLichessUciMoveToRoom(room, uci)) updatedIdentity = true;
+                }
+                if (meta.statusName) {
+                  handleRemoteLichessTerminalStatus(room, meta.statusName, meta.winnerSide);
+                }
+                if (updatedIdentity && !room.winner) broadcastRoomState(room);
+              }
+              continue;
+            }
+            try {
+              const ev = JSON.parse(trimmed) as Record<string, any>;
+              let changed = false;
+              if (typeof ev.wc === 'number') {
+                room.whiteClockMs = Math.max(0, Math.round(ev.wc * 1000));
+                room.clockSyncedAt = Date.now();
+              }
+              if (typeof ev.bc === 'number') {
+                room.blackClockMs = Math.max(0, Math.round(ev.bc * 1000));
+                room.clockSyncedAt = Date.now();
+              }
+              if (typeof ev.lm === 'string' && ev.lm.length >= 4) {
+                changed = applyLichessUciMoveToRoom(room, ev.lm, {
+                  whiteSec: typeof ev.wc === 'number' ? ev.wc : undefined,
+                  blackSec: typeof ev.bc === 'number' ? ev.bc : undefined,
+                });
+              }
+              const stName =
+                typeof ev.status === 'object' ? ev.status?.name : typeof ev.status === 'string' ? ev.status : undefined;
+              if (stName) {
+                handleRemoteLichessTerminalStatus(room, stName, typeof ev.winner === 'string' ? ev.winner : undefined);
+                return;
+              }
+              if (changed && !room.winner) {
+                broadcastRoomState(room);
+              }
+            } catch {
+              // ignore non-json ndjson line
+            }
+          }
+        }
+      } catch {
+        // stream aborted or timed out
+      } finally {
+        if (
+          !ctrl.signal.aborted &&
+          !room.winner &&
+          room.lichessGameId &&
+          room.lichessStreamAbort === ctrl &&
+          (room.whiteSocket || room.blackSocket) &&
+          (room.lichessStreamRetries ?? 0) < 4
+        ) {
+          room.lichessStreamRetries = (room.lichessStreamRetries ?? 0) + 1;
+          setTimeout(() => {
+            if (!room.winner && room.lichessGameId && room.lichessStreamAbort === ctrl) {
+              triggerLichessRoomResync(room);
+              attachLichessBackupStream(room);
+            }
+          }, 1200);
+        }
+      }
+    })();
+  };
+
+  const rebuildLichessRoomMovesFromUci = (
+    room: LiveRoom,
+    movesUci: string[],
+    allowResetToEmpty = false,
+  ): boolean => {
+    if (movesUci.length === 0) {
+      if (!allowResetToEmpty || room.historyMeta.length === 0) return false;
+      const now = Date.now();
+      room.chess = new Chess();
+      room.historyMeta = [];
+      room.lastMoveAt = now;
+      room.clockSyncedAt = now;
+      room.drawOfferBy = null;
+      return true;
+    }
+    const rebuilt = new Chess();
+    const nextHistory: Array<{ from: string; to: string; san: string; captured?: boolean }> = [];
+    for (const uci of movesUci) {
+      if (!uci || uci.length < 4) return false;
+      try {
+        const moved = rebuilt.move({
+          from: uci.slice(0, 2),
+          to: uci.slice(2, 4),
+          promotion: uci.length > 4 ? uci[4] : 'q',
+        });
+        if (!moved) return false;
+        nextHistory.push({
+          from: moved.from,
+          to: moved.to,
+          san: moved.san,
+          captured: Boolean(moved.captured) || moved.flags.includes('e'),
+        });
+      } catch {
+        return false;
+      }
+    }
+    const changed =
+      rebuilt.fen() !== room.chess.fen() || nextHistory.length !== room.historyMeta.length;
+    if (changed) {
+      const now = Date.now();
+      room.chess = rebuilt;
+      room.historyMeta = nextHistory;
+      room.lastMoveAt = now;
+      room.clockSyncedAt = now;
+      room.drawOfferBy = null;
+    }
+    return changed;
+  };
+
+  const triggerLichessRoomResync = (room: LiveRoom) => {
+    if (!room.lichessGameId || room.winner) return;
+    void fetchLichessGameStreamSnapshot(room.lichessGameId, 950).then((snap) => {
+      if (!snap || room.winner) return;
+      const moveAgeMs = Date.now() - (room.lastMoveAt ?? room.createdAt ?? Date.now());
+      const localAheadByOne =
+        snap.initialMovesUci.length === room.historyMeta.length - 1 &&
+        room.lichessSide &&
+        room.chess.turn() === room.lichessSide;
+
+      // If our latest move didn't reach Lichess yet: retry sending once before rolling back cleanly
+      if (localAheadByOne) {
+        const pending = room.lichessPendingMoveAck;
+        if (
+          pending &&
+          pending.ply === room.historyMeta.length &&
+          pending.retries === 0 &&
+          room.lichessSocket &&
+          room.lichessSocket.readyState === WebSocket.OPEN &&
+          moveAgeMs < 5500
+        ) {
+          pending.retries = 1;
+          pending.sentAt = Date.now();
+          const lagMs = Math.max(10, Math.min(800, Math.round(room.bridgeLagMs ?? 45)));
+          try {
+            room.lichessSocket.send(
+              JSON.stringify({ t: 'move', d: { u: pending.uci, a: pending.ack, b: 0, l: lagMs } }),
+            );
+            return;
+          } catch {
+            // fall through to rollback
+          }
+        }
+        if (moveAgeMs < 3800) return;
+      }
+
+      const changed = rebuildLichessRoomMovesFromUci(
+        room,
+        snap.initialMovesUci,
+        Boolean(localAheadByOne && moveAgeMs >= 3800),
+      );
+      if (changed) {
+        room.lichessPendingMoveAck = null;
+      }
+      if (typeof snap.whiteClockMs === 'number') {
+        room.whiteClockMs = snap.whiteClockMs;
+        room.clockSyncedAt = Date.now();
+      }
+      if (typeof snap.blackClockMs === 'number') {
+        room.blackClockMs = snap.blackClockMs;
+        room.clockSyncedAt = Date.now();
+      }
+      if (snap.statusName) {
+        handleRemoteLichessTerminalStatus(room, snap.statusName, snap.winnerSide);
+        return;
+      }
+      if (changed) {
+        if (localAheadByOne) {
+          const humanWs = room.lichessSide === 'w' ? room.blackSocket : room.whiteSocket;
+          sendJson(humanWs, { type: 'move:rejected', roomId: room.id, fen: room.chess.fen() });
+        }
+        broadcastRoomState(room);
+      }
+    });
+  };
+
+  const connectRoomToLichessPlaySocket = (
+    room: LiveRoom,
+    existingSocket?: WebSocket,
+    initialEvents?: Array<Record<string, any>>,
+  ) => {
     if (!room.lichessFullId) return;
+    if (!room.lichessGameId) room.lichessGameId = room.lichessFullId.slice(0, 8);
     const playSri =
       room.lichessSri || crypto.randomBytes(9).toString('base64url').slice(0, 12);
+    if (initialEvents && initialEvents.length > 0) {
+      for (const ev of initialEvents) {
+        if (typeof ev?.v === 'number') {
+          room.lichessVersion = Math.max(room.lichessVersion ?? 0, ev.v);
+        }
+      }
+    }
     const vParam = room.lichessVersion ?? 0;
     const headers: Record<string, string> = {
       Origin: 'https://lichess.org',
@@ -3274,29 +4219,187 @@ function setupLiveWebSocketServer(
     };
     if (room.lichessCookie) headers.Cookie = room.lichessCookie;
 
-    const lws = new WebSocket(
-      `wss://socket.lichess.org/play/${room.lichessFullId}/v6?sri=${playSri}&v=${vParam}`,
-      { headers },
-    );
+    const lws =
+      existingSocket && existingSocket.readyState !== WebSocket.CLOSED && existingSocket.readyState !== WebSocket.CLOSING
+        ? existingSocket
+        : new WebSocket(
+            `wss://socket.lichess.org/play/${room.lichessFullId}/v6?sri=${playSri}&v=${vParam}`,
+            { headers },
+          );
+    // Replace any handoff buffering listeners attached by verifyPlaySocketReady
+    lws.removeAllListeners();
     room.lichessSocket = lws;
-    room.lichessAck = 1;
+    room.lichessAck = room.lichessAck ?? 1;
+
+    attachLichessBackupStream(room);
 
     room.lichessHeartbeat = setInterval(() => {
+      if (room.lichessSocket !== lws || room.winner) return;
       if (lws.readyState === WebSocket.OPEN) {
+        room.lichessLastPingAt = Date.now();
         lws.send(JSON.stringify({ t: 'p', v: room.lichessVersion ?? 0 }));
       }
-    }, 2500);
+      const now = Date.now();
+      const unackedTimedOut = Boolean(
+        room.lichessPendingMoveAck &&
+          now - room.lichessPendingMoveAck.sentAt >= 2200,
+      );
+      const staleTurnWait = Boolean(
+        room.lichessSide &&
+          room.chess.turn() === room.lichessSide &&
+          now - (room.lastMoveAt ?? room.createdAt ?? now) >= 4500,
+      );
+      if ((unackedTimedOut || staleTurnWait) && now - (room.lichessLastResyncAt ?? 0) >= 3500) {
+        room.lichessLastResyncAt = now;
+        triggerLichessRoomResync(room);
+      }
+    }, 2000);
 
-    lws.on('open', () => {
+    if (room.lichessInitCheckTimer) {
+      clearTimeout(room.lichessInitCheckTimer);
+      room.lichessInitCheckTimer = null;
+    }
+    const scheduleInitWatchdog = (delayMs: number) => {
+      if (room.lichessInitCheckTimer) clearTimeout(room.lichessInitCheckTimer);
+      room.lichessInitCheckTimer = setTimeout(() => {
+        room.lichessInitCheckTimer = null;
+        if (room.winner || !room.lichessSide) return;
+        const ageMs = Date.now() - (room.createdAt ?? Date.now());
+        if (!room.lichessOpponentEverSeen && room.lichessOpponentPresent !== true) {
+          room.lichessOpponentPresent = false;
+          room.lichessOpponentGoneAt = room.lichessOpponentGoneAt ?? Date.now();
+          room.lichessOpponentGoneDurationSec = room.lichessOpponentGoneDurationSec ?? 12;
+          broadcastRoomState(room);
+          scheduleLichessDisconnectTimeout(12_000);
+          return;
+        }
+        // If we are still stuck before move 2 on opponent's turn, force resync or abort stalled opening
+        if (room.historyMeta.length < 2 && room.chess.turn() === room.lichessSide) {
+          if (ageMs < 19_000) {
+            triggerLichessRoomResync(room);
+            scheduleInitWatchdog(Math.max(4_000, 20_000 - ageMs));
+          } else {
+            const oppSide = room.lichessSide;
+            cleanupRoomLichessBridge(room);
+            const resolved = resolveOnlineEndOutcome({
+              isDisconnect: true,
+              disconnectedSide: oppSide,
+              moveCount: room.historyMeta.length,
+              endReason: 'Opponent failed to start the match in time',
+            });
+            room.winner = resolved.winner;
+            room.endReason = resolved.reason;
+            if (!resolved.aborted) finalizeRoomResult(room);
+            broadcastRoomState(room);
+          }
+        }
+      }, delayMs);
+    };
+    if (!room.winner && room.lichessSide && room.historyMeta.length < 2) {
+      scheduleInitWatchdog(room.lichessOpponentEverSeen ? 9_500 : 4_600);
+    }
+
+    const handleLichessOpen = () => {
       if (room.lichessSocket !== lws) return;
       room.lichessReconnectCount = 0;
-    });
+      room.lichessLastPingAt = Date.now();
+      try {
+        lws.send(JSON.stringify({ t: 'p', v: room.lichessVersion ?? 0 }));
+      } catch {
+        // ignore
+      }
+      // Flush any opening/queued moves played while Lichess play socket was handshaking or reconnecting
+      room.pendingLichessMoves = flushPendingBridgeMoves(
+        room.pendingLichessMoves,
+        () => room.lichessSocket === lws && lws.readyState === WebSocket.OPEN && !room.winner,
+        (uci) => {
+          const ack = room.lichessAck ?? 1;
+          room.lichessAck = ack + 1;
+          const lagMs = Math.max(10, Math.min(800, Math.round(room.bridgeLagMs ?? 45)));
+          lws.send(JSON.stringify({ t: 'move', d: { u: uci, a: ack, b: 0, l: lagMs } }));
+        },
+      );
+    };
+
+    lws.on('open', handleLichessOpen);
+
+    const scheduleLichessDisconnectTimeout = (delayMs: number) => {
+      if (room.winner || room.lichessGoneTimer || !room.lichessSide) return;
+      room.lichessGoneTimer = setTimeout(() => {
+        room.lichessGoneTimer = null;
+        if (room.winner || room.lichessOpponentPresent !== false || !room.lichessSide) return;
+        const oppSide = room.lichessSide;
+        cleanupRoomLichessBridge(room);
+        const resolved = resolveOnlineEndOutcome({
+          isDisconnect: true,
+          disconnectedSide: oppSide,
+          moveCount: room.historyMeta.length,
+        });
+        room.winner = resolved.winner;
+        room.endReason = resolved.reason;
+        if (!resolved.aborted) finalizeRoomResult(room);
+        broadcastRoomState(room);
+      }, delayMs);
+    };
+
+    const recordPongLag = () => {
+      if (room.lichessLastPingAt) {
+        const nextLag = Math.max(12, Math.min(2000, Date.now() - room.lichessLastPingAt));
+        const prevLag = room.bridgeLagMs;
+        room.bridgeLagMs = nextLag;
+        room.lichessLastPingAt = undefined;
+        if (prevLag == null || Math.abs(nextLag - prevLag) >= 25) {
+          broadcastRoomState(room);
+        }
+      }
+    };
 
     const handleLichessEvent = (ev: Record<string, any>) => {
       if (!ev || typeof ev !== 'object' || room.lichessSocket !== lws) return;
       if (typeof ev.v === 'number') {
         room.lichessVersion = ev.v;
       }
+      if (ev.t === 'n' || ev.t === 'pong') {
+        recordPongLag();
+        return;
+      }
+      if (ev.t === 'ack') {
+        if (
+          room.lichessPendingMoveAck &&
+          (typeof ev.d !== 'number' || ev.d >= room.lichessPendingMoveAck.ack)
+        ) {
+          room.lichessPendingMoveAck = null;
+        }
+        return;
+      }
+      if (ev.t === 'reload' || ev.t === 'resync') {
+        triggerLichessRoomResync(room);
+        return;
+      }
+      if (ev.t === 'gone' && room.lichessSide) {
+        if (ev.d === false || ev.d === 0) {
+          room.lichessOpponentPresent = true;
+          room.lichessOpponentEverSeen = true;
+          room.lichessOpponentGoneAt = null;
+          room.lichessOpponentGoneDurationSec = null;
+          if (room.lichessGoneTimer) {
+            clearTimeout(room.lichessGoneTimer);
+            room.lichessGoneTimer = null;
+          }
+          broadcastRoomState(room);
+        } else {
+          const goneSecs =
+            typeof ev.d === 'number' && Number.isFinite(ev.d) && ev.d > 0 ? Math.round(ev.d) : 15;
+          room.lichessOpponentEverSeen = true;
+          room.lichessOpponentPresent = false;
+          room.lichessOpponentGoneAt = Date.now();
+          room.lichessOpponentGoneDurationSec = goneSecs;
+          broadcastRoomState(room);
+          scheduleLichessDisconnectTimeout(Math.max(4_000, Math.min(22_000, goneSecs * 1000)));
+        }
+        return;
+      }
+
       const moveUci =
         ev.t === 'move' && ev.d
           ? typeof ev.d.uci === 'string'
@@ -3306,37 +4409,20 @@ function setupLiveWebSocketServer(
               : null
           : null;
       if (moveUci) {
-        const uci = moveUci;
-        const from = uci.slice(0, 2);
-        const to = uci.slice(2, 4);
-        const promotion = uci.length > 4 ? uci[4] : 'q';
-
-        if (ev.d.clock) {
-          if (typeof ev.d.clock.white === 'number') {
-            room.whiteClockMs = Math.max(0, Math.round(ev.d.clock.white * 1000));
-          }
-          if (typeof ev.d.clock.black === 'number') {
-            room.blackClockMs = Math.max(0, Math.round(ev.d.clock.black * 1000));
-          }
+        if (room.lichessPendingMoveAck && moveUci.startsWith(room.lichessPendingMoveAck.uci.slice(0, 4))) {
+          room.lichessPendingMoveAck = null;
         }
-
-        const lastMeta = room.historyMeta[room.historyMeta.length - 1];
-        const alreadyApplied = lastMeta && lastMeta.from === from && lastMeta.to === to;
-        if (!alreadyApplied) {
-          try {
-            const moved = room.chess.move({ from, to, promotion });
-            if (moved) {
-              room.lastMoveAt = Date.now();
-              room.drawOfferBy = null;
-              room.historyMeta.push({
-                from: moved.from,
-                to: moved.to,
-                san: moved.san,
-                captured: Boolean(moved.captured) || moved.flags.includes('e'),
-              });
-            }
-          } catch {
-            // ignore if out of sync
+        const applied = applyLichessUciMoveToRoom(room, moveUci, {
+          whiteSec: typeof ev.d.clock?.white === 'number' ? ev.d.clock.white : undefined,
+          blackSec: typeof ev.d.clock?.black === 'number' ? ev.d.clock.black : undefined,
+        });
+        if (!applied) {
+          const from = moveUci.slice(0, 2);
+          const to = moveUci.slice(2, 4);
+          const lastMeta = room.historyMeta[room.historyMeta.length - 1];
+          const isEcho = Boolean(lastMeta && lastMeta.from === from && lastMeta.to === to);
+          if (!isEcho) {
+            triggerLichessRoomResync(room);
           }
         }
 
@@ -3353,70 +4439,47 @@ function setupLiveWebSocketServer(
         } else if (ev.d.status || ev.d.winner) {
           const statusName =
             typeof ev.d.status === 'object' ? ev.d.status?.name : String(ev.d.status || 'ended');
-          if (statusName === 'aborted') {
-            room.winner = 'draw';
-            room.endReason = 'Game aborted by opponent';
-            cleanupRoomLichessBridge(room);
-            broadcastRoomState(room);
-            return;
-          }
-          const w = ev.d.winner;
-          room.winner = w === 'white' ? 'w' : w === 'black' ? 'b' : 'draw';
-          room.endReason = `Online game ended (${statusName})`;
-          cleanupRoomLichessBridge(room);
-          finalizeRoomResult(room);
+          handleRemoteLichessTerminalStatus(room, statusName, ev.d.winner);
+          return;
         }
 
         broadcastRoomState(room);
       } else if (ev.t === 'crowd' && ev.d && room.lichessSide) {
         const oppPresent = room.lichessSide === 'w' ? Boolean(ev.d.white) : Boolean(ev.d.black);
-        if (oppPresent && room.lichessGoneTimer) {
-          clearTimeout(room.lichessGoneTimer);
-          room.lichessGoneTimer = null;
-        }
-        if (room.lichessOpponentPresent !== oppPresent) {
-          room.lichessOpponentPresent = oppPresent;
-          broadcastRoomState(room);
-        }
-        if (!oppPresent && !room.winner && !room.lichessGoneTimer) {
-          room.lichessGoneTimer = setTimeout(() => {
+        if (oppPresent) {
+          room.lichessOpponentEverSeen = true;
+          room.lichessOpponentGoneAt = null;
+          room.lichessOpponentGoneDurationSec = null;
+          if (room.lichessGoneTimer) {
+            clearTimeout(room.lichessGoneTimer);
             room.lichessGoneTimer = null;
-            if (room.winner || room.lichessOpponentPresent !== false || !room.lichessSide) return;
-            const oppSide = room.lichessSide;
-            cleanupRoomLichessBridge(room);
-            if (room.historyMeta.length < 2) {
-              room.winner = 'draw';
-              room.endReason = 'Online opponent left before game started';
-            } else {
-              room.winner = oppSide === 'w' ? 'b' : 'w';
-              room.endReason = 'Online opponent disconnected';
-              finalizeRoomResult(room);
-            }
+          }
+          if (room.lichessInitCheckTimer) {
+            clearTimeout(room.lichessInitCheckTimer);
+            room.lichessInitCheckTimer = null;
+          }
+          if (room.lichessOpponentPresent !== true) {
+            room.lichessOpponentPresent = true;
             broadcastRoomState(room);
-          }, 15_000);
-        }
-      } else if ((ev.t === 'endData' || ev.t === 'end') && !room.winner) {
-        const d = ev.d ?? {};
-        const w = d.winner;
-        const statusName =
-          typeof d.status === 'object' ? d.status?.name : String(d.status || 'ended');
-        if (statusName === 'aborted') {
-          room.winner = 'draw';
-          room.endReason = 'Game aborted by opponent';
-          cleanupRoomLichessBridge(room);
-          broadcastRoomState(room);
+          }
           return;
         }
-        room.winner = w === 'white' ? 'w' : w === 'black' ? 'b' : 'draw';
-        room.endReason =
-          statusName === 'resign'
-            ? `${room.winner === 'w' ? 'Black' : 'White'} resigned`
-            : statusName === 'outoftime'
-              ? `${room.winner === 'w' ? 'Black' : 'White'} ran out of time`
-              : `Online game ended (${statusName || 'finished'})`;
-        cleanupRoomLichessBridge(room);
-        finalizeRoomResult(room);
+        room.lichessOpponentPresent = false;
+        const withinInitialRedirectWindow =
+          !room.lichessOpponentEverSeen && Date.now() - (room.createdAt ?? Date.now()) < 4_500;
+        if (withinInitialRedirectWindow) {
+          scheduleInitWatchdog(Math.max(500, 4600 - (Date.now() - (room.createdAt ?? Date.now()))));
+          return;
+        }
+        room.lichessOpponentGoneAt = room.lichessOpponentGoneAt ?? Date.now();
+        room.lichessOpponentGoneDurationSec = room.lichessOpponentGoneDurationSec ?? 15;
         broadcastRoomState(room);
+        scheduleLichessDisconnectTimeout(15_000);
+      } else if ((ev.t === 'endData' || ev.t === 'end') && !room.winner) {
+        const d = ev.d ?? {};
+        const statusName =
+          typeof d.status === 'object' ? d.status?.name : String(d.status || 'ended');
+        handleRemoteLichessTerminalStatus(room, statusName, d.winner);
       } else if (ev.t === 'message' && ev.d && typeof ev.d.t === 'string') {
         const text = sanitizeStudyText(ev.d.t).slice(0, 240);
         const senderRaw = String(ev.d.u || '');
@@ -3453,11 +4516,20 @@ function setupLiveWebSocketServer(
 
     lws.on('message', (raw) => {
       if (room.lichessSocket !== lws) return;
+      const rawStr = String(raw).trim();
+      if (rawStr === '0' || rawStr === 'pong') {
+        recordPongLag();
+        return;
+      }
       try {
-        const pkt = JSON.parse(String(raw));
-        if (pkt.t === 'b' && Array.isArray(pkt.d)) {
+        const pkt = JSON.parse(rawStr);
+        if (pkt === 0) {
+          recordPongLag();
+          return;
+        }
+        if (pkt?.t === 'b' && Array.isArray(pkt.d)) {
           for (const sub of pkt.d) handleLichessEvent(sub);
-        } else {
+        } else if (pkt && typeof pkt === 'object') {
           handleLichessEvent(pkt);
         }
       } catch {
@@ -3476,30 +4548,37 @@ function setupLiveWebSocketServer(
       const humanPresent = Boolean(room.whiteSocket || room.blackSocket);
       if (humanPresent && retries < 3) {
         room.lichessReconnectCount = retries + 1;
-        room.lichessOpponentPresent = false;
-        broadcastRoomState(room);
         setTimeout(() => {
           if (!room.winner && !room.lichessSocket && (room.whiteSocket || room.blackSocket)) {
             connectRoomToLichessPlaySocket(room);
           }
-        }, 1200);
+        }, 600);
         return;
       }
       const oppSide = room.lichessSide;
       cleanupRoomLichessBridge(room);
       room.lichessOpponentPresent = false;
-      if (room.historyMeta.length < 2) {
-        room.winner = 'draw';
-        room.endReason = 'Online opponent left before game started';
-      } else {
-        room.winner = oppSide === 'w' ? 'b' : 'w';
-        room.endReason = 'Online opponent disconnected';
-        finalizeRoomResult(room);
-      }
+      const resolved = resolveOnlineEndOutcome({
+        isDisconnect: true,
+        disconnectedSide: oppSide,
+        moveCount: room.historyMeta.length,
+      });
+      room.winner = resolved.winner;
+      room.endReason = resolved.reason;
+      if (!resolved.aborted) finalizeRoomResult(room);
       broadcastRoomState(room);
     });
 
     lws.on('error', () => {});
+
+    if (initialEvents && initialEvents.length > 0) {
+      for (const ev of initialEvents) {
+        handleLichessEvent(ev);
+      }
+    }
+    if (lws.readyState === WebSocket.OPEN) {
+      handleLichessOpen();
+    }
   };
 
   const connectRoomToFicsSocket = (room: LiveRoom, localFicsName: string) => {
@@ -3524,35 +4603,152 @@ function setupLiveWebSocketServer(
       }
     }
 
+    if (room.pendingFicsMoves && room.pendingFicsMoves.length > 0 && fSock.writable) {
+      room.pendingFicsMoves = flushPendingBridgeMoves(
+        room.pendingFicsMoves,
+        () => room.ficsSocket === fSock && !fSock.destroyed && fSock.writable && !room.winner,
+        (ficsMove) => {
+          fSock.write(`${ficsMove}\n`);
+        },
+      );
+    }
+
+    room.ficsHeartbeat = setInterval(() => {
+      if (room.ficsSocket !== fSock || fSock.destroyed || room.winner) {
+        if (room.ficsHeartbeat) {
+          clearInterval(room.ficsHeartbeat);
+          room.ficsHeartbeat = null;
+        }
+        return;
+      }
+      try {
+        const latestTouch = Math.max(
+          room.lastMoveAt ?? 0,
+          room.ficsLastBoardSyncAt ?? 0,
+          room.createdAt ?? 0,
+        );
+        if (room.ficsSide && room.chess.turn() === room.ficsSide && Date.now() - latestTouch >= 3_500) {
+          room.ficsPendingRefresh = true;
+          fSock.write('refresh\ndate\n');
+        } else {
+          fSock.write('date\n');
+        }
+      } catch {
+        // ignore
+      }
+    }, 3_500);
+
+    if (room.ficsInitCheckTimer) {
+      clearTimeout(room.ficsInitCheckTimer);
+      room.ficsInitCheckTimer = null;
+    }
+    if (room.ficsSide && !room.winner && room.historyMeta.length < 2) {
+      room.ficsInitCheckTimer = setTimeout(() => {
+        room.ficsInitCheckTimer = null;
+        if (room.winner || room.ficsSocket !== fSock || !room.ficsSide) return;
+        if (room.historyMeta.length < 2 && room.chess.turn() === room.ficsSide) {
+          try {
+            fSock.write('refresh\n');
+          } catch {
+            // ignore
+          }
+          room.ficsInitCheckTimer = setTimeout(() => {
+            room.ficsInitCheckTimer = null;
+            if (room.winner || room.ficsSocket !== fSock || !room.ficsSide) return;
+            if (room.historyMeta.length < 2 && room.chess.turn() === room.ficsSide) {
+              const oppSide = room.ficsSide;
+              cleanupRoomLichessBridge(room);
+              const resolved = resolveOnlineEndOutcome({
+                isDisconnect: true,
+                disconnectedSide: oppSide,
+                moveCount: room.historyMeta.length,
+                endReason: 'Opponent did not start the match in time',
+              });
+              room.winner = resolved.winner;
+              room.endReason = resolved.reason;
+              if (!resolved.aborted) finalizeRoomResult(room);
+              broadcastRoomState(room);
+            }
+          }, 12_000);
+        }
+      }, 10_000);
+    }
+
     const processFicsLine = (rawLine: string) => {
-      const line = rawLine.trim();
+      const line = rawLine.replace(/^(?:fics%\s*)+/i, '').trim();
       if (!line || room.ficsSocket !== fSock || room.winner) return;
 
       if (fingerRequested && oppSide) {
-        const fingerRatingM = line.match(/^(Blitz|Standard|Lightning)\s+(\d{3,4})\b/i);
-        if (fingerRatingM) {
-          const parsedRating = Number(fingerRatingM[2]);
-          if (Number.isFinite(parsedRating) && parsedRating >= 100) {
-            const currentRating = oppSide === 'w' ? room.whiteRating : room.blackRating;
-            if (currentRating === undefined || /^Blitz$/i.test(fingerRatingM[1])) {
-              if (oppSide === 'w') room.whiteRating = parsedRating;
-              else room.blackRating = parsedRating;
-              recordLiveDiscoveredPlayer({
-                username: oppName,
-                rating: parsedRating,
-                sourceServer: 'FICS',
-              });
-              broadcastRoomState(room);
-            }
+        const fingerRating = parseFicsFingerRatingLine(line);
+        if (fingerRating) {
+          room.ficsFingerRatings ??= {};
+          room.ficsFingerRatings[fingerRating.category] = fingerRating.rating;
+          const preferredRating = selectPreferredFicsRating(
+            room.ficsFingerRatings,
+            room.initialSeconds,
+          );
+          if (typeof preferredRating === 'number') {
+            if (oppSide === 'w') room.whiteRating = preferredRating;
+            else room.blackRating = preferredRating;
+            if (room.requestedRated !== false) room.rated = true;
+            recordLiveDiscoveredPlayer({
+              username: oppName,
+              rating: preferredRating,
+              sourceServer: 'FICS',
+            });
+            broadcastRoomState(room);
           }
         }
       }
 
-      if (line.startsWith('<12> ')) {
+      if (/illegal move|it is not your move/i.test(line)) {
+        room.ficsPendingRefresh = true;
+        try {
+          fSock.write('refresh\n');
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
+      if (/you are not playing a game/i.test(line) && !room.winner && oppSide) {
+        room.ficsOpponentPresent = false;
+        cleanupRoomLichessBridge(room);
+        const resolved = resolveOnlineEndOutcome({
+          isDisconnect: true,
+          disconnectedSide: oppSide,
+          moveCount: room.historyMeta.length,
+        });
+        room.winner = resolved.winner;
+        room.endReason = resolved.reason;
+        if (!resolved.aborted) finalizeRoomResult(room);
+        broadcastRoomState(room);
+        return;
+      }
+
+      if (oppName && (line.includes(`${oppName} has disconnected`) || line.includes('is no longer listening'))) {
+        room.ficsOpponentPresent = false;
+        room.ficsOpponentGoneAt = Date.now();
+        broadcastRoomState(room);
+        return;
+      }
+
+      if (line.includes('<12> ')) {
         const s12 = parseFicsStyle12Line(line);
         if (!s12 || (s12.myRelation !== 1 && s12.myRelation !== -1)) return;
+        if (room.ficsGameNumber && s12.gameNumber && s12.gameNumber !== room.ficsGameNumber) {
+          return;
+        }
+        if (!room.ficsGameNumber && s12.gameNumber > 0) {
+          room.ficsGameNumber = s12.gameNumber;
+        }
+        const now = Date.now();
+        room.ficsOpponentPresent = true;
+        room.ficsOpponentGoneAt = null;
+        room.ficsLastBoardSyncAt = now;
         room.whiteClockMs = Math.max(0, s12.whiteClockMs);
         room.blackClockMs = Math.max(0, s12.blackClockMs);
+        room.clockSyncedAt = now;
 
         let applied = false;
         if (s12.lastMove) {
@@ -3564,7 +4760,8 @@ function setupLiveWebSocketServer(
               const moved = room.chess.move(s12.lastMove);
               if (moved) {
                 applied = true;
-                room.lastMoveAt = Date.now();
+                room.lastMoveAt = now;
+                room.clockSyncedAt = now;
                 room.drawOfferBy = null;
                 room.historyMeta.push({
                   from: moved.from,
@@ -3584,7 +4781,9 @@ function setupLiveWebSocketServer(
             try {
               const sanMoved = room.chess.move(s12.san);
               if (sanMoved) {
-                room.lastMoveAt = Date.now();
+                applied = true;
+                room.lastMoveAt = now;
+                room.clockSyncedAt = now;
                 room.drawOfferBy = null;
                 room.historyMeta.push({
                   from: sanMoved.from,
@@ -3598,6 +4797,46 @@ function setupLiveWebSocketServer(
             }
           }
         }
+        if (
+          !applied &&
+          room.chess.fen().split(' ')[0] !== s12.fen.split(' ')[0]
+        ) {
+          // Check if our last move was rejected by FICS (1 undo matches FICS board) so PGN history stays intact
+          let reconciled = false;
+          if (room.historyMeta.length > 0) {
+            const probe = new Chess();
+            const curPgn = room.chess.pgn();
+            if (curPgn.trim()) {
+              try {
+                probe.loadPgn(curPgn);
+                probe.undo();
+                if (probe.fen().split(' ')[0] === s12.fen.split(' ')[0]) {
+                  room.chess = probe;
+                  room.historyMeta.pop();
+                  room.lastMoveAt = now;
+                  room.clockSyncedAt = now;
+                  room.drawOfferBy = null;
+                  reconciled = true;
+                  const humanWs = room.ficsSide === 'w' ? room.blackSocket : room.whiteSocket;
+                  sendJson(humanWs, { type: 'move:rejected', roomId: room.id, fen: room.chess.fen() });
+                }
+              } catch {
+                // fall through
+              }
+            }
+          }
+          if (!reconciled && room.ficsPendingRefresh) {
+            try {
+              room.chess.load(s12.fen);
+              room.lastMoveAt = now;
+              room.clockSyncedAt = now;
+              room.drawOfferBy = null;
+            } catch {
+              // ignore
+            }
+          }
+        }
+        room.ficsPendingRefresh = false;
 
         if (room.chess.isCheckmate()) {
           room.winner = room.chess.turn() === 'w' ? 'b' : 'w';
@@ -3661,9 +4900,22 @@ function setupLiveWebSocketServer(
 
       const endInfo = parseFicsGameEndLine(line);
       if (endInfo && !room.winner) {
-        const isAbort = endInfo.reason.toLowerCase().includes('abort');
-        room.winner = endInfo.winner;
-        room.endReason = endInfo.reason;
+        // Strictly ignore global FICS game-end broadcasts from unrelated games
+        if (room.ficsGameNumber && endInfo.gameNumber && endInfo.gameNumber !== room.ficsGameNumber) {
+          return;
+        }
+        if (
+          oppName &&
+          endInfo.whiteName &&
+          endInfo.blackName &&
+          endInfo.whiteName.toLowerCase() !== oppName.toLowerCase() &&
+          endInfo.blackName.toLowerCase() !== oppName.toLowerCase()
+        ) {
+          return;
+        }
+        const isAbort = Boolean(endInfo.aborted) || endInfo.reason.toLowerCase().includes('abort');
+        room.winner = isAbort ? 'aborted' : endInfo.winner;
+        room.endReason = stripPlatformFromText(endInfo.reason) || (isAbort ? 'Game aborted before starting' : endInfo.reason);
         cleanupRoomLichessBridge(room);
         if (!isAbort) finalizeRoomResult(room);
         broadcastRoomState(room);
@@ -3689,14 +4941,14 @@ function setupLiveWebSocketServer(
       const oppSide = room.ficsSide;
       room.ficsOpponentPresent = false;
       cleanupRoomLichessBridge(room);
-      if (room.historyMeta.length < 2) {
-        room.winner = 'draw';
-        room.endReason = 'FICS opponent left before game started';
-      } else {
-        room.winner = oppSide === 'w' ? 'b' : 'w';
-        room.endReason = 'FICS opponent disconnected';
-        finalizeRoomResult(room);
-      }
+      const resolved = resolveOnlineEndOutcome({
+        isDisconnect: true,
+        disconnectedSide: oppSide,
+        moveCount: room.historyMeta.length,
+      });
+      room.winner = resolved.winner;
+      room.endReason = resolved.reason;
+      if (!resolved.aborted) finalizeRoomResult(room);
       broadcastRoomState(room);
     };
 
@@ -3743,14 +4995,45 @@ function setupLiveWebSocketServer(
     if (leavingColor === 'b' && room.blackSocket === ws) room.blackSocket = null;
 
     if (!room.whiteSocket && !room.blackSocket) {
-      const timerKey = `${room.id}:${leavingColor}`;
-      const existingTimer = disconnectGraceTimers.get(timerKey);
-      if (existingTimer) {
-        clearTimeout(existingTimer);
-        disconnectGraceTimers.delete(timerKey);
+      const seatKey = `${room.id}:${leavingColor}`;
+      const existingSeatTimer = disconnectGraceTimers.get(seatKey);
+      if (existingSeatTimer) {
+        clearTimeout(existingSeatTimer);
+        disconnectGraceTimers.delete(seatKey);
       }
-      cleanupRoomLichessBridge(room);
-      rooms.delete(room.id);
+      const hasBridgeOrHistory = Boolean(
+        room.lichessSide || room.ficsSide || room.historyMeta.length > 0,
+      );
+      if (explicitLeave || !hasBridgeOrHistory) {
+        cleanupRoomLichessBridge(room);
+        rooms.delete(room.id);
+        return;
+      }
+      // Snapshot running clock cleanly while all client sockets temporarily reconnect
+      const now = Date.now();
+      const clockBase = room.clockSyncedAt ?? room.lastMoveAt;
+      if (clockBase && !room.winner && room.historyMeta.length > 0) {
+        const elapsed = Math.max(0, now - clockBase);
+        if (room.chess.turn() === 'w') {
+          room.whiteClockMs = Math.max(0, room.whiteClockMs - elapsed);
+        } else {
+          room.blackClockMs = Math.max(0, room.blackClockMs - elapsed);
+        }
+        room.lastMoveAt = now;
+        room.clockSyncedAt = now;
+      }
+      const allKey = `${room.id}:all`;
+      const prevAllTimer = disconnectGraceTimers.get(allKey);
+      if (prevAllTimer) clearTimeout(prevAllTimer);
+      const graceMs = room.historyMeta.length > 0 ? 15_000 : 8_000;
+      const allTimer = setTimeout(() => {
+        disconnectGraceTimers.delete(allKey);
+        const cur = rooms.get(room.id);
+        if (!cur || cur.whiteSocket || cur.blackSocket) return;
+        cleanupRoomLichessBridge(cur);
+        rooms.delete(cur.id);
+      }, graceMs);
+      disconnectGraceTimers.set(allKey, allTimer);
       return;
     }
 
@@ -3776,8 +5059,8 @@ function setupLiveWebSocketServer(
         finalizeRoomResult(currentRoom);
         broadcastRoomState(currentRoom);
       } else if (bothHadJoined) {
-        currentRoom.winner = 'draw';
-        currentRoom.endReason = `${leavingName || 'Opponent'} left before the game started`;
+        currentRoom.winner = 'aborted';
+        currentRoom.endReason = 'Match aborted before the first move';
         broadcastRoomState(currentRoom);
       } else {
         broadcastRoomState(currentRoom);
@@ -3787,14 +5070,28 @@ function setupLiveWebSocketServer(
     if (explicitLeave) {
       settleAbandonedRoom();
     } else {
+      const now = Date.now();
+      const clockBase = room.clockSyncedAt ?? room.lastMoveAt;
+      if (clockBase && !room.winner && room.historyMeta.length > 0) {
+        const elapsed = Math.max(0, now - clockBase);
+        if (room.chess.turn() === 'w') {
+          room.whiteClockMs = Math.max(0, room.whiteClockMs - elapsed);
+        } else {
+          room.blackClockMs = Math.max(0, room.blackClockMs - elapsed);
+        }
+        room.lastMoveAt = now;
+        room.clockSyncedAt = now;
+      }
+      room.opponentDisconnectedAt = now;
       broadcastRoomState(room);
       const timerKey = `${room.id}:${leavingColor}`;
       const prevTimer = disconnectGraceTimers.get(timerKey);
       if (prevTimer) clearTimeout(prevTimer);
+      const graceDelayMs = room.historyMeta.length > 0 ? 15_000 : 6_500;
       const graceTimer = setTimeout(() => {
         disconnectGraceTimers.delete(timerKey);
         settleAbandonedRoom();
-      }, 6500);
+      }, graceDelayMs);
       disconnectGraceTimers.set(timerKey, graceTimer);
     }
   };
@@ -3969,11 +5266,24 @@ function setupLiveWebSocketServer(
     rooms.set(params.roomId, room);
     setTimeout(() => {
       const current = rooms.get(params.roomId);
-      if (current && !current.whiteSocket && !current.blackSocket) {
+      if (!current) return;
+      if (!current.whiteSocket && !current.blackSocket) {
         cleanupRoomLichessBridge(current);
         rooms.delete(params.roomId);
+      } else if (
+        (!current.whiteSocket || !current.blackSocket) &&
+        current.historyMeta.length === 0 &&
+        !current.winner
+      ) {
+        current.winner = 'aborted';
+        current.endReason = 'Opponent failed to connect to the match room';
+        broadcastRoomState(current);
+        setTimeout(() => {
+          const stale = rooms.get(params.roomId);
+          if (stale && stale.winner === 'aborted') rooms.delete(params.roomId);
+        }, 5_000);
       }
-    }, 30000);
+    }, 20_000);
     return room;
   };
 
@@ -4010,9 +5320,26 @@ function setupLiveWebSocketServer(
           (room.ficsSide && (room.whiteSocket || room.blackSocket) && room.ficsOpponentPresent !== false),
       );
       if (!bothPresent) continue;
-      const elapsed = now - room.lastMoveAt;
+      const clockBaseAt = room.clockSyncedAt ?? room.lastMoveAt;
+      if (!clockBaseAt) continue;
+      const elapsed = Math.max(0, now - clockBaseAt);
       const turn = room.chess.turn();
-      const grace = room.lichessSide || room.ficsSide ? 1500 : 0;
+      const isBridged = Boolean(room.lichessSide || room.ficsSide);
+      const grace = isBridged ? 8_000 : 0;
+      const activeClockMs = turn === 'w' ? room.whiteClockMs : room.blackClockMs;
+      const remaining = activeClockMs - elapsed;
+      if (isBridged && remaining <= 1_500 && remaining + grace > 0) {
+        // Ask remote server for authoritative clocks before flagging a bridged game locally
+        if (room.ficsSocket && !room.ficsSocket.destroyed) {
+          try {
+            room.ficsSocket.write('refresh\n');
+          } catch {
+            // ignore
+          }
+        } else if (room.lichessGameId) {
+          triggerLichessRoomResync(room);
+        }
+      }
       if (turn === 'w' && room.whiteClockMs - elapsed + grace <= 0) {
         room.whiteClockMs = 0;
         room.winner = 'b';
@@ -4241,7 +5568,7 @@ function setupLiveWebSocketServer(
         ) {
           sendJson(ws, {
             type: 'error',
-            message: `Fair Matchmaking: Opponent rating (${ch.rating}) must be within ±200 Elo of your rating (${accepterRating}).`,
+            message: `Fair Matchmaking: Opponent rating (${ch.rating}) must be within ±${MAX_MATCHMAKING_ELO_GAP} Elo of your rating (${accepterRating}).`,
           });
           return;
         }
@@ -4432,7 +5759,7 @@ function setupLiveWebSocketServer(
           } else {
             if (playerAvatar) room.whiteAvatarUrl = playerAvatar;
             if (playerFlag) room.whiteFlag = playerFlag;
-            if (myRating) room.whiteRating = room.whiteRating ?? myRating;
+            room.whiteRating = room.whiteRating ?? myRating ?? (room.rated !== false ? 1200 : undefined);
           }
         } else {
           room.blackSocket = ws;
@@ -4449,20 +5776,30 @@ function setupLiveWebSocketServer(
           } else {
             if (playerAvatar) room.blackAvatarUrl = playerAvatar;
             if (playerFlag) room.blackFlag = playerFlag;
-            if (myRating) room.blackRating = room.blackRating ?? myRating;
+            room.blackRating = room.blackRating ?? myRating ?? (room.rated !== false ? 1200 : undefined);
           }
         }
-        // Clear any pending disconnect grace timer for this player's seat
+        // Clear any pending disconnect grace timer for this player's seat and room-wide reconnect window
         const graceKey = `${roomId}:${assigned}`;
         const pendingGrace = disconnectGraceTimers.get(graceKey);
         if (pendingGrace) {
           clearTimeout(pendingGrace);
           disconnectGraceTimers.delete(graceKey);
         }
+        const allGraceKey = `${roomId}:all`;
+        const pendingAllGrace = disconnectGraceTimers.get(allGraceKey);
+        if (pendingAllGrace) {
+          clearTimeout(pendingAllGrace);
+          disconnectGraceTimers.delete(allGraceKey);
+        }
 
         socketToRoom.set(ws, { roomId, color: assigned });
+        const joinNow = Date.now();
         if (room.lastMoveAt === null || room.historyMeta.length === 0) {
-          room.lastMoveAt = Date.now();
+          room.lastMoveAt = joinNow;
+          room.clockSyncedAt = joinNow;
+        } else if (room.clockSyncedAt == null) {
+          room.clockSyncedAt = joinNow;
         }
         sendJson(ws, { type: 'room:joined', roomId, yourColor: assigned });
         broadcastRoomState(room);
@@ -4479,6 +5816,7 @@ function setupLiveWebSocketServer(
           pAvatar?: string;
           pFlag?: string;
           pTitle?: string;
+          requestedRated?: boolean;
         },
       ) => {
         const roomId = generateRoomCode();
@@ -4508,11 +5846,15 @@ function setupLiveWebSocketServer(
 
         const oppLocal =
           lichessMatch.opponentName !== 'Anonymous' &&
-          lichessMatch.opponentName !== 'Anonymous (Guest)'
+          lichessMatch.opponentName !== 'Anonymous (Guest)' &&
+          lichessMatch.opponentName !== 'Guest Opponent' &&
+          lichessMatch.opponentName !== 'Live Opponent'
             ? usersStore.users[lichessMatch.opponentName.toLowerCase()]
             : undefined;
         const oppResolvedAvatar =
           lichessMatch.opponentAvatarUrl ?? sanitizePublicAvatar(oppLocal?.profile?.avatarUrl);
+        const isRatedMatch =
+          opts.requestedRated === false ? false : typeof lichessMatch.opponentRating === 'number';
         const room: LiveRoom = {
           id: roomId,
           chess,
@@ -4521,6 +5863,8 @@ function setupLiveWebSocketServer(
           whiteClockMs: lichessMatch.whiteClockMs,
           blackClockMs: lichessMatch.blackClockMs,
           lastMoveAt: Date.now(),
+          clockSyncedAt: Date.now(),
+          createdAt: Date.now(),
           whiteSocket: null,
           blackSocket: null,
           whiteName: humanColor === 'w' ? opts.pName : lichessMatch.opponentName,
@@ -4535,7 +5879,8 @@ function setupLiveWebSocketServer(
           blackFlag: humanColor === 'b' ? opts.pFlag : lichessMatch.opponentFlag,
           whiteTitle: humanColor === 'w' ? opts.pTitle : lichessMatch.opponentTitle,
           blackTitle: humanColor === 'b' ? opts.pTitle : lichessMatch.opponentTitle,
-          rated: typeof lichessMatch.opponentRating === 'number',
+          rated: isRatedMatch,
+          requestedRated: opts.requestedRated,
           serverSource: 'Lichess',
           drawOfferBy: null,
           rematchOfferBy: null,
@@ -4545,14 +5890,59 @@ function setupLiveWebSocketServer(
           chatMessages: [],
           spectators: new Set(),
           lichessFullId: lichessMatch.fullId,
+          lichessGameId: lichessMatch.gameId,
           lichessSide,
-          lichessOpponentPresent: true,
+          lichessOpponentPresent: Boolean(
+            lichessMatch.opponentPresent ?? historyMeta.length > 0,
+          ),
+          lichessOpponentEverSeen: Boolean(
+            lichessMatch.opponentPresent || historyMeta.length > 0,
+          ),
           lichessVersion: lichessMatch.version,
           lichessCookie: lichessMatch.cookie,
           lichessSri: lichessMatch.sri,
+          bridgeLagMs: lichessMatch.initialLagMs ?? null,
+          pendingLichessMoves: [],
         };
         rooms.set(roomId, room);
-        connectRoomToLichessPlaySocket(room);
+        connectRoomToLichessPlaySocket(room, lichessMatch.socket, lichessMatch.bufferedEvents);
+
+        // Enrich opponent rating/flag/title asynchronously without delaying match start
+        const rawOppName = lichessMatch.opponentName;
+        if (
+          rawOppName &&
+          rawOppName !== 'Live Opponent' &&
+          rawOppName !== 'Guest Opponent' &&
+          rawOppName !== 'Anonymous (Guest)' &&
+          typeof lichessMatch.opponentRating !== 'number'
+        ) {
+          const speed = resolveSpeedKey(lichessMatch.initialSeconds);
+          void fetchPublicLichessUser(rawOppName, false).then((pub) => {
+            const current = rooms.get(roomId);
+            if (!current || current.winner || !pub) return;
+            const pubRating =
+              pub.perfs?.[speed]?.rating ??
+              pub.perfs?.rapid?.rating ??
+              pub.perfs?.blitz?.rating ??
+              pub.perfs?.bullet?.rating;
+            if (typeof pubRating === 'number' && pubRating >= 100) {
+              if (lichessSide === 'w') current.whiteRating = current.whiteRating ?? pubRating;
+              else current.blackRating = current.blackRating ?? pubRating;
+              if (current.requestedRated !== false) current.rated = true;
+            }
+            const pubFlag = pub.profile?.flag || pub.profile?.country;
+            if (pubFlag) {
+              if (lichessSide === 'w') current.whiteFlag = current.whiteFlag ?? pubFlag;
+              else current.blackFlag = current.blackFlag ?? pubFlag;
+            }
+            if (pub.title) {
+              if (lichessSide === 'w') current.whiteTitle = current.whiteTitle ?? pub.title;
+              else current.blackTitle = current.blackTitle ?? pub.title;
+            }
+            broadcastRoomState(current);
+          });
+        }
+
         setTimeout(() => {
           const current = rooms.get(roomId);
           if (current && !current.whiteSocket && !current.blackSocket) {
@@ -4566,6 +5956,7 @@ function setupLiveWebSocketServer(
           yourColor: humanColor,
           initialSeconds: lichessMatch.initialSeconds,
           incrementSeconds: lichessMatch.incrementSeconds,
+          rated: isRatedMatch,
           serverSource: 'Lichess',
         });
       };
@@ -4580,19 +5971,64 @@ function setupLiveWebSocketServer(
           pAvatar?: string;
           pFlag?: string;
           pTitle?: string;
+          requestedRated?: boolean;
         },
       ) => {
         const roomId = generateRoomCode();
         const humanColor = ficsMatch.humanColor;
         const ficsSide: 'w' | 'b' = humanColor === 'w' ? 'b' : 'w';
+        const chess = new Chess();
+        const historyMeta: Array<{ from: string; to: string; san: string; captured?: boolean }> = [];
+        let initialSynced = false;
+        if (ficsMatch.style12.lastMove) {
+          try {
+            const moved = chess.move(ficsMatch.style12.lastMove);
+            if (moved) {
+              initialSynced = true;
+              historyMeta.push({
+                from: moved.from,
+                to: moved.to,
+                san: moved.san,
+                captured: Boolean(moved.captured) || moved.flags.includes('e'),
+              });
+            }
+          } catch {
+            // ignore
+          }
+        }
+        if (!initialSynced && ficsMatch.style12.san) {
+          try {
+            const moved = chess.move(ficsMatch.style12.san);
+            if (moved) {
+              initialSynced = true;
+              historyMeta.push({
+                from: moved.from,
+                to: moved.to,
+                san: moved.san,
+                captured: Boolean(moved.captured) || moved.flags.includes('e'),
+              });
+            }
+          } catch {
+            // ignore
+          }
+        }
+        if (!initialSynced && chess.fen().split(' ')[0] !== ficsMatch.style12.fen.split(' ')[0]) {
+          try {
+            chess.load(ficsMatch.style12.fen);
+          } catch {
+            // ignore
+          }
+        }
         const room: LiveRoom = {
           id: roomId,
-          chess: new Chess(),
+          chess,
           initialSeconds: ficsMatch.initialSeconds,
           incrementSeconds: ficsMatch.incrementSeconds,
           whiteClockMs: ficsMatch.whiteClockMs,
           blackClockMs: ficsMatch.blackClockMs,
           lastMoveAt: Date.now(),
+          clockSyncedAt: Date.now(),
+          createdAt: Date.now(),
           whiteSocket: null,
           blackSocket: null,
           whiteName: humanColor === 'w' ? opts.pName : ficsMatch.opponentName,
@@ -4607,13 +6043,17 @@ function setupLiveWebSocketServer(
           blackFlag: humanColor === 'b' ? opts.pFlag : undefined,
           whiteTitle: humanColor === 'w' ? opts.pTitle : undefined,
           blackTitle: humanColor === 'b' ? opts.pTitle : undefined,
-          rated: typeof ficsMatch.opponentRating === 'number',
+          rated:
+            opts.requestedRated === false
+              ? false
+              : typeof ficsMatch.opponentRating === 'number',
+          requestedRated: opts.requestedRated,
           serverSource: 'FICS',
           drawOfferBy: null,
           rematchOfferBy: null,
           winner: null,
           endReason: null,
-          historyMeta: [],
+          historyMeta,
           chatMessages: [],
           spectators: new Set(),
           ficsSocket: ficsMatch.socket,
@@ -4621,6 +6061,7 @@ function setupLiveWebSocketServer(
           ficsOpponentPresent: true,
           ficsGameNumber: ficsMatch.gameNumber,
           ficsBuffer: ficsMatch.initialBuffer,
+          pendingFicsMoves: [],
         };
         rooms.set(roomId, room);
         connectRoomToFicsSocket(room, ficsMatch.localFicsName);
@@ -4637,6 +6078,7 @@ function setupLiveWebSocketServer(
           yourColor: humanColor,
           initialSeconds: ficsMatch.initialSeconds,
           incrementSeconds: ficsMatch.incrementSeconds,
+          rated: room.rated,
           serverSource: 'FICS',
         });
       };
@@ -4645,7 +6087,7 @@ function setupLiveWebSocketServer(
         leaveCurrentRoom(ws);
         const adId = typeof msg.adId === 'string' ? msg.adId.trim() : '';
         if (!/^\d+$/.test(adId)) {
-          sendJson(ws, { type: 'room:error', error: 'Invalid FICS challenge ID.' });
+          sendJson(ws, { type: 'room:error', error: 'Invalid live challenge ID.' });
           return;
         }
         const initialSeconds = Math.max(60, Math.min(3600, Number(msg.initialSeconds) || 600));
@@ -4678,7 +6120,7 @@ function setupLiveWebSocketServer(
           if (!ficsMatch) {
             sendJson(ws, {
               type: 'room:error',
-              error: 'That FICS challenge was already accepted or expired. Refreshing lobby...',
+              error: 'That live challenge was already accepted or expired. Refreshing lobby...',
             });
             return;
           }
@@ -4744,35 +6186,50 @@ function setupLiveWebSocketServer(
         const incrementSeconds = Math.max(0, Math.min(60, Number(msg.incrementSeconds) || 0));
         const preferredColor: 'w' | 'b' | 'random' =
           msg.color === 'w' || msg.color === 'b' ? msg.color : 'random';
+        const requestedRated = msg.rated !== false;
+        const allowUnratedFallback = msg.allowUnratedFallback === true || !requestedRated;
         const playerElo = resolveEffectivePlayerElo(
           authUser,
           initialSeconds,
           msg.rating ?? msg.playerElo,
         );
+        const eloBand = getFairMatchmakingEloBand(playerElo, MAX_MATCHMAKING_ELO_GAP);
         const reqSpeed = resolveSpeedKey(initialSeconds);
         const key = `${initialSeconds}+${incrementSeconds}`;
         const queue = matchQueues.get(key) ?? [];
-        const opponent = queue.find(
-          (q) =>
-            q.ws !== ws &&
-            !q.cancelled &&
-            q.ws.readyState === WebSocket.OPEN &&
-            isWithinMatchmakingEloBand(playerElo, q.playerElo),
-        );
+        const eligibleQueueOpponents = queue
+          .filter(
+            (q) =>
+              q.ws !== ws &&
+              !q.cancelled &&
+              q.ws.readyState === WebSocket.OPEN &&
+              (allowUnratedFallback || q.rated !== false) &&
+              isWithinMatchmakingEloBand(playerElo, q.playerElo),
+          )
+          .sort((a, b) => Math.abs(playerElo - a.playerElo) - Math.abs(playerElo - b.playerElo));
+        const opponent = eligibleQueueOpponents[0];
 
-        // Also match against any waiting OpenChess open-lobby challenger with compatible speed & Elo
-        const waitingLobbyEntry = !opponent
-          ? Array.from(openLobbyChallenges.entries()).find(([, ch]) => {
-              if (ch.ws === ws || ch.ws.readyState !== WebSocket.OPEN) return false;
-              if (ch.speed !== reqSpeed) return false;
-              if (typeof ch.rating === 'number' && !isWithinMatchmakingEloBand(playerElo, ch.rating)) {
-                return false;
-              }
-              if (preferredColor === 'w' && ch.color === 'white') return false;
-              if (preferredColor === 'b' && ch.color === 'black') return false;
-              return true;
-            })
-          : undefined;
+        // Also match against any waiting OpenChess open-lobby challenger with compatible speed, rated mode & Elo
+        const waitingLobbyEntries = !opponent
+          ? Array.from(openLobbyChallenges.entries())
+              .filter(([, ch]) => {
+                if (ch.ws === ws || ch.ws.readyState !== WebSocket.OPEN) return false;
+                if (ch.speed !== reqSpeed) return false;
+                if (!allowUnratedFallback && ch.rated === false) return false;
+                if (typeof ch.rating === 'number' && !isWithinMatchmakingEloBand(playerElo, ch.rating)) {
+                  return false;
+                }
+                if (preferredColor === 'w' && ch.color === 'white') return false;
+                if (preferredColor === 'b' && ch.color === 'black') return false;
+                return true;
+              })
+              .sort(([, a], [, b]) => {
+                const aDiff = typeof a.rating === 'number' ? Math.abs(playerElo - a.rating) : 9999;
+                const bDiff = typeof b.rating === 'number' ? Math.abs(playerElo - b.rating) : 9999;
+                return aDiff - bDiff;
+              })
+          : [];
+        const waitingLobbyEntry = waitingLobbyEntries[0];
 
         if (opponent) {
           opponent.cancelled = true;
@@ -4788,6 +6245,7 @@ function setupLiveWebSocketServer(
               : preferredColor === 'b'
                 ? false
                 : Math.random() < 0.5;
+          const roomIsRated = requestedRated && opponent.rated !== false;
           launchNextMatchedRoom({
             roomId,
             initialSeconds,
@@ -4804,6 +6262,7 @@ function setupLiveWebSocketServer(
             blackFlag: wsWhite ? opponent.flag : playerFlag,
             whiteTitle: wsWhite ? playerTitle : opponent.title,
             blackTitle: wsWhite ? opponent.title : playerTitle,
+            rated: roomIsRated,
           });
           sendJson(ws, {
             type: 'room:matched',
@@ -4811,6 +6270,7 @@ function setupLiveWebSocketServer(
             yourColor: wsWhite ? 'w' : 'b',
             initialSeconds,
             incrementSeconds,
+            rated: roomIsRated,
             serverSource: 'OpenChess',
           });
           sendJson(opponent.ws, {
@@ -4819,6 +6279,7 @@ function setupLiveWebSocketServer(
             yourColor: wsWhite ? 'b' : 'w',
             initialSeconds,
             incrementSeconds,
+            rated: roomIsRated,
             serverSource: 'OpenChess',
           });
         } else if (waitingLobbyEntry) {
@@ -4827,6 +6288,7 @@ function setupLiveWebSocketServer(
           const creatorWhite =
             ch.color === 'white' ? true : ch.color === 'black' ? false : Math.random() < 0.5;
           const roomId = generateRoomCode();
+          const roomIsRated = requestedRated && ch.rated !== false;
           launchNextMatchedRoom({
             roomId,
             initialSeconds: ch.initialSeconds,
@@ -4843,7 +6305,7 @@ function setupLiveWebSocketServer(
             blackFlag: creatorWhite ? playerFlag : ch.flag,
             whiteTitle: creatorWhite ? ch.title : playerTitle,
             blackTitle: creatorWhite ? playerTitle : ch.title,
-            rated: ch.rated,
+            rated: roomIsRated,
           });
           sendJson(ch.ws, {
             type: 'room:matched',
@@ -4851,6 +6313,7 @@ function setupLiveWebSocketServer(
             yourColor: creatorWhite ? 'w' : 'b',
             initialSeconds: ch.initialSeconds,
             incrementSeconds: ch.incrementSeconds,
+            rated: roomIsRated,
             serverSource: 'OpenChess',
           });
           sendJson(ws, {
@@ -4859,6 +6322,7 @@ function setupLiveWebSocketServer(
             yourColor: creatorWhite ? 'b' : 'w',
             initialSeconds: ch.initialSeconds,
             incrementSeconds: ch.incrementSeconds,
+            rated: roomIsRated,
             serverSource: 'OpenChess',
           });
         } else {
@@ -4873,6 +6337,11 @@ function setupLiveWebSocketServer(
             incrementSeconds: number;
             preferredColor: 'w' | 'b' | 'random';
             playerElo: number;
+            rated?: boolean;
+            allowUnratedFallback?: boolean;
+            attemptCount: number;
+            startedAt: number;
+            timedOutRatedNotified?: boolean;
             cancelled?: boolean;
             retryTimer?: ReturnType<typeof setInterval>;
           } = {
@@ -4886,22 +6355,130 @@ function setupLiveWebSocketServer(
             incrementSeconds,
             preferredColor,
             playerElo,
+            rated: requestedRated,
+            allowUnratedFallback,
+            attemptCount: 0,
+            startedAt: Date.now(),
+            timedOutRatedNotified: false,
             cancelled: false,
           };
 
           queue.push(entry);
           matchQueues.set(key, queue);
-          sendJson(ws, { type: 'match:searching', timeControl: key, playersSearching: queue.length });
+          sendJson(ws, {
+            type: 'match:searching',
+            timeControl: key,
+            playersSearching: queue.length,
+            elo: playerElo,
+            minElo: eloBand.minElo,
+            maxElo: eloBand.maxElo,
+            rated: requestedRated,
+            allowUnratedFallback,
+          });
 
           let probingNetwork = false;
           const attemptRealLobbyMatch = async () => {
             if (probingNetwork || entry.cancelled || ws.readyState !== WebSocket.OPEN) return;
             probingNetwork = true;
+            const currentAttempt = entry.attemptCount;
+            entry.attemptCount += 1;
+            const passConfig = buildMatchmakingPassConfig(
+              currentAttempt,
+              allowUnratedFallback,
+              requestedRated,
+            );
             let winnerChosen = false;
             const cancelFicsProbe = () =>
               winnerChosen || Boolean(entry.cancelled) || ws.readyState !== WebSocket.OPEN || socketToRoom.has(ws);
 
             try {
+              // Also check compatible OpenChess players waiting in any speed-matched queue once broadened
+              if (passConfig.allowSpeedFallback || currentAttempt >= 1) {
+                for (const [otherKey, otherQueue] of matchQueues.entries()) {
+                  if (otherKey === key) continue;
+                  const compatOpp = otherQueue
+                    .filter((q) => {
+                      if (q.ws === ws || q.cancelled || q.ws.readyState !== WebSocket.OPEN) return false;
+                      if (resolveSpeedKey(q.initialSeconds) !== reqSpeed) return false;
+                      if (!allowUnratedFallback && q.rated === false) return false;
+                      return isWithinFairEloBand(playerElo, q.playerElo, passConfig.maxEloGap);
+                    })
+                    .sort((a, b) => Math.abs(playerElo - a.playerElo) - Math.abs(playerElo - b.playerElo))[0];
+                  if (compatOpp) {
+                    entry.cancelled = true;
+                    compatOpp.cancelled = true;
+                    if (entry.retryTimer) clearInterval(entry.retryTimer);
+                    if (compatOpp.retryTimer) clearInterval(compatOpp.retryTimer);
+                    matchQueues.set(
+                      key,
+                      (matchQueues.get(key) ?? []).filter((q) => q.ws !== ws),
+                    );
+                    matchQueues.set(
+                      otherKey,
+                      otherQueue.filter((q) => q.ws !== compatOpp.ws),
+                    );
+                    const roomId = generateRoomCode();
+                    const wsWhite =
+                      preferredColor === 'w'
+                        ? true
+                        : preferredColor === 'b'
+                          ? false
+                          : Math.random() < 0.5;
+                    const roomIsRated = requestedRated && compatOpp.rated !== false;
+                    launchNextMatchedRoom({
+                      roomId,
+                      initialSeconds,
+                      incrementSeconds,
+                      whiteName: wsWhite ? playerName : compatOpp.name,
+                      blackName: wsWhite ? compatOpp.name : playerName,
+                      whiteKey: wsWhite ? authUser?.username.toLowerCase() : compatOpp.usernameKey,
+                      blackKey: wsWhite ? compatOpp.usernameKey : authUser?.username.toLowerCase(),
+                      whiteRating: wsWhite ? playerElo : compatOpp.playerElo,
+                      blackRating: wsWhite ? compatOpp.playerElo : playerElo,
+                      whiteAvatarUrl: wsWhite ? playerAvatar : compatOpp.avatarUrl,
+                      blackAvatarUrl: wsWhite ? compatOpp.avatarUrl : playerAvatar,
+                      whiteFlag: wsWhite ? playerFlag : compatOpp.flag,
+                      blackFlag: wsWhite ? compatOpp.flag : playerFlag,
+                      whiteTitle: wsWhite ? playerTitle : compatOpp.title,
+                      blackTitle: wsWhite ? compatOpp.title : playerTitle,
+                      rated: roomIsRated,
+                    });
+                    sendJson(ws, {
+                      type: 'room:matched',
+                      roomId,
+                      yourColor: wsWhite ? 'w' : 'b',
+                      initialSeconds,
+                      incrementSeconds,
+                      rated: roomIsRated,
+                      serverSource: 'OpenChess',
+                    });
+                    sendJson(compatOpp.ws, {
+                      type: 'room:matched',
+                      roomId,
+                      yourColor: wsWhite ? 'b' : 'w',
+                      initialSeconds,
+                      incrementSeconds,
+                      rated: roomIsRated,
+                      serverSource: 'OpenChess',
+                    });
+                    return;
+                  }
+                }
+              }
+
+              const hasFicsNamedSeek = FICS_LIVE_SOUGHT.some(
+                (ad) =>
+                  ad.speed === reqSpeed &&
+                  isMatchCandidateEligible({
+                    playerElo,
+                    opponentName: ad.username,
+                    opponentRating: ad.rating,
+                    requireNamedRated: true,
+                    maxEloGap: passConfig.maxEloGap,
+                  }),
+              );
+
+              const allowUnratedThisPass = !passConfig.requireNamedRated;
               const lichessPromise = joinRealLichessLobbyGame({
                 initialSeconds,
                 incrementSeconds,
@@ -4909,7 +6486,10 @@ function setupLiveWebSocketServer(
                 playerElo,
                 playerKey: authUser?.username || playerName,
                 onlineToken: authUser?.onlineToken,
-                timeoutMs: 3600,
+                allowUnratedGuest: allowUnratedThisPass,
+                maxEloGap: passConfig.maxEloGap,
+                allowSpeedFallback: passConfig.allowSpeedFallback,
+                timeoutMs: currentAttempt === 0 && !allowUnratedThisPass && !authUser?.onlineToken ? 1800 : 3800,
               }).then((m) => (m ? ({ kind: 'lichess' as const, match: m }) : null));
 
               const ficsPromise = joinRealFicsGame({
@@ -4917,7 +6497,16 @@ function setupLiveWebSocketServer(
                 incrementSeconds,
                 preferredColor,
                 playerElo,
-                timeoutMs: 6500,
+                allowUnratedGuest: allowUnratedThisPass,
+                maxEloGap: passConfig.maxEloGap,
+                preferExactClock: passConfig.preferExactClock,
+                allowSpeedFallback: passConfig.allowSpeedFallback,
+                timeoutMs:
+                  currentAttempt === 0 && !hasFicsNamedSeek && !allowUnratedThisPass
+                    ? 1800
+                    : allowUnratedThisPass || hasFicsNamedSeek
+                      ? 4800
+                      : 2400,
                 isCancelled: cancelFicsProbe,
               }).then((m) => (m ? ({ kind: 'fics' as const, match: m }) : null));
 
@@ -4928,6 +6517,37 @@ function setupLiveWebSocketServer(
               >((resolveWinner) => {
                 let pending = 2;
                 let done = false;
+                let delayedLichess: { kind: 'lichess'; match: LichessJoinedMatch } | null = null;
+                let lichessHoldTimer: ReturnType<typeof setTimeout> | null = null;
+
+                const pick = (
+                  r:
+                    | { kind: 'lichess'; match: LichessJoinedMatch }
+                    | { kind: 'fics'; match: FicsJoinedMatch },
+                ) => {
+                  if (done) return;
+                  done = true;
+                  winnerChosen = true;
+                  if (lichessHoldTimer) {
+                    clearTimeout(lichessHoldTimer);
+                    lichessHoldTimer = null;
+                  }
+                  resolveWinner(r);
+                };
+
+                const closeUnusedLichess = (m: LichessJoinedMatch) => {
+                  if (m.socket) {
+                    try {
+                      if (m.socket.readyState === WebSocket.OPEN) {
+                        m.socket.send(JSON.stringify({ t: 'abort' }));
+                      }
+                      m.socket.close();
+                    } catch {
+                      // ignore
+                    }
+                  }
+                };
+
                 const handleOne = (
                   r:
                     | { kind: 'lichess'; match: LichessJoinedMatch }
@@ -4943,18 +6563,50 @@ function setupLiveWebSocketServer(
                       } catch {
                         // ignore
                       }
+                    } else if (r?.kind === 'lichess') {
+                      closeUnusedLichess(r.match);
                     }
                     return;
                   }
-                  if (r) {
-                    done = true;
-                    winnerChosen = true;
-                    resolveWinner(r);
+                  if (r?.kind === 'fics') {
+                    if (delayedLichess) closeUnusedLichess(delayedLichess.match);
+                    pick(r);
+                    return;
+                  }
+                  if (r?.kind === 'lichess') {
+                    const isUnnamedLichess =
+                      (r.match.opponentName === 'Live Opponent' ||
+                        r.match.opponentName === 'Guest Opponent') &&
+                      typeof r.match.opponentRating !== 'number';
+                    if (isUnnamedLichess && !allowUnratedThisPass) {
+                      closeUnusedLichess(r.match);
+                      if (pending === 0) {
+                        done = true;
+                        resolveWinner(null);
+                      }
+                      return;
+                    }
+                    if (
+                      (hasFicsNamedSeek || Boolean(warmFicsSession)) &&
+                      isUnnamedLichess &&
+                      pending > 0
+                    ) {
+                      delayedLichess = r;
+                      lichessHoldTimer = setTimeout(() => {
+                        if (!done && delayedLichess) pick(delayedLichess);
+                      }, hasFicsNamedSeek ? 1300 : 750);
+                      return;
+                    }
+                    pick(r);
                     return;
                   }
                   if (pending === 0) {
-                    done = true;
-                    resolveWinner(null);
+                    if (delayedLichess) {
+                      pick(delayedLichess);
+                    } else {
+                      done = true;
+                      resolveWinner(null);
+                    }
                   }
                 };
                 void lichessPromise.then(handleOne);
@@ -4969,6 +6621,15 @@ function setupLiveWebSocketServer(
                   } catch {
                     // ignore
                   }
+                } else if (result?.kind === 'lichess' && result.match.socket) {
+                  try {
+                    if (result.match.socket.readyState === WebSocket.OPEN) {
+                      result.match.socket.send(JSON.stringify({ t: 'abort' }));
+                    }
+                    result.match.socket.close();
+                  } catch {
+                    // ignore
+                  }
                 }
                 return;
               }
@@ -4979,6 +6640,12 @@ function setupLiveWebSocketServer(
                   try {
                     result.match.socket.write('abort\nquit\n');
                     result.match.socket.destroy();
+                  } catch {
+                    // ignore
+                  }
+                } else if (result?.kind === 'lichess' && result.match.socket) {
+                  try {
+                    result.match.socket.close();
                   } catch {
                     // ignore
                   }
@@ -5000,6 +6667,7 @@ function setupLiveWebSocketServer(
                   pAvatar: playerAvatar,
                   pFlag: playerFlag,
                   pTitle: playerTitle,
+                  requestedRated,
                 });
               } else if (result?.kind === 'fics') {
                 entry.cancelled = true;
@@ -5015,7 +6683,44 @@ function setupLiveWebSocketServer(
                   pAvatar: playerAvatar,
                   pFlag: playerFlag,
                   pTitle: playerTitle,
+                  requestedRated,
                 });
+              } else if (!entry.cancelled && ws.readyState === WebSocket.OPEN) {
+                const bandNow = getFairMatchmakingEloBand(playerElo, passConfig.maxEloGap);
+                const waitedMs = Date.now() - entry.startedAt;
+                if (requestedRated && !allowUnratedFallback && waitedMs >= 7_500 && !entry.timedOutRatedNotified) {
+                  entry.timedOutRatedNotified = true;
+                  sendJson(ws, {
+                    type: 'match:timeout_rated',
+                    elo: playerElo,
+                    minElo: bandNow.minElo,
+                    maxElo: bandNow.maxElo,
+                    timeControl: key,
+                    rated: requestedRated,
+                    hasOnlineToken: Boolean(authUser?.onlineToken),
+                  });
+                } else {
+                  sendJson(ws, {
+                    type: 'match:status',
+                    phase: currentAttempt === 0 ? 'broadening_live_pool' : 'waiting_rated_pool',
+                    elo: playerElo,
+                    minElo: bandNow.minElo,
+                    maxElo: bandNow.maxElo,
+                    timeControl: key,
+                    rated: requestedRated,
+                    hasOnlineToken: Boolean(authUser?.onlineToken),
+                  });
+                }
+                // Immediately kick off broadened Stage 2 probe without waiting full interval
+                if (currentAttempt === 0) {
+                  probingNetwork = false;
+                  setTimeout(() => {
+                    if (!entry.cancelled && ws.readyState === WebSocket.OPEN && !socketToRoom.has(ws)) {
+                      void attemptRealLobbyMatch();
+                    }
+                  }, 60);
+                  return;
+                }
               }
             } finally {
               probingNetwork = false;
@@ -5029,7 +6734,7 @@ function setupLiveWebSocketServer(
               return;
             }
             void attemptRealLobbyMatch();
-          }, 7000);
+          }, 2600);
         }
         return;
       }
@@ -5057,6 +6762,11 @@ function setupLiveWebSocketServer(
       if (!membership) return;
       const room = rooms.get(membership.roomId);
       if (!room) return;
+
+      if (type === 'room:sync') {
+        broadcastRoomState(room);
+        return;
+      }
 
       // Post-game friendly actions (chat, typing, rematch) remain open after game ends!
       if (type === 'chat:typing') {
@@ -5101,7 +6811,7 @@ function setupLiveWebSocketServer(
         if (!room.whiteSocket || !room.blackSocket) {
           sendJson(ws, {
             type: 'room:error',
-            error: 'Rematch requests are only available between directly connected OpenChess players.',
+            error: 'Rematch requests are only available in direct live matches.',
           });
           return;
         }
@@ -5164,8 +6874,9 @@ function setupLiveWebSocketServer(
         const promotion = typeof msg.promotion === 'string' ? msg.promotion : 'q';
         const now = Date.now();
 
-        if (room.lastMoveAt && room.historyMeta.length > 0) {
-          const elapsed = now - room.lastMoveAt;
+        const clockBaseAt = room.clockSyncedAt ?? room.lastMoveAt;
+        if (clockBaseAt && room.historyMeta.length > 0) {
+          const elapsed = Math.max(0, now - clockBaseAt);
           if (membership.color === 'w') {
             room.whiteClockMs = Math.max(0, room.whiteClockMs - elapsed);
             if (room.whiteClockMs <= 0) {
@@ -5199,6 +6910,7 @@ function setupLiveWebSocketServer(
           if (membership.color === 'w') room.whiteClockMs += room.incrementSeconds * 1000;
           else room.blackClockMs += room.incrementSeconds * 1000;
           room.lastMoveAt = now;
+          room.clockSyncedAt = now;
           room.drawOfferBy = null;
           room.historyMeta.push({
             from: moved.from,
@@ -5207,20 +6919,38 @@ function setupLiveWebSocketServer(
             captured: Boolean(moved.captured) || moved.flags.includes('e'),
           });
 
-          if (room.lichessSocket && room.lichessSocket.readyState === WebSocket.OPEN) {
+          if (room.lichessSide) {
             const uci = `${moved.from}${moved.to}${moved.promotion ?? ''}`;
-            const ack = room.lichessAck ?? 1;
-            room.lichessAck = ack + 1;
-            room.lichessSocket.send(
-              JSON.stringify({
-                t: 'move',
-                d: { u: uci, a: ack },
-              }),
-            );
+            if (room.lichessSocket && room.lichessSocket.readyState === WebSocket.OPEN) {
+              const ack = room.lichessAck ?? 1;
+              room.lichessAck = ack + 1;
+              room.lichessPendingMoveAck = {
+                uci,
+                ack,
+                sentAt: now,
+                ply: room.historyMeta.length,
+                retries: 0,
+              };
+              const lagMs = Math.max(10, Math.min(800, Math.round(room.bridgeLagMs ?? 45)));
+              room.lichessSocket.send(
+                JSON.stringify({
+                  t: 'move',
+                  d: { u: uci, a: ack, b: 0, l: lagMs },
+                }),
+              );
+            } else {
+              room.pendingLichessMoves ??= [];
+              room.pendingLichessMoves.push(uci);
+            }
           }
-          if (room.ficsSocket && !room.ficsSocket.destroyed) {
+          if (room.ficsSide) {
             const ficsMove = moved.san.replace(/[+#]$/, '');
-            room.ficsSocket.write(`${ficsMove}\n`);
+            if (room.ficsSocket && !room.ficsSocket.destroyed && room.ficsSocket.writable) {
+              room.ficsSocket.write(`${ficsMove}\n`);
+            } else {
+              room.pendingFicsMoves ??= [];
+              room.pendingFicsMoves.push(ficsMove);
+            }
           }
 
           if (room.chess.isCheckmate()) {
@@ -5242,7 +6972,33 @@ function setupLiveWebSocketServer(
         return;
       }
 
+      if (type === 'claim_abandonment') {
+        const oppSide: 'w' | 'b' = membership.color === 'w' ? 'b' : 'w';
+        const oppOffline =
+          (room.lichessSide && room.lichessOpponentPresent === false) ||
+          (room.ficsSide && room.ficsOpponentPresent === false) ||
+          (!room.lichessSide &&
+            !room.ficsSide &&
+            (oppSide === 'w' ? !room.whiteSocket : !room.blackSocket) &&
+            (Boolean(room.everHadBothPlayers) || room.historyMeta.length > 0));
+        if (!oppOffline) return;
+        cleanupRoomLichessBridge(room);
+        const resolved = resolveOnlineEndOutcome({
+          isDisconnect: true,
+          disconnectedSide: oppSide,
+          moveCount: room.historyMeta.length,
+        });
+        room.winner = resolved.winner;
+        room.endReason = resolved.reason;
+        if (!resolved.aborted) finalizeRoomResult(room);
+        broadcastRoomState(room);
+        return;
+      }
+
       if (type === 'resign') {
+        const isPrestartAbort =
+          room.historyMeta.length === 0 ||
+          ((room.lichessSide || room.ficsSide) && room.historyMeta.length < 2);
         if (room.lichessSocket && room.lichessSocket.readyState === WebSocket.OPEN) {
           const cmd = room.historyMeta.length < 2 ? 'abort' : 'resign';
           room.lichessSocket.send(JSON.stringify({ t: cmd }));
@@ -5251,9 +7007,14 @@ function setupLiveWebSocketServer(
           room.ficsSocket.write(room.historyMeta.length < 2 ? 'abort\n' : 'resign\n');
         }
         cleanupRoomLichessBridge(room);
-        room.winner = membership.color === 'w' ? 'b' : 'w';
-        room.endReason = `${membership.color === 'w' ? 'White' : 'Black'} resigned`;
-        finalizeRoomResult(room);
+        if (isPrestartAbort) {
+          room.winner = 'aborted';
+          room.endReason = 'Game aborted before starting';
+        } else {
+          room.winner = membership.color === 'w' ? 'b' : 'w';
+          room.endReason = `${membership.color === 'w' ? 'White' : 'Black'} resigned`;
+          finalizeRoomResult(room);
+        }
         broadcastRoomState(room);
         return;
       }
@@ -9416,14 +11177,14 @@ async function startServer() {
       raw.players?.white?.user?.id ||
       raw.players?.white?.name ||
       (typeof raw.players?.white?.aiLevel === 'number'
-        ? `Stockfish Lv.${raw.players.white.aiLevel}`
+        ? `Engine Lv.${raw.players.white.aiLevel}`
         : 'White');
     const blackName =
       raw.players?.black?.user?.name ||
       raw.players?.black?.user?.id ||
       raw.players?.black?.name ||
       (typeof raw.players?.black?.aiLevel === 'number'
-        ? `Stockfish Lv.${raw.players.black.aiLevel}`
+        ? `Engine Lv.${raw.players.black.aiLevel}`
         : 'Black');
     return {
       id: String(raw.id ?? ''),
@@ -9829,6 +11590,66 @@ async function startServer() {
     }
   });
 
+  // Fast non-blocking Lichess Cloud Eval pre-check (returns cached Depth 50-70 lines in <1s without blocking)
+  app.post('/api/engine/cloud-batch', async (req, res) => {
+    try {
+      const rawFens = Array.isArray(req.body?.fens) ? req.body.fens : [];
+      const fens = rawFens
+        .filter((f: unknown): f is string => typeof f === 'string' && f.trim().length > 0)
+        .slice(0, 36);
+
+      if (fens.length === 0) {
+        res.json({ evaluations: [] });
+        return;
+      }
+
+      const settled = await Promise.all(
+        fens.map(async (fen: string) => {
+          const cached = getCachedEval(fen);
+          if (cached && cached.available && cached.lines.length > 0) {
+            return {
+              fen,
+              depth: cached.depth,
+              knodes: cached.knodes,
+              source: cached.source ?? 'lichess-cloud',
+              lines: cached.lines.slice(0, 3),
+            };
+          }
+          try {
+            const lichessRes = await fetch(
+              `https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=3`,
+              {
+                headers: { Accept: 'application/json', 'User-Agent': 'OpenChess/1.0' },
+                signal: AbortSignal.timeout(950),
+              },
+            );
+            if (!lichessRes.ok) return null;
+            const raw = (await lichessRes.json()) as LichessCloudEvalRaw;
+            const summary = convertCloudEvalPayload(raw);
+            if (summary.lines.length === 0) return null;
+            const payload: HybridEvalResult = { available: true, ...summary };
+            setCachedEval(fen, payload);
+            return {
+              fen,
+              depth: summary.depth,
+              knodes: summary.knodes,
+              source: 'lichess-cloud' as const,
+              lines: summary.lines.slice(0, 3),
+            };
+          } catch {
+            return null;
+          }
+        }),
+      );
+
+      res.json({
+        evaluations: settled.filter((item): item is NonNullable<typeof item> => item !== null),
+      });
+    } catch {
+      res.json({ evaluations: [] });
+    }
+  });
+
   // Stockfish 17 NNUE / Master Cloud Coach Stream (SSE - Zero LLM dependency)
   app.post('/api/tutor/stream', async (req, res) => {
     const {
@@ -9947,7 +11768,7 @@ async function startServer() {
       res.json({ reply, engineMeta });
     } catch (error: unknown) {
       const message =
-        error instanceof Error ? error.message : 'Stockfish Coach lookup failed.';
+        error instanceof Error ? error.message : 'Coach lookup failed.';
       console.error('Tutor API error:', message);
       res.status(500).json({ error: message });
     }
@@ -9959,57 +11780,147 @@ async function startServer() {
     result: string;
     accuracy: number;
     mistakes: Array<{ move?: string; quality?: string; bestWas?: string; cpLoss?: number }>;
+    coachProfile?: { id?: string; name?: string; title?: string; specialty?: string };
+    opening?: string;
+    bestFind?: string;
+    phaseAccuracies?: {
+      opening?: number | null;
+      middlegame?: number | null;
+      endgame?: number | null;
+    };
   }) {
     const sideLabel = params.playerColor === 'b' ? 'Black' : 'White';
     const acc = Math.round(Number(params.accuracy) || 0);
+    const coachId = params.coachProfile?.id || 'viktor';
+    const coachName = params.coachProfile?.name || 'Coach Viktor';
     const sortedMistakes = [...params.mistakes].sort(
       (a, b) => (b.cpLoss ?? 0) - (a.cpLoss ?? 0),
     );
     const biggest = sortedMistakes[0];
+    const secondBiggest = sortedMistakes[1];
     const blunderCount = params.mistakes.filter((m) => m.quality === 'Blunder').length;
     const mistakeCount = params.mistakes.filter((m) => m.quality === 'Mistake').length;
+    const inaccuracyCount = params.mistakes.filter((m) => m.quality === 'Inaccuracy').length;
 
-    let headline = `Stockfish 17 Review · ${acc}% Accuracy`;
-    if (acc >= 88 && blunderCount === 0) {
-      headline = `Master-Level ${sideLabel} Precision (${acc}% Accuracy)`;
-    } else if (blunderCount >= 2) {
-      headline = 'Tactical Discipline Needed in Sharp Moments';
-    } else if (biggest?.move) {
-      headline = `Critical Turning Point on ${biggest.move}`;
+    const pgnOpeningMatch = params.pgn.match(/\[Opening\s+"([^"]+)"\]/);
+    const openingName =
+      params.opening?.trim() || (pgnOpeningMatch?.[1] && pgnOpeningMatch[1] !== '?' ? pgnOpeningMatch[1] : '');
+
+    let totalMoves = 0;
+    try {
+      const probe = new Chess();
+      probe.loadPgn(params.pgn);
+      totalMoves = Math.ceil(probe.history().length / 2);
+    } catch {
+      totalMoves = 0;
     }
 
-    const strength =
-      acc >= 82
-        ? `Strong move quality (${acc}%) as ${sideLabel} verified by Stockfish 17 with disciplined piece coordination.`
-        : params.mistakes.length <= 2
-          ? `Solid practical resilience keeping errors low through the opening and middlegame transitions.`
-          : `Active piece play as ${sideLabel}; most quiet moves stayed within sound positional bounds.`;
+    const won =
+      (params.playerColor === 'w' && params.result === '1-0') ||
+      (params.playerColor === 'b' && params.result === '0-1');
+    const lost =
+      (params.playerColor === 'w' && params.result === '0-1') ||
+      (params.playerColor === 'b' && params.result === '1-0');
 
-    const priorityFix = biggest?.move
-      ? `Revisit ${biggest.move}${biggest.bestWas ? ` — Stockfish 17 recommends ${biggest.bestWas} to prevent a ${(Math.max(0, biggest.cpLoss ?? 0) / 100).toFixed(1)}-pawn swing.` : '.'}`
-      : blunderCount + mistakeCount > 0
-        ? 'Pause for a 5-second checks, captures, and threats scan before committing tactical moves.'
-        : 'Press small positional advantages by activating your least-active rook or minor piece.';
+    let headline = `${coachName} · ${acc}% Accuracy`;
+    if (acc >= 88 && blunderCount === 0) {
+      headline = `${coachName} · Clinical ${sideLabel} Precision (${acc}%)`;
+    } else if (blunderCount >= 2) {
+      headline = `${coachName} · Sharp Turning Points (${acc}%)`;
+    } else if (biggest?.move) {
+      headline = `${coachName} · Pivotal Moment on ${biggest.move}`;
+    }
+
+    const phaseParts: string[] = [];
+    if (typeof params.phaseAccuracies?.opening === 'number') {
+      phaseParts.push(`Opening ${params.phaseAccuracies.opening}%`);
+    }
+    if (typeof params.phaseAccuracies?.middlegame === 'number') {
+      phaseParts.push(`Middlegame ${params.phaseAccuracies.middlegame}%`);
+    }
+    if (typeof params.phaseAccuracies?.endgame === 'number') {
+      phaseParts.push(`Endgame ${params.phaseAccuracies.endgame}%`);
+    }
+
+    const gameLengthText = totalMoves > 0 ? `${totalMoves}-move` : 'complete';
+    const openingPrefix = openingName ? `In the ${openingName}, ` : '';
+    const outcomeSummary = won
+      ? `you converted a ${gameLengthText} win as ${sideLabel} with ${acc}% accuracy.`
+      : lost
+        ? `this ${gameLengthText} battle as ${sideLabel} ended in a loss (${acc}% accuracy).`
+        : `this ${gameLengthText} match as ${sideLabel} finished level at ${acc}% accuracy.`;
+
+    const gameStory = `${openingPrefix}${outcomeSummary}${
+      phaseParts.length > 0 ? ` Phase split: ${phaseParts.join(' · ')}.` : ''
+    }`;
+
+    let strength = '';
+    if (params.bestFind) {
+      strength =
+        coachId === 'dante'
+          ? `Your sharpest find was ${params.bestFind}, showing strong tactical vision when lines opened.`
+          : `Standout move ${params.bestFind} anchored your play (${acc}% overall, ${blunderCount} blunders).`;
+    } else if (acc >= 82) {
+      strength = `Consistent ${acc}% precision as ${sideLabel} with sound piece coordination and few concessions.`;
+    } else if (blunderCount === 0) {
+      strength = `Zero blunders across the game — you avoided immediate material oversights and kept fighting.`;
+    } else {
+      strength = `Active play as ${sideLabel} through quiet positions before tactical complications hit.`;
+    }
+
+    let priorityFix = '';
+    if (biggest?.move) {
+      const swingText =
+        typeof biggest.cpLoss === 'number' && biggest.cpLoss > 0
+          ? ` (-${(biggest.cpLoss / 100).toFixed(2)} eval)`
+          : '';
+      priorityFix = `Revisit ${biggest.move}${swingText}${
+        biggest.bestWas ? ` — ${biggest.bestWas} kept control` : ''
+      }${secondBiggest?.move ? `, and check ${secondBiggest.move} (${secondBiggest.bestWas || 'safer reply'})` : ''}.`;
+    } else if (mistakeCount + inaccuracyCount > 0) {
+      priorityFix =
+        coachId === 'vera'
+          ? 'Tighten candidate comparison in quiet middlegames before committing pawn breaks.'
+          : 'Pause for a quick checks, captures, and threats scan on tense turns.';
+    } else {
+      priorityFix = 'Keep pressing small edges by activating your rooks and worst-placed minor piece.';
+    }
 
     const sundayDrill =
       blunderCount > 0
-        ? 'Solve 10 minutes of Hanging Piece & Fork puzzles, checking undefended squares after every candidate move.'
+        ? `Replay ${biggest?.move || 'your key blunder'} on the board and spot every undefended piece before moving.`
         : mistakeCount > 0
-          ? 'Step through each Mistake with Stockfish Multi-PV lines enabled and play the best continuation on the board.'
-          : 'Play 10 minutes of Rated Puzzles and review top Stockfish candidate lines on critical middlegame turns.';
+          ? `Step through ${biggest?.move || 'your critical mistake'} and play out the top engine continuation.`
+          : coachId === 'vera'
+            ? 'Study rook-and-pawn endgame activity to convert minor advantages even cleanly.'
+            : 'Spend 10 minutes on tactical motifs (forks, pins, and intermediate checks).';
 
-    return { headline, strength, priorityFix, sundayDrill };
+    return { headline, gameStory, strength, priorityFix, sundayDrill };
   }
 
   app.post('/api/review', async (req, res) => {
-    const { pgn = '', playerColor = 'w', result = '*', accuracy = 0, mistakes = [] } =
-      req.body ?? {};
+    const {
+      pgn = '',
+      playerColor = 'w',
+      result = '*',
+      accuracy = 0,
+      mistakes = [],
+      coachProfile,
+      opening,
+      bestFind,
+      phaseAccuracies,
+    } = req.body ?? {};
     const debrief = buildDeterministicGameDebrief({
       pgn: String(pgn),
       playerColor: String(playerColor),
       result: String(result),
       accuracy: Number(accuracy),
       mistakes: Array.isArray(mistakes) ? mistakes : [],
+      coachProfile: coachProfile && typeof coachProfile === 'object' ? coachProfile : undefined,
+      opening: typeof opening === 'string' ? opening : undefined,
+      bestFind: typeof bestFind === 'string' ? bestFind : undefined,
+      phaseAccuracies:
+        phaseAccuracies && typeof phaseAccuracies === 'object' ? phaseAccuracies : undefined,
     });
     res.json(debrief);
   });
@@ -10620,6 +12531,31 @@ async function startServer() {
       }
     },
   );
+
+  let listenRetries = 0;
+  const MAX_LISTEN_RETRIES = 6;
+
+  httpServer.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE' && listenRetries < MAX_LISTEN_RETRIES) {
+      listenRetries += 1;
+      console.warn(
+        `Port ${PORT} busy (EADDRINUSE); retrying bind (${listenRetries}/${MAX_LISTEN_RETRIES})...`,
+      );
+      setTimeout(() => {
+        httpServer.listen(PORT, '0.0.0.0');
+      }, 400);
+      return;
+    }
+    console.error('OpenChess httpServer failed to listen:', err);
+    process.exit(1);
+  });
+
+  const gracefulShutdown = () => {
+    httpServer.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 1500).unref();
+  };
+  process.once('SIGTERM', gracefulShutdown);
+  process.once('SIGINT', gracefulShutdown);
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`OpenChess server running on http://localhost:${PORT}`);

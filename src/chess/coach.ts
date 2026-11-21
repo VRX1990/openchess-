@@ -450,9 +450,25 @@ export interface SmartMoveAnalysis {
   tags: string[];
 }
 
+export interface KeyMoment {
+  ply: number;
+  moveNumber: number;
+  color: Color;
+  san: string;
+  bestMoveSan: string;
+  quality: MoveQuality;
+  kind: 'turning_point' | 'best_find' | 'missed_win' | 'blunder';
+  label: string;
+  evalSwingText: string;
+  note: string;
+}
+
 export interface SmartGameInsights {
   summaryHeadline: string;
   coachVerdict: string;
+  strengthSummary: string;
+  weaknessSummary: string;
+  focusDrill: string;
   turningPointPly: number | null;
   turningPointText: string | null;
   bestMomentPly: number | null;
@@ -461,12 +477,60 @@ export interface SmartGameInsights {
   middlegameAccuracy: number | null;
   endgameAccuracy: number | null;
   keyTakeaways: string[];
+  keyMoments: KeyMoment[];
 }
 
 export function cpToWhiteWinPercent(evalCp: number): number {
   const clamped = Math.max(-2500, Math.min(2500, evalCp));
   const raw = 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * clamped)) - 1);
   return Math.max(1, Math.min(99, Math.round(raw)));
+}
+
+function countAttackedHighValueTargets(
+  chess: Chess,
+  attackerSquare: Square,
+  attackerColor: Color,
+): { count: number; targets: string[] } {
+  const opp: Color = attackerColor === 'w' ? 'b' : 'w';
+  const piece = chess.get(attackerSquare);
+  if (!piece) return { count: 0, targets: [] };
+
+  const attacks = chess.moves({ square: attackerSquare, verbose: true });
+  const targets: string[] = [];
+  const seen = new Set<string>();
+
+  for (const m of attacks) {
+    if (!m.captured) continue;
+    const victim = chess.get(m.to as Square);
+    if (!victim || victim.color !== opp) continue;
+    if (victim.type === 'p') continue;
+    if (PIECE_WORTH[victim.type] > PIECE_WORTH[piece.type] || !chess.isAttacked(m.to as Square, opp)) {
+      if (!seen.has(m.to)) {
+        seen.add(m.to);
+        targets.push(`${PIECE_NAMES[victim.type]} on ${m.to}`);
+      }
+    }
+  }
+
+  return { count: targets.length, targets };
+}
+
+function isOpenOrSemiOpenFile(chess: Chess, fileChar: string, color: Color): 'open' | 'semi-open' | null {
+  const fileIdx = 'abcdefgh'.indexOf(fileChar);
+  if (fileIdx < 0) return null;
+  const board = chess.board();
+  let friendlyPawns = 0;
+  let enemyPawns = 0;
+  for (let r = 0; r < 8; r++) {
+    const sq = board[r][fileIdx];
+    if (sq?.type === 'p') {
+      if (sq.color === color) friendlyPawns++;
+      else enemyPawns++;
+    }
+  }
+  if (friendlyPawns === 0 && enemyPawns === 0) return 'open';
+  if (friendlyPawns === 0 && enemyPawns > 0) return 'semi-open';
+  return null;
 }
 
 export function buildSmartMoveAnalysis(
@@ -492,21 +556,52 @@ export function buildSmartMoveAnalysis(
   let isCheck = false;
   let isCheckmate = false;
   let isCapture = false;
+  let isPromotion = false;
   let isCastle = false;
   let movedPiece: PieceSymbol = 'p';
+  let capturedPiece: PieceSymbol | null = null;
+  let forkTargets: string[] = [];
+  let rookFileStatus: 'open' | 'semi-open' | null = null;
+  let developedFromBackRank = false;
 
   try {
-    const before = new Chess(move.fenBefore);
-    const played = before.move({ from: move.from, to: move.to, promotion: 'q' });
+    const after = new Chess(move.fenBefore);
+    const played = after.move({ from: move.from, to: move.to, promotion: 'q' });
     if (played) {
       movedPiece = played.piece;
+      capturedPiece = played.captured ?? null;
       isCapture = Boolean(played.captured) || played.flags.includes('e');
+      isPromotion = played.flags.includes('p') || Boolean(played.promotion);
       isCastle = played.flags.includes('k') || played.flags.includes('q');
-      isCheck = before.inCheck();
-      isCheckmate = before.isCheckmate();
-      if (!before.isGameOver()) {
-        hangingAfter = findHangingFriendlyPiece(before, move.color);
-        oppHangingAfter = findHangingFriendlyPiece(before, move.color === 'w' ? 'b' : 'w');
+      isCheck = after.inCheck();
+      isCheckmate = after.isCheckmate();
+      developedFromBackRank =
+        (played.piece === 'n' || played.piece === 'b') &&
+        ((played.color === 'w' && played.from.endsWith('1')) ||
+          (played.color === 'b' && played.from.endsWith('8')));
+
+      if (!after.isGameOver()) {
+        hangingAfter = findHangingFriendlyPiece(after, move.color);
+        oppHangingAfter = findHangingFriendlyPiece(after, move.color === 'w' ? 'b' : 'w');
+
+        // Detect double attack / fork from the destination square (requires flipping turn or checking attacks)
+        if (played.piece !== 'k' && played.piece !== 'p') {
+          const fenParts = after.fen().split(' ');
+          fenParts[1] = move.color;
+          try {
+            const probe = new Chess(fenParts.join(' '));
+            const forkCheck = countAttackedHighValueTargets(probe, played.to as Square, move.color);
+            if (forkCheck.count >= 2 || (isCheck && forkCheck.count >= 1)) {
+              forkTargets = forkCheck.targets;
+            }
+          } catch {
+            // ignore illegal en-passant probe if any
+          }
+        }
+
+        if (played.piece === 'r') {
+          rookFileStatus = isOpenOrSemiOpenFile(after, played.to[0], move.color);
+        }
       }
     }
   } catch {
@@ -515,8 +610,11 @@ export function buildSmartMoveAnalysis(
 
   if (isCheckmate) tags.push('Checkmate');
   else if (isCheck) tags.push('Forcing Check');
+  if (forkTargets.length > 0) tags.push('Double Attack');
   if (isCastle) tags.push('King Safety');
-  if (isCapture) tags.push('Material Trade');
+  if (isPromotion) tags.push('Promotion');
+  if (rookFileStatus === 'open') tags.push('Open File');
+  if (isCapture) tags.push('Capture');
   if (CENTRAL_SQUARES.has(move.to)) tags.push('Center Control');
   if (hangingAfter) tags.push('Hanging Piece');
   else if (oppHangingAfter) tags.push('Target Created');
@@ -527,79 +625,122 @@ export function buildSmartMoveAnalysis(
   let tacticalAlert: string | null = null;
 
   if (hangingAfter) {
-    tacticalAlert = `Leaves your ${PIECE_NAMES[hangingAfter.piece]} on ${hangingAfter.square} undefended!`;
+    tacticalAlert = `Leaves your ${PIECE_NAMES[hangingAfter.piece]} on ${hangingAfter.square} undefended.`;
   } else if (move.cpLoss >= 180 && move.bestMoveSan && move.bestMoveSan !== move.san) {
-    tacticalAlert = `Drops ${Math.abs(winChanceDelta)}% win probability compared to ${move.bestMoveSan}.`;
+    tacticalAlert = `Costs ${Math.abs(winChanceDelta)}% win probability compared to ${move.bestMoveSan}.`;
   }
+
+  const evalDropPawns = (move.cpLoss / 100).toFixed(2);
+  const hasDistinctBest = Boolean(move.bestMoveSan && move.bestMoveSan !== move.san);
 
   if (isCheckmate) {
     headline = `${movePrefix} delivers Checkmate!`;
     why =
       coach.id === 'dante'
-        ? 'Clinical attacking finish! Every escape square around the enemy king is sealed off.'
-        : 'Decisive checkmate — your pieces coordinated cleanly to end the game on the spot.';
+        ? 'Clinical finish — every escape square around the enemy king is sealed off.'
+        : 'Decisive checkmate — your pieces coordinated cleanly to finish the game.';
   } else if (move.quality === 'Book') {
-    headline = `${movePrefix} is a Book Move`;
-    why =
-      coach.id === 'vera'
-        ? 'Established opening theory that fights for central space and keeps piece structure harmonious.'
-        : coach.id === 'elena'
-          ? 'Solid theoretical development — brings pieces toward the action while keeping your king safe.'
-          : 'Standard opening theory that contests key central squares and prepares smooth development.';
+    headline = `${movePrefix} is Book`;
+    if (isCastle) {
+      why = 'Standard opening theory — tucks your king into safety and connects your rooks.';
+    } else if (developedFromBackRank) {
+      why = `Principled opening development — brings your ${PIECE_NAMES[movedPiece]} to ${move.to} toward the center.`;
+    } else if (CENTRAL_SQUARES.has(move.to)) {
+      why = `Mainline theory — claims central space on ${move.to} and opens lines for your minor pieces.`;
+    } else if (isCapture) {
+      why = 'Recognized theoretical capture that clarifies the center and keeps piece play smooth.';
+    } else {
+      why =
+        coach.id === 'vera'
+          ? 'Sound opening theory that keeps your pawn structure healthy and prepares active piece placement.'
+          : 'Established opening move that supports development and prepares smooth middlegame play.';
+    }
   } else if (move.quality === 'Brilliant') {
     headline = `${movePrefix} is Brilliant!!`;
     why =
       coach.id === 'dante'
-        ? `Electrifying tactical resource! ${move.san} seizes the initiative and forces the opponent onto a razor’s edge.`
-        : `Exceptional calculation — ${move.san} finds the sharpest dynamic idea on the board (${moverWinAfter}% win chance).`;
+        ? `Electrifying sacrifice! ${move.san} tears open lines and puts maximum pressure on the defense.`
+        : `Rare tactical resource — ${move.san} sacrifices material on purpose to seize a decisive initiative (${moverWinAfter}% win chance).`;
   } else if (move.quality === 'Great') {
     headline = `${movePrefix} is a Great Move!`;
-    why = `High-impact decision in a critical position! ${move.san} shifts win probability in your favor (${moverWinAfter}%).`;
+    why =
+      forkTargets.length > 0
+        ? `Sharp tactical strike! ${move.san} creates multiple threats at once (${forkTargets.slice(0, 2).join(' and ')}).`
+        : isCheck
+          ? `Critical forcing check! ${move.san} is the only move that keeps the advantage (${moverWinAfter}% win chance).`
+          : `Clutch decision in a razor-thin moment — ${move.san} turns the position in your favor (${moverWinAfter}% win chance).`;
   } else if (move.quality === 'Best') {
     headline = `${movePrefix} is the Best Move`;
-    if (isCastle) {
-      why = 'Top engine choice: castling secures your king and activates your rook toward the central files.';
+    if (forkTargets.length > 0) {
+      why = `Top engine choice: ${move.san} attacks ${forkTargets.slice(0, 2).join(' and ')} simultaneously.`;
+    } else if (isCastle) {
+      why = 'Top engine choice: castling secures your king and activates a rook toward the center.';
     } else if (isCheck) {
-      why = `Engine’s #1 choice: ${move.san} delivers a forcing check that seizes tempo and restricts the enemy king.`;
-    } else if (isCapture) {
-      why = `Precision capture! ${move.san} wins or exchanges material on the most favorable terms.`;
+      why = `Strongest continuation: ${move.san} delivers a forcing check that keeps the initiative.`;
+    } else if (isPromotion) {
+      why = `Decisive promotion — ${move.san} upgrades your pawn and converts the endgame advantage.`;
+    } else if (isCapture && capturedPiece) {
+      why = `Exact capture: removing the ${PIECE_NAMES[capturedPiece]} on ${move.to} improves your position cleanly.`;
+    } else if (rookFileStatus === 'open') {
+      why = `Textbook rook play: ${move.san} seizes the open ${move.to[0]}-file and creates invasion targets.`;
+    } else if (developedFromBackRank) {
+      why = `Ideal development: ${move.san} activates your ${PIECE_NAMES[movedPiece]} to an active square.`;
     } else if (CENTRAL_SQUARES.has(move.to)) {
-      why = `Optimal placement: ${move.san} cements control over the vital ${move.to} square and improves coordination.`;
+      why = `Top positional choice: ${move.san} anchors your presence on ${move.to} and restricts counterplay.`;
     } else {
-      why = `Exact engine preference — ${move.san} activates your ${PIECE_NAMES[movedPiece]} while keeping zero weaknesses.`;
+      why = `Exact engine preference — ${move.san} improves your ${PIECE_NAMES[movedPiece]} without creating targets.`;
     }
   } else if (move.quality === 'Good') {
-    headline = `${movePrefix} is a Solid Move`;
-    why =
-      move.bestMoveSan && move.bestMoveSan !== move.san
-        ? `${move.san} maintains a playable structure (${moverWinAfter}% win rate), though ${move.bestMoveSan} was slightly more incisive.`
-        : `${move.san} keeps your pieces coordinated and maintains the balance of the position.`;
-    if (move.bestMoveSan && move.bestMoveSan !== move.san && move.cpLoss >= 25) {
-      betterPlan = `Consider ${move.bestMoveSan} (${move.bestMoveFrom}→${move.bestMoveTo}) to fight for slightly more initiative.`;
+    headline = `${movePrefix} is Good`;
+    if (isCastle) {
+      why = `Practical castling that gets your king to safety${hasDistinctBest ? `, though ${move.bestMoveSan} was slightly sharper` : ''}.`;
+    } else if (rookFileStatus === 'open') {
+      why = `Solid plan placing your rook on the open ${move.to[0]}-file${hasDistinctBest ? ` (${move.bestMoveSan} held a slight edge)` : ''}.`;
+    } else {
+      why = hasDistinctBest
+        ? `${move.san} keeps a healthy structure (${moverWinAfter}% win chance), though ${move.bestMoveSan} pressed slightly harder.`
+        : `${move.san} keeps your pieces coordinated and the position balanced.`;
+    }
+    if (hasDistinctBest && move.cpLoss >= 25) {
+      betterPlan = `Stronger alternative: ${move.bestMoveSan} (${move.bestMoveFrom}→${move.bestMoveTo}) keeps tighter control.`;
     }
   } else if (move.quality === 'Inaccuracy') {
-    headline = `${movePrefix} is an Inaccuracy (?! )`;
-    why = `${move.san} surrenders some momentum (-${(move.cpLoss / 100).toFixed(2)} eval, ${winChanceDelta >= 0 ? '+' : ''}${winChanceDelta}% win chance).`;
-    if (move.bestMoveSan && move.bestMoveSan !== move.san) {
-      betterPlan = `${coach.name} recommends ${move.bestMoveSan} (${move.bestMoveFrom}→${move.bestMoveTo}) to keep stronger piece activity.`;
+    headline = `${movePrefix} is an Inaccuracy (?!)`;
+    why =
+      hangingAfter
+        ? `${move.san} loosens coordination and leaves your ${PIECE_NAMES[hangingAfter.piece]} on ${hangingAfter.square} exposed (-${evalDropPawns}).`
+        : `${move.san} lets some pressure slip (-${evalDropPawns}, ${winChanceDelta >= 0 ? '+' : ''}${winChanceDelta}% win chance).`;
+    if (hasDistinctBest) {
+      betterPlan = `${coach.name} suggests ${move.bestMoveSan} (${move.bestMoveFrom}→${move.bestMoveTo}) to stay more active.`;
     }
   } else if (move.quality === 'Mistake') {
     headline = `${movePrefix} is a Mistake (?)`;
-    why =
-      hangingAfter
-        ? `${move.san} exposes your ${PIECE_NAMES[hangingAfter.piece]} on ${hangingAfter.square} and loses ${(move.cpLoss / 100).toFixed(2)} pawns of evaluation.`
-        : `${move.san} allows immediate counterplay (-${(move.cpLoss / 100).toFixed(2)} eval, ${winChanceDelta}% win probability).`;
-    if (move.bestMoveSan && move.bestMoveSan !== move.san) {
-      betterPlan = `Play ${move.bestMoveSan} (${move.bestMoveFrom}→${move.bestMoveTo}) instead to defend key squares and stay in control.`;
+    if (move.isMissedWin && hasDistinctBest) {
+      why = `${move.san} lets a winning edge slip away (-${evalDropPawns}). You had a much stronger continuation available.`;
+    } else if (hangingAfter) {
+      why = `${move.san} leaves your ${PIECE_NAMES[hangingAfter.piece]} on ${hangingAfter.square} undefended (-${evalDropPawns}).`;
+    } else {
+      why = `${move.san} concedes real counterplay (-${evalDropPawns}, ${winChanceDelta}% win chance).`;
+    }
+    if (hasDistinctBest) {
+      betterPlan = `Play ${move.bestMoveSan} (${move.bestMoveFrom}→${move.bestMoveTo}) instead to keep control.`;
     }
   } else {
     headline = `${movePrefix} is a Blunder (??)`;
-    why =
-      hangingAfter
-        ? `Critical oversight — ${move.san} leaves your ${PIECE_NAMES[hangingAfter.piece]} on ${hangingAfter.square} undefended (${winChanceDelta}% win chance).`
-        : `Major swing (-${(move.cpLoss / 100).toFixed(2)} eval, ${winChanceDelta}% win chance). ${move.san} misses a crucial tactical threat.`;
-    if (move.bestMoveSan && move.bestMoveSan !== move.san) {
-      betterPlan = `The essential resource was ${move.bestMoveSan} (${move.bestMoveFrom}→${move.bestMoveTo}), which preserves your position.`;
+    if (
+      typeof move.mateIn === 'number' &&
+      (move.color === 'w' ? move.mateIn < 0 : move.mateIn > 0)
+    ) {
+      why = `${move.san} walks into a forced checkmate in ${Math.abs(move.mateIn)}.`;
+    } else if (hangingAfter) {
+      why = `Critical oversight — ${move.san} leaves your ${PIECE_NAMES[hangingAfter.piece]} on ${hangingAfter.square} hanging (${winChanceDelta}% win chance).`;
+    } else if (move.isMissedWin) {
+      why = `Huge swing (${winChanceDelta}% win chance) — ${move.san} gives away a decisive advantage.`;
+    } else {
+      why = `Major tactical swing (-${evalDropPawns}, ${winChanceDelta}% win chance) that turns the game sharply.`;
+    }
+    if (hasDistinctBest) {
+      betterPlan = `Key save: ${move.bestMoveSan} (${move.bestMoveFrom}→${move.bestMoveTo}) holds the position together.`;
     }
   }
 
@@ -623,8 +764,17 @@ export function buildSmartMoveAnalysis(
 
 function computeSubsetAccuracy(subset: EvaluatedMove[]): number | null {
   if (subset.length === 0) return null;
+  if (subset.every((m) => typeof m.accuracyPercent === 'number')) {
+    const avg =
+      subset.reduce((s, m) => s + (m.accuracyPercent ?? 0), 0) / subset.length;
+    return Math.max(0, Math.min(100, Math.round(avg * 10) / 10));
+  }
   const avgLoss = subset.reduce((s, m) => s + Math.min(m.cpLoss, 500), 0) / subset.length;
   return Math.max(15, Math.min(99, Math.round(100 * Math.exp(-0.0038 * avgLoss))));
+}
+
+function formatMoveShort(m: EvaluatedMove): string {
+  return `${m.moveNumber}${m.color === 'b' ? '...' : '.'} ${m.san}`;
 }
 
 export function buildSmartGameInsights(
@@ -633,12 +783,16 @@ export function buildSmartGameInsights(
   coachId: CoachPersonaId = 'viktor',
 ): SmartGameInsights {
   const coach = getCoachProfile(coachId);
+  const sideLabel = playerColor === 'w' ? 'White' : 'Black';
   const mine = moves.filter((m) => m.color === playerColor);
 
   if (mine.length === 0) {
     return {
-      summaryHeadline: `${coach.name} is ready to review your game from Move 1`,
-      coachVerdict: 'Step through the game from the opening move to see move-by-move evaluations, win probabilities, and tactical alternatives.',
+      summaryHeadline: `${coach.name} is ready to review`,
+      coachVerdict: 'Step through the moves to inspect key moments, best continuations, and accuracy by phase.',
+      strengthSummary: 'Full opening, middlegame, and endgame scoring updates as moves are scanned.',
+      weaknessSummary: 'No critical errors flagged yet.',
+      focusDrill: 'Jump to the first critical swing once the scan finishes.',
       turningPointPly: null,
       turningPointText: null,
       bestMomentPly: null,
@@ -646,7 +800,8 @@ export function buildSmartGameInsights(
       openingAccuracy: null,
       middlegameAccuracy: null,
       endgameAccuracy: null,
-      keyTakeaways: ['Use Next Move or Auto-Review to walk through the game from beginning to end.'],
+      keyTakeaways: ['Use Next Move or Auto-Review to walk through the game from Move 1.'],
+      keyMoments: [],
     };
   }
 
@@ -659,77 +814,218 @@ export function buildSmartGameInsights(
   const turningPointPly = worstMove && worstMove.cpLoss >= 60 ? worstMove.ply : null;
   const turningPointText =
     worstMove && worstMove.cpLoss >= 60
-      ? `Move ${worstMove.moveNumber}${worstMove.color === 'b' ? '...' : '.'} ${worstMove.san} (${worstMove.quality}, -${(worstMove.cpLoss / 100).toFixed(2)}) — ${worstMove.bestMoveSan} was best.`
+      ? `${formatMoveShort(worstMove)} (${worstMove.quality}, -${(worstMove.cpLoss / 100).toFixed(2)}) — ${worstMove.bestMoveSan} was best.`
       : null;
 
   const bestCandidate =
-    mine.find((m) => m.quality === 'Brilliant' || m.quality === 'Great') ??
+    mine.find((m) => m.quality === 'Brilliant') ??
+    mine.find((m) => m.quality === 'Great') ??
     mine.filter((m) => m.quality === 'Best' && m.moveNumber > 4)[0] ??
     mine[0] ??
     null;
 
   const bestMomentPly = bestCandidate ? bestCandidate.ply : null;
   const bestMomentText = bestCandidate
-    ? `Move ${bestCandidate.moveNumber}${bestCandidate.color === 'b' ? '...' : '.'} ${bestCandidate.san} (${bestCandidate.quality})`
+    ? `${formatMoveShort(bestCandidate)} (${bestCandidate.quality})`
     : null;
 
-  const blunders = mine.filter((m) => m.quality === 'Blunder').length;
-  const mistakes = mine.filter((m) => m.quality === 'Mistake').length;
-  const bestCount = mine.filter(
+  const blunders = mine.filter((m) => m.quality === 'Blunder');
+  const mistakes = mine.filter((m) => m.quality === 'Mistake');
+  const inaccuracies = mine.filter((m) => m.quality === 'Inaccuracy');
+  const missedWins = mine.filter((m) => m.isMissedWin);
+  const topMoves = mine.filter(
     (m) => m.quality === 'Best' || m.quality === 'Great' || m.quality === 'Brilliant' || m.quality === 'Book',
-  ).length;
+  );
+  const brilliantOrGreat = mine.filter((m) => m.quality === 'Brilliant' || m.quality === 'Great');
 
-  let summaryHeadline = `Clinical ${overallAcc}% Accuracy Performance`;
-  if (overallAcc >= 88 && blunders === 0) {
-    summaryHeadline = `Masterclass Precision (${overallAcc}% Accuracy, 0 Blunders)`;
-  } else if (blunders >= 2) {
-    summaryHeadline = `Sharp Battle Decided by Tactical Swings (${overallAcc}% Accuracy)`;
+  // Build curated clickable Key Moments (across whole game so master/opponent swings are also visible)
+  const keyMoments: KeyMoment[] = [];
+  const usedPlies = new Set<number>();
+
+  // 1. Top Tactical Find (for player first, or either side)
+  const gameHighlight =
+    brilliantOrGreat[0] ??
+    moves.find((m) => m.quality === 'Brilliant' || m.quality === 'Great') ??
+    bestCandidate;
+  if (gameHighlight) {
+    usedPlies.add(gameHighlight.ply);
+    keyMoments.push({
+      ply: gameHighlight.ply,
+      moveNumber: gameHighlight.moveNumber,
+      color: gameHighlight.color,
+      san: gameHighlight.san,
+      bestMoveSan: gameHighlight.bestMoveSan,
+      quality: gameHighlight.quality,
+      kind: 'best_find',
+      label:
+        gameHighlight.quality === 'Brilliant'
+          ? 'Brilliant Find'
+          : gameHighlight.quality === 'Great'
+            ? 'Great Move'
+            : 'Best Find',
+      evalSwingText: `${gameHighlight.evalCp >= 0 ? '+' : ''}${(gameHighlight.evalCp / 100).toFixed(2)}`,
+      note:
+        gameHighlight.classificationNote ||
+        `Cleanest move on the board (${gameHighlight.color === 'w' ? 'White' : 'Black'}).`,
+    });
+  }
+
+  // 2. Missed Win (if any)
+  const firstMissedWin = missedWins[0] ?? moves.find((m) => m.isMissedWin);
+  if (firstMissedWin && !usedPlies.has(firstMissedWin.ply)) {
+    usedPlies.add(firstMissedWin.ply);
+    keyMoments.push({
+      ply: firstMissedWin.ply,
+      moveNumber: firstMissedWin.moveNumber,
+      color: firstMissedWin.color,
+      san: firstMissedWin.san,
+      bestMoveSan: firstMissedWin.bestMoveSan,
+      quality: firstMissedWin.quality,
+      kind: 'missed_win',
+      label: 'Missed Win',
+      evalSwingText: `-${(firstMissedWin.cpLoss / 100).toFixed(2)}`,
+      note: `${firstMissedWin.bestMoveSan} kept a decisive winning edge.`,
+    });
+  }
+
+  // 3. Biggest Turning Point / Error for player
+  if (worstMove && worstMove.cpLoss >= 60 && !usedPlies.has(worstMove.ply)) {
+    usedPlies.add(worstMove.ply);
+    keyMoments.push({
+      ply: worstMove.ply,
+      moveNumber: worstMove.moveNumber,
+      color: worstMove.color,
+      san: worstMove.san,
+      bestMoveSan: worstMove.bestMoveSan,
+      quality: worstMove.quality,
+      kind: worstMove.quality === 'Blunder' ? 'blunder' : 'turning_point',
+      label: worstMove.quality === 'Blunder' ? 'Critical Blunder' : 'Turning Point',
+      evalSwingText: `-${(worstMove.cpLoss / 100).toFixed(2)}`,
+      note: `${worstMove.bestMoveSan} kept the balance; ${worstMove.san} gave counterplay.`,
+    });
+  }
+
+  // 4. Biggest opponent mistake if player didn't have enough swings
+  if (keyMoments.length < 3) {
+    const oppSwing = [...moves]
+      .filter((m) => !usedPlies.has(m.ply) && (m.quality === 'Blunder' || m.quality === 'Mistake'))
+      .sort((a, b) => b.cpLoss - a.cpLoss)[0];
+    if (oppSwing) {
+      usedPlies.add(oppSwing.ply);
+      keyMoments.push({
+        ply: oppSwing.ply,
+        moveNumber: oppSwing.moveNumber,
+        color: oppSwing.color,
+        san: oppSwing.san,
+        bestMoveSan: oppSwing.bestMoveSan,
+        quality: oppSwing.quality,
+        kind: oppSwing.quality === 'Blunder' ? 'blunder' : 'turning_point',
+        label: `${oppSwing.color === 'w' ? 'White' : 'Black'} Slip`,
+        evalSwingText: `-${(oppSwing.cpLoss / 100).toFixed(2)}`,
+        note: `Best reply was ${oppSwing.bestMoveSan}.`,
+      });
+    }
+  }
+
+  keyMoments.sort((a, b) => a.ply - b.ply);
+
+  // Headline
+  let summaryHeadline = `${sideLabel} · ${overallAcc}% Accuracy`;
+  if (overallAcc >= 88 && blunders.length === 0) {
+    summaryHeadline = `${sideLabel} · Clinical ${overallAcc}% Precision`;
+  } else if (blunders.length >= 2) {
+    summaryHeadline = `${sideLabel} · High-Variance Battle (${overallAcc}%)`;
+  } else if (missedWins.length > 0) {
+    summaryHeadline = `${sideLabel} · Missed Finishing Blow (${overallAcc}%)`;
   } else if (overallAcc >= 75) {
-    summaryHeadline = `Solid Competitive Game (${overallAcc}% Accuracy)`;
+    summaryHeadline = `${sideLabel} · Solid ${overallAcc}% Performance`;
   } else {
-    summaryHeadline = `Tactical Learning Game (${overallAcc}% Accuracy)`;
+    summaryHeadline = `${sideLabel} · ${overallAcc}% (Tactical Review Ready)`;
   }
 
+  // Persona-specific coach verdict citing concrete moves
   let coachVerdict = '';
-  if (blunders === 0 && mistakes <= 1) {
-    coachVerdict = `${coach.name}: "You played disciplined chess from the opening through the final phase, finding ${bestCount} best/book moves without a single blunder."`;
+  if (blunders.length === 0 && mistakes.length <= 1) {
+    coachVerdict =
+      coach.id === 'dante'
+        ? `Sharp, clean chess! You found ${topMoves.length} top moves${bestCandidate ? `, highlighted by ${formatMoveShort(bestCandidate)}` : ''}, without giving your opponent a free blunder.`
+        : coach.id === 'vera'
+          ? `Very disciplined control across ${mine.length} moves. Keeping blunders at zero allowed your structure to speak${bestCandidate ? `, especially around ${formatMoveShort(bestCandidate)}` : ''}.`
+          : `Clean game with ${topMoves.length} strong/book moves and zero blunders${bestCandidate ? ` — ${formatMoveShort(bestCandidate)} stood out` : ''}.`;
+  } else if (firstMissedWin && firstMissedWin.color === playerColor) {
+    coachVerdict =
+      coach.id === 'dante'
+        ? `You built a winning attack, but let the knockout slip on ${formatMoveShort(firstMissedWin)} when ${firstMissedWin.bestMoveSan} closed the door.`
+        : `You outplayed the position early, then missed conversion on ${formatMoveShort(firstMissedWin)} — ${firstMissedWin.bestMoveSan} kept a decisive edge.`;
   } else if (openingAccuracy !== null && openingAccuracy < 72) {
-    coachVerdict = `${coach.name}: "Your early opening setup (${openingAccuracy}% accuracy) put you under pressure—let's step from Move 1 to lock in cleaner development."`;
-  } else if (turningPointText) {
-    coachVerdict = `${coach.name}: "You found ${bestCount} strong moves, but the critical swing came on ${turningPointText}"`;
+    coachVerdict =
+      coach.id === 'elena'
+        ? `The opening phase (${openingAccuracy}%) forced you onto the back foot early. Slow down around your first 8 moves to finish development cleanly.`
+        : `Early drift in the opening (${openingAccuracy}% accuracy) put unnecessary pressure on your middlegame${worstMove ? `, peaking at ${formatMoveShort(worstMove)}` : ''}.`;
+  } else if (worstMove && worstMove.cpLoss >= 90) {
+    coachVerdict =
+      coach.id === 'vera'
+        ? `Most of your structure held together well, but ${formatMoveShort(worstMove)} swung the balance by ${(worstMove.cpLoss / 100).toFixed(1)} pawns (${worstMove.bestMoveSan} was needed).`
+        : `You played ${topMoves.length} accurate moves, and the game hinged on ${formatMoveShort(worstMove)} where ${worstMove.bestMoveSan} kept you in control.`;
   } else {
-    coachVerdict = `${coach.name}: "Good competitive effort with ${bestCount} accurate moves. Walk through each phase from Move 1 to sharpen your conversion."`;
+    coachVerdict = `Competitive effort with ${topMoves.length} accurate moves across ${mine.length} turns. Review the ${mistakes.length + inaccuracies.length} soft moments to tighten up.`;
   }
 
-  const keyTakeaways: string[] = [];
-  if (openingAccuracy !== null) {
-    keyTakeaways.push(
-      openingAccuracy >= 82
-        ? `Opening (${openingAccuracy}%): Clean theoretical start through the first 8 moves.`
-        : `Opening (${openingAccuracy}%): Focus on rapid castling and central control in the first 8 moves.`,
-    );
-  }
-  if (middlegameAccuracy !== null) {
-    keyTakeaways.push(
-      middlegameAccuracy >= 80
-        ? `Middlegame (${middlegameAccuracy}%): Strong tactical awareness during piece clashes.`
-        : `Middlegame (${middlegameAccuracy}%): Double-check undefended pieces before committing captures.`,
-    );
-  }
-  if (endgameAccuracy !== null) {
-    keyTakeaways.push(
-      endgameAccuracy >= 80
-        ? `Endgame (${endgameAccuracy}%): Crisp technique in the late phase.`
-        : `Endgame (${endgameAccuracy}%): Activate your king and rooks earlier in simplified positions.`,
-    );
-  }
+  // Strength summary
+  const bestPhase = [
+    { name: 'opening', acc: openingAccuracy },
+    { name: 'middlegame', acc: middlegameAccuracy },
+    { name: 'endgame', acc: endgameAccuracy },
+  ]
+    .filter((p): p is { name: string; acc: number } => p.acc !== null)
+    .sort((a, b) => b.acc - a.acc)[0];
+
+  const strengthSummary =
+    brilliantOrGreat.length > 0
+      ? `Spotted ${brilliantOrGreat.length} critical tactical resource${brilliantOrGreat.length > 1 ? 's' : ''} (${formatMoveShort(brilliantOrGreat[0])}) and averaged ${overallAcc}% overall.`
+      : bestPhase && bestPhase.acc >= 80
+        ? `Strongest in the ${bestPhase.name} (${bestPhase.acc}% accuracy) with ${topMoves.length} engine-grade moves.`
+        : `Found ${topMoves.length} top/book choices across ${mine.length} moves and kept pressure alive.`;
+
+  // Weakness / Priority Fix summary
+  const weakPhase = [
+    { name: 'Opening', acc: openingAccuracy },
+    { name: 'Middlegame', acc: middlegameAccuracy },
+    { name: 'Endgame', acc: endgameAccuracy },
+  ]
+    .filter((p): p is { name: string; acc: number } => p.acc !== null)
+    .sort((a, b) => a.acc - b.acc)[0];
+
+  const weaknessSummary =
+    worstMove && worstMove.cpLoss >= 85
+      ? `Check ${formatMoveShort(worstMove)} (${worstMove.quality}): ${worstMove.bestMoveSan} avoided a ${(worstMove.cpLoss / 100).toFixed(2)}-pawn swing.`
+      : weakPhase && weakPhase.acc < 78
+        ? `${weakPhase.name} accuracy dipped to ${weakPhase.acc}% — tighten candidate checks in this phase.`
+        : inaccuracies.length > 0
+          ? `${inaccuracies.length} minor inaccuracies slightly eased pressure; look for sharper piece activity.`
+          : 'Very few weaknesses — focus on converting small advantages faster.';
+
+  // Concrete drill
+  const focusDrill =
+    blunders.length > 0
+      ? `Retry ${formatMoveShort(blunders[0])} on the board first, and scan checks, captures, and hanging pieces before locking in.`
+      : missedWins.length > 0
+        ? `Walk through ${formatMoveShort(missedWins[0])} with engine lines on to train finishing combinations.`
+        : openingAccuracy !== null && openingAccuracy < 75
+          ? 'Review Moves 1–8 against the engine lines to lock in faster piece development and castling.'
+          : 'Compare your middlegame candidate moves against the top 2 engine lines on critical turns.';
+
+  const keyTakeaways: string[] = [strengthSummary, weaknessSummary];
   if (turningPointText) {
-    keyTakeaways.push(`Key review moment: ${turningPointText}`);
+    keyTakeaways.push(`Key turning point: ${turningPointText}`);
   }
 
   return {
     summaryHeadline,
     coachVerdict,
+    strengthSummary,
+    weaknessSummary,
+    focusDrill,
     turningPointPly,
     turningPointText,
     bestMomentPly,
@@ -738,6 +1034,8 @@ export function buildSmartGameInsights(
     middlegameAccuracy,
     endgameAccuracy,
     keyTakeaways: keyTakeaways.slice(0, 3),
+    keyMoments: keyMoments.slice(0, 4),
   };
 }
+
 

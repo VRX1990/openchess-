@@ -4,25 +4,42 @@ import { enrichGamePgnWithHeaders, FEATURED_MASTER_GAMES, mergeSyncedGames } fro
 import { extractGameSkeleton } from './engine';
 import {
   appendRatingHistoryPoint,
+  buildMatchmakingPassConfig,
   canonicalizeGmailAddress,
   computeLeagueInfo,
+  computeLiveInterpolatedClockMs,
   computePremoveTargets,
   countUnreadDirectMessages,
   enqueuePremoveMove,
   filterNamedOpenChallenges,
+  flushPendingBridgeMoves,
+  formatHighPrecisionClock,
+  formatOnlinePlayerDisplay,
   formatOnlineTimeControl,
+  formatOpponentPresenceText,
   isGoogleMxHost,
+  isMatchCandidateEligible,
   isPlaceholderPlayerUsername,
   isPremoveLegalAfterReply,
+  isTimeControlCompatibleForFallback,
+  MAX_MATCHMAKING_ELO_GAP,
   mergeFriendsBackupWithServer,
   mergeLocalAccountProgress,
   mergeOpenChessAccountProgress,
+  parseFicsCreatingLine,
+  parseFicsFingerRatingLine,
   parseFicsGameEndLine,
   parseFicsSoughtOutput,
   parseFicsStyle12Line,
   parseFicsWhoOutput,
+  parseLichessGameStreamInitial,
   projectBoardForPremove,
+  resolveLichessSeatAndReadiness,
+  resolveOnlineEndOutcome,
   resolveOnlineOpponentRating,
+  resolveOnlineSignalQuality,
+  selectPreferredFicsRating,
+  stripPlatformFromText,
   upsertDirectMessage,
   validateGoogleOrGmailEmail,
 } from './onlineHelpers';
@@ -501,9 +518,16 @@ test('parseFicsStyle12Line & parseFicsGameEndLine parse live FICS board state, c
   assert.equal(parsed.san, 'e5');
 
   const end1 = parseFicsGameEndLine('{Game 20 (GuestHYBS vs. GuestMMLX) GuestHYBS resigns} 0-1');
-  assert.deepEqual(end1, { winner: 'b', reason: 'GuestHYBS resigns' });
+  assert.deepEqual(end1, {
+    gameNumber: 20,
+    whiteName: 'GuestHYBS',
+    blackName: 'GuestMMLX',
+    winner: 'b',
+    reason: 'GuestHYBS resigns',
+  });
 
   const end2 = parseFicsGameEndLine('{Game 20 (GuestHYBS vs. GuestMMLX) Game aborted on move 1} *');
+  assert.equal(end2?.gameNumber, 20);
   assert.equal(end2?.aborted, true);
   assert.equal(end2?.winner, 'draw');
 });
@@ -581,5 +605,389 @@ test('normalizeThemePrefs accepts valid board/piece/premove preferences and fall
   assert.deepEqual(fallback, DEFAULT_THEME_PREFS);
 });
 
+test('stripPlatformFromText hides external platform names from match reasons and labels', () => {
+  assert.equal(stripPlatformFromText('Lichess · Opponent resigned'), 'Opponent resigned');
+  assert.equal(stripPlatformFromText('FICS game aborted before starting'), 'game aborted before starting');
+  assert.equal(stripPlatformFromText('PlayStrategy: Checkmate'), 'Checkmate');
+  assert.equal(stripPlatformFromText('OpenChess - Connection closed'), 'Connection closed');
+});
 
+test('resolveOnlineEndOutcome distinguishes aborted pre-start games from genuine draws', () => {
+  const abortedStatus = resolveOnlineEndOutcome({
+    statusName: 'aborted',
+    moveCount: 0,
+    endReason: 'Lichess game aborted before first move',
+  });
+  assert.equal(abortedStatus.winner, 'aborted');
+  assert.equal(abortedStatus.aborted, true);
+  assert.ok(!/lichess/i.test(abortedStatus.reason));
+
+  const earlyDisconnect = resolveOnlineEndOutcome({
+    moveCount: 1,
+    isDisconnect: true,
+    disconnectedSide: 'b',
+  });
+  assert.equal(earlyDisconnect.winner, 'aborted');
+  assert.equal(earlyDisconnect.aborted, true);
+
+  const midGameDisconnect = resolveOnlineEndOutcome({
+    moveCount: 14,
+    isDisconnect: true,
+    disconnectedSide: 'b',
+  });
+  assert.equal(midGameDisconnect.winner, 'w');
+  assert.equal(midGameDisconnect.aborted, false);
+
+  const realDraw = resolveOnlineEndOutcome({
+    statusName: 'stalemate',
+    moveCount: 40,
+    endReason: 'Draw by stalemate',
+  });
+  assert.equal(realDraw.winner, 'draw');
+  assert.equal(realDraw.aborted, false);
+});
+
+test('parseFicsCreatingLine extracts player names and provisional/established ratings', () => {
+  const r1 = parseFicsCreatingLine('Creating: charity (1822P) GuestABCD (++++) unrated blitz 5 0');
+  assert.deepEqual(r1, {
+    whiteName: 'charity',
+    whiteRating: 1822,
+    blackName: 'GuestABCD',
+    blackRating: undefined,
+  });
+
+  const r2 = parseFicsCreatingLine('Challenge: Alice ( 1540E ) Bob (1610) rated rapid 10 0');
+  assert.deepEqual(r2, {
+    whiteName: 'Alice',
+    whiteRating: 1540,
+    blackName: 'Bob',
+    blackRating: 1610,
+  });
+});
+
+test('flushPendingBridgeMoves preserves queued moves if socket drops mid-flush', () => {
+  const sent: string[] = [];
+  let open = true;
+  const remaining = flushPendingBridgeMoves(
+    ['e2e4', 'g1f3', 'f1c4'],
+    () => open,
+    (m) => {
+      sent.push(m);
+      if (m === 'g1f3') open = false;
+    },
+  );
+  assert.deepEqual(sent, ['e2e4', 'g1f3']);
+  assert.deepEqual(remaining, ['f1c4']);
+});
+
+test('isPlaceholderPlayerUsername flags Live Opponent and anonymous guest labels', () => {
+  assert.equal(isPlaceholderPlayerUsername('Live Opponent'), true);
+  assert.equal(isPlaceholderPlayerUsername('Guest Opponent'), true);
+  assert.equal(isPlaceholderPlayerUsername('Anonymous (Guest)'), true);
+  assert.equal(isPlaceholderPlayerUsername('MagnusCarlsen'), false);
+});
+
+test('parseLichessGameStreamInitial parses real names, ratings, titles, clocks, and initial moves from NDJSON first line', () => {
+  const raw = JSON.stringify({
+    id: 'abcd1234',
+    rated: true,
+    status: { name: 'started' },
+    clock: { initial: 300, increment: 3 },
+    wc: 294,
+    bc: 289,
+    moves: 'e2e4 e7e5 g1f3',
+    players: {
+      white: { user: { name: 'GM_Naka', title: 'GM' }, rating: 2785 },
+      black: { user: { name: 'Anonymous' }, rating: undefined },
+    },
+  });
+  const parsed = parseLichessGameStreamInitial(raw + '\n{"lm":"b8c6","wc":294,"bc":287}\n');
+  assert.ok(parsed);
+  assert.equal(parsed.gameId, 'abcd1234');
+  assert.equal(parsed.rated, true);
+  assert.equal(parsed.statusName, 'started');
+  assert.equal(parsed.whiteName, 'GM_Naka');
+  assert.equal(parsed.whiteTitle, 'GM');
+  assert.equal(parsed.whiteRating, 2785);
+  assert.equal(parsed.blackName, undefined);
+  assert.equal(parsed.blackRating, undefined);
+  assert.equal(parsed.initialSeconds, 300);
+  assert.equal(parsed.incrementSeconds, 3);
+  assert.equal(parsed.whiteClockMs, 294000);
+  assert.equal(parsed.blackClockMs, 289000);
+  assert.deepEqual(parsed.initialMovesUci, ['e2e4', 'e7e5', 'g1f3']);
+  assert.equal(parseLichessGameStreamInitial('not-json'), null);
+});
+
+test('resolveOnlineSignalQuality maps latency buckets and offline state to signal bars', () => {
+  assert.deepEqual(resolveOnlineSignalQuality(45, true), {
+    bars: 4,
+    label: 'Excellent',
+    color: '#81B64C',
+    lagText: '45ms',
+  });
+  assert.equal(resolveOnlineSignalQuality(180, true).bars, 3);
+  assert.equal(resolveOnlineSignalQuality(350, true).bars, 2);
+  assert.equal(resolveOnlineSignalQuality(680, true).bars, 1);
+  assert.equal(resolveOnlineSignalQuality(40, false).bars, 0);
+  assert.equal(resolveOnlineSignalQuality(40, false).label, 'Offline');
+});
+
+test('computeLiveInterpolatedClockMs & formatHighPrecisionClock interpolate ms clocks and format tenths under 20s', () => {
+  const paused = computeLiveInterpolatedClockMs({
+    baseWhiteClockMs: 180_000,
+    baseBlackClockMs: 180_000,
+    syncedAtMs: 1_000,
+    nowMs: 9_000,
+    turn: 'w',
+    running: false,
+  });
+  assert.deepEqual(paused, { whiteMs: 180_000, blackMs: 180_000 });
+
+  const running = computeLiveInterpolatedClockMs({
+    baseWhiteClockMs: 15_450,
+    baseBlackClockMs: 65_000,
+    syncedAtMs: 10_000,
+    nowMs: 12_200,
+    turn: 'w',
+    running: true,
+  });
+  assert.deepEqual(running, { whiteMs: 13_250, blackMs: 65_000 });
+
+  assert.equal(formatHighPrecisionClock(13_250), '0:13.2');
+  assert.equal(formatHighPrecisionClock(0), '0:00.0');
+  assert.equal(formatHighPrecisionClock(20_001), '0:21');
+  assert.equal(formatHighPrecisionClock(518_000), '8:38');
+});
+
+test('formatOnlinePlayerDisplay & formatOpponentPresenceText never expose platform names and handle guest/offline states cleanly', () => {
+  const guest = formatOnlinePlayerDisplay({
+    name: 'Lichess Player',
+    rating: undefined,
+    connected: true,
+    isSelf: false,
+  });
+  assert.equal(guest.displayName, 'Guest Opponent');
+  assert.equal(guest.ratingBadge, '(Unrated)');
+  assert.equal(guest.isGuest, true);
+
+  const namedRated = formatOnlinePlayerDisplay({
+    name: 'trtuuz',
+    rating: 166,
+    connected: true,
+    isSelf: true,
+  });
+  assert.equal(namedRated.displayName, 'trtuuz');
+  assert.equal(namedRated.ratingBadge, '(166)');
+  assert.equal(namedRated.isGuest, false);
+
+  assert.deepEqual(
+    formatOpponentPresenceText({ status: 'joining', isOpponentTurn: false, moveCount: 0 }),
+    { label: 'Joining...', tone: 'warn' },
+  );
+  assert.deepEqual(
+    formatOpponentPresenceText({ status: 'active', isOpponentTurn: true, moveCount: 4 }),
+    { label: 'Thinking...', tone: 'good' },
+  );
+  assert.deepEqual(
+    formatOpponentPresenceText({ status: 'disconnected', goneSeconds: 12, moveCount: 4 }),
+    { label: 'Offline (12s)', tone: 'bad' },
+  );
+
+  assert.deepEqual(
+    formatOnlinePlayerDisplay({ name: 'Connecting...', rating: undefined, connected: false, isSelf: false }),
+    { displayName: 'Connecting...', ratingBadge: null, isGuest: false },
+  );
+  assert.deepEqual(
+    formatOnlinePlayerDisplay({ name: 'Waiting for Friend...', rating: undefined, connected: false, isSelf: false }),
+    { displayName: 'Waiting for Friend...', ratingBadge: null, isGuest: false },
+  );
+});
+
+test('filterNamedOpenChallenges and isMatchCandidateEligible enforce named/rated filtering and ±300 Elo band', () => {
+  assert.equal(MAX_MATCHMAKING_ELO_GAP, 300);
+
+  const filtered = filterNamedOpenChallenges(
+    [
+      { username: 'Alice200', rating: 200 },
+      { username: 'Bob300', rating: 300 },
+      { username: 'Guest Opponent', rating: 180 },
+      { username: 'Anonymous', rating: 210 },
+      { username: 'FarMaster', rating: 1200 },
+    ],
+    100,
+  );
+  assert.deepEqual(
+    filtered.map((c) => c.username),
+    ['Alice200', 'Bob300'],
+  );
+
+  // User examples: 100↔200/300, 500↔800, 600↔700 match; 166 vs 1200 & Guest Unrated fail
+  assert.equal(
+    isMatchCandidateEligible({ playerElo: 100, opponentName: 'PlayerA', opponentRating: 200, requireNamedRated: true }),
+    true,
+  );
+  assert.equal(
+    isMatchCandidateEligible({ playerElo: 100, opponentName: 'PlayerB', opponentRating: 300, requireNamedRated: true }),
+    true,
+  );
+  assert.equal(
+    isMatchCandidateEligible({ playerElo: 500, opponentName: 'PlayerC', opponentRating: 800, requireNamedRated: true }),
+    true,
+  );
+  assert.equal(
+    isMatchCandidateEligible({ playerElo: 600, opponentName: 'PlayerD', opponentRating: 700, requireNamedRated: true }),
+    true,
+  );
+  assert.equal(
+    isMatchCandidateEligible({ playerElo: 166, opponentName: 'kenutth3e', opponentRating: 1200, requireNamedRated: true }),
+    false,
+  );
+  assert.equal(
+    isMatchCandidateEligible({ playerElo: 166, opponentName: 'Guest Opponent', opponentRating: undefined, requireNamedRated: true }),
+    false,
+  );
+  assert.equal(
+    isMatchCandidateEligible({ playerElo: 166, opponentName: 'Anonymous', opponentRating: 220, requireNamedRated: true }),
+    false,
+  );
+  // Explicit casual fallback permits unrated guests unless rated out of band
+  assert.equal(
+    isMatchCandidateEligible({ playerElo: 166, opponentName: 'Guest Opponent', opponentRating: undefined, requireNamedRated: false }),
+    true,
+  );
+});
+
+test('resolveLichessSeatAndReadiness detects color deterministically and rejects ghost/ambiguous hooks', () => {
+  // Asymmetric crowd reveals our seat while opponent hasn't connected yet
+  const waitingBlack = resolveLichessSeatAndReadiness({
+    crowdWhite: false,
+    crowdBlack: true,
+    plyCount: 0,
+    elapsedMs: 250,
+    maxWaitMs: 1600,
+  });
+  assert.equal(waitingBlack.status, 'waiting');
+  assert.equal(waitingBlack.humanColor, 'b');
+  assert.equal(waitingBlack.opponentPresent, false);
+
+  // Both seats present -> ready
+  const readyBlack = resolveLichessSeatAndReadiness({
+    knownColor: 'b',
+    crowdWhite: true,
+    crowdBlack: true,
+    plyCount: 0,
+    elapsedMs: 400,
+  });
+  assert.equal(readyBlack.status, 'ready');
+  assert.equal(readyBlack.humanColor, 'b');
+  assert.equal(readyBlack.opponentPresent, true);
+
+  // Past maxWaitMs with no opponent -> ghost
+  const ghost = resolveLichessSeatAndReadiness({
+    hookColor: 'black',
+    crowdWhite: true,
+    crowdBlack: false,
+    plyCount: 0,
+    elapsedMs: 1650,
+    maxWaitMs: 1600,
+  });
+  assert.equal(ghost.status, 'ghost');
+  assert.equal(ghost.humanColor, 'w');
+
+  // Both present without hookColor or stream metadata -> waits up to 1450ms for White move 1, then ambiguous
+  const waitingWhiteOpen = resolveLichessSeatAndReadiness({
+    crowdWhite: true,
+    crowdBlack: true,
+    plyCount: 0,
+    elapsedMs: 800,
+    maxWaitMs: 1800,
+  });
+  assert.equal(waitingWhiteOpen.status, 'waiting');
+
+  const ambiguous = resolveLichessSeatAndReadiness({
+    crowdWhite: true,
+    crowdBlack: true,
+    plyCount: 0,
+    elapsedMs: 1500,
+    maxWaitMs: 1800,
+  });
+  assert.equal(ambiguous.status, 'ambiguous');
+
+  // plyCount === 1 confirms we are black and opponent moved
+  const plyOneReady = resolveLichessSeatAndReadiness({
+    plyCount: 1,
+    elapsedMs: 500,
+  });
+  assert.equal(plyOneReady.status, 'ready');
+  assert.equal(plyOneReady.humanColor, 'b');
+});
+
+test('selectPreferredFicsRating picks Standard/Blitz/Lightning according to clock control', () => {
+  const ratings = { standard: 1420, blitz: 1510, lightning: 1630 };
+  assert.equal(selectPreferredFicsRating(ratings, 600), 1420);
+  assert.equal(selectPreferredFicsRating(ratings, 180), 1510);
+  assert.equal(selectPreferredFicsRating(ratings, 60), 1630);
+  assert.equal(selectPreferredFicsRating({ blitz: 1350 }, 600), 1350);
+  assert.equal(selectPreferredFicsRating({}, 600), undefined);
+});
+
+test('buildMatchmakingPassConfig never silently downgrades rated searches to unrated guests and keeps ±300 Elo band', () => {
+  for (const attempt of [0, 1, 2, 5]) {
+    const pass = buildMatchmakingPassConfig(attempt, false, true);
+    assert.equal(pass.requireNamedRated, true);
+    assert.equal(pass.maxEloGap, MAX_MATCHMAKING_ELO_GAP);
+  }
+  assert.equal(buildMatchmakingPassConfig(0, true, true).requireNamedRated, false);
+  assert.equal(buildMatchmakingPassConfig(0, false, false).requireNamedRated, false);
+
+  const prefixedS12 =
+    'fics% <12> rnbqkbnr pppp-ppp -------- ----p--- ----P--- -------- PPPP-PPP RNBQKBNR W 4 1 1 1 1 0 20 AliceBob CarolDan -1 5 0 39 39 298 295 2 P/e7-e5 (0:05) e5 0 0 0';
+  const parsed = parseFicsStyle12Line(prefixedS12);
+  assert.ok(parsed);
+  assert.equal(parsed.san, 'e5');
+  assert.equal(parsed.whiteName, 'AliceBob');
+});
+
+test('FICS handle tags, finger ratings, fallback time-control filtering, game-number isolation, and synced clock interpolation', () => {
+  const creatingTagged = parseFicsCreatingLine(
+    'Creating: BotPlayer(C) (1920) Veteran(*) (1745P) rated blitz 3 0',
+  );
+  assert.deepEqual(creatingTagged, {
+    whiteName: 'BotPlayer',
+    whiteRating: 1920,
+    blackName: 'Veteran',
+    blackRating: 1745,
+  });
+
+  assert.deepEqual(parseFicsFingerRatingLine('fics% fics% Blitz 1642  412 200 180'), {
+    category: 'blitz',
+    rating: 1642,
+  });
+  assert.deepEqual(parseFicsFingerRatingLine('Standard 1508  12 5 7'), {
+    category: 'standard',
+    rating: 1508,
+  });
+  assert.equal(parseFicsFingerRatingLine('fics% Rating ----'), null);
+
+  assert.equal(isTimeControlCompatibleForFallback(600, 0, 10800, 180), false); // 180+180 rejected for 10+0
+  assert.equal(isTimeControlCompatibleForFallback(600, 0, 900, 10), true); // 15+10 ok for rapid
+  assert.equal(isTimeControlCompatibleForFallback(600, 0, 600, 5), true); // 10+5 ok for rapid
+  assert.equal(isTimeControlCompatibleForFallback(600, 0, 180, 0), false); // blitz rejected for rapid
+
+  const otherGameEnd = parseFicsGameEndLine('{Game 99 (OtherA vs. OtherB) OtherA resigns} 0-1');
+  assert.equal(otherGameEnd?.gameNumber, 99);
+  assert.notEqual(otherGameEnd?.gameNumber, 20);
+
+  // Synced clock interpolation from updated clockSyncedAt never double-subtracts past elapsed time
+  const afterRefresh = computeLiveInterpolatedClockMs({
+    baseWhiteClockMs: 280_000,
+    baseBlackClockMs: 295_000,
+    syncedAtMs: 50_000,
+    nowMs: 51_500,
+    turn: 'w',
+    running: true,
+  });
+  assert.deepEqual(afterRefresh, { whiteMs: 278_500, blackMs: 295_000 });
+});
 

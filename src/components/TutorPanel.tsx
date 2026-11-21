@@ -92,7 +92,7 @@ export function TutorPanel({
     {
       id: 'welcome',
       role: 'tutor',
-      text: `I'm ${activeCoach.name} (${activeCoach.specialty}). Ask me about any candidate move, plan, or tactic—backed by instant Client-Side Stockfish 19 NNUE lines.`,
+      text: `I'm ${activeCoach.name} (${activeCoach.specialty}). Ask me about any candidate move, plan, or tactic—backed by instant deep engine lines.`,
     },
   ]);
   const [input, setInput] = useState('');
@@ -108,7 +108,7 @@ export function TutorPanel({
           {
             id: 'welcome',
             role: 'tutor',
-            text: `I'm ${activeCoach.name} (${activeCoach.specialty}). Ask me about any candidate move, plan, or tactic—backed by instant Client-Side Stockfish 19 NNUE lines.`,
+            text: `I'm ${activeCoach.name} (${activeCoach.specialty}). Ask me about any candidate move, plan, or tactic—backed by instant deep engine lines.`,
           },
         ];
       }
@@ -398,7 +398,7 @@ export function TutorPanel({
                 <span className="font-mono text-[10px] text-[#81B64C] flex items-center gap-1 tabular-nums">
                   <Cpu className="w-3 h-3" />
                   <span>
-                    {`SF19 NNUE D${Math.max(19, m.engineMeta.depth || 19)}`} · {m.engineMeta.bestMoveSan} ({m.engineMeta.evalText})
+                    {`Engine D${Math.max(19, m.engineMeta.depth || 19)}`} · {m.engineMeta.bestMoveSan} ({m.engineMeta.evalText})
                   </span>
                 </span>
               )}

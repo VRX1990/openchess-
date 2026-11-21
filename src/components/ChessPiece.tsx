@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { Color, PieceSymbol } from 'chess.js';
 import { useChessTheme, type PieceTheme } from '../chess/theme';
 
@@ -26,16 +27,16 @@ interface PiecePalette {
 const PIECE_PALETTES: Record<PieceTheme, PiecePalette> = {
   neo: {
     whiteFill: '#FFFFFF',
-    whiteShade: '#DCD8CE',
+    whiteShade: '#D9D8D4',
     whiteHighlight: '#FFFFFF',
-    whiteStroke: '#3D3B38',
-    whiteDetailStroke: '#3D3B38',
-    blackFill: '#585552',
-    blackShade: '#3A3836',
-    blackHighlight: '#8A8680',
-    blackStroke: '#1F1E1C',
-    blackDetailStroke: '#CBC7BF',
-    strokeWidth: 1.65,
+    whiteStroke: '#383633',
+    whiteDetailStroke: '#383633',
+    blackFill: '#565352',
+    blackShade: '#3E3C3B',
+    blackHighlight: '#797674',
+    blackStroke: '#22201F',
+    blackDetailStroke: '#22201F',
+    strokeWidth: 1.55,
   },
   classic: {
     whiteFill: '#FBF5E6',
@@ -145,10 +146,272 @@ const PIECE_PALETTES: Record<PieceTheme, PiecePalette> = {
 };
 
 /**
- * Staunton SVG pieces supporting 9 Chess.com-inspired styles
+ * Clean modern Neo vector silhouette set matching the signature smooth,
+ * high-contrast tournament look with right-side cel-shading and zero wireframe clutter.
+ */
+function renderNeoPiece(
+  type: PieceSymbol,
+  isWhite: boolean,
+  className: string,
+  pal: PiecePalette,
+) {
+  const fill = isWhite ? pal.whiteFill : pal.blackFill;
+  const shade = isWhite ? pal.whiteShade : pal.blackShade;
+  const stroke = isWhite ? pal.whiteStroke : pal.blackStroke;
+  const accent = isWhite ? '#494744' : '#262422';
+  const rimHighlight = isWhite ? 'rgba(255,255,255,0)' : 'rgba(255,255,255,0.14)';
+  const sw = pal.strokeWidth;
+  const neoStyle = undefined;
+
+  switch (type) {
+    case 'p':
+      return (
+        <svg viewBox="0 0 45 45" className={className} style={neoStyle} aria-hidden="true">
+          {/* Main Neo Pawn Silhouette */}
+          <path
+            d="M22.5 9.2c-2.85 0-5.15 2.3-5.15 5.15 0 1.62.75 3.06 1.92 4.01-1.95.72-3.32 2.48-3.32 4.54 0 1.38.62 2.63 1.62 3.48-3.2 1.68-5.95 5.45-6.62 11.55-.1.9.6 1.67 1.5 1.67h20.1c.9 0 1.6-.77 1.5-1.67-.67-6.1-3.42-9.87-6.62-11.55 1-.85 1.62-2.1 1.62-3.48 0-2.06-1.37-3.82-3.32-4.54 1.17-.95 1.92-2.39 1.92-4.01 0-2.85-2.3-5.15-5.15-5.15z"
+            fill={fill}
+            stroke={stroke}
+            strokeWidth={sw}
+            strokeLinejoin="round"
+          />
+          {/* Subtle right-side cel-shade */}
+          <path
+            d="M22.9 10.1c2.25.2 4.05 2.05 4.05 4.25 0 1.42-.65 2.68-1.68 3.55 1.72.72 2.9 2.28 2.9 4.1 0 1.24-.54 2.34-1.42 3.12 2.95 1.65 5.42 5.2 6.08 10.75.08.62-.35 1.05-.95 1.05h-5.3c-.45-5.2-2.4-8.85-4.9-10.55.9-.78 1.45-1.85 1.45-3.12 0-1.68-.9-3.15-2.22-3.85.92-.82 1.52-2.02 1.52-3.38 0-2.08-1.08-3.92-2.75-4.95.95-.6 2.02-.97 3.22-.87z"
+            fill={shade}
+          />
+          {/* Re-stroke clean outer border */}
+          <path
+            d="M22.5 9.2c-2.85 0-5.15 2.3-5.15 5.15 0 1.62.75 3.06 1.92 4.01-1.95.72-3.32 2.48-3.32 4.54 0 1.38.62 2.63 1.62 3.48-3.2 1.68-5.95 5.45-6.62 11.55-.1.9.6 1.67 1.5 1.67h20.1c.9 0 1.6-.77 1.5-1.67-.67-6.1-3.42-9.87-6.62-11.55 1-.85 1.62-2.1 1.62-3.48 0-2.06-1.37-3.82-3.32-4.54 1.17-.95 1.92-2.39 1.92-4.01 0-2.85-2.3-5.15-5.15-5.15z"
+            fill="none"
+            stroke={stroke}
+            strokeWidth={sw}
+            strokeLinejoin="round"
+          />
+          {!isWhite && (
+            <path
+              d="M19.2 13.6a3.4 3.4 0 0 1 2.7-2.6"
+              fill="none"
+              stroke={rimHighlight}
+              strokeWidth="1.2"
+              strokeLinecap="round"
+            />
+          )}
+        </svg>
+      );
+
+    case 'r':
+      return (
+        <svg viewBox="0 0 45 45" className={className} style={neoStyle} aria-hidden="true">
+          {/* Neo Rook bold 3-crenellation tower + stepped pedestal */}
+          <path
+            d="M10.5 39.8h24c.75 0 1.35-.6 1.35-1.35v-2.1c0-.75-.6-1.35-1.35-1.35h-1.4l-2.1-2.8V18.2l3.1-2.75c.35-.3.55-.75.55-1.22V8.8c0-.66-.54-1.2-1.2-1.2h-4.1c-.66 0-1.2.54-1.2 1.2v2.45h-3.4V8.8c0-.66-.54-1.2-1.2-1.2h-4.1c-.66 0-1.2.54-1.2 1.2v2.45h-3.4V8.8c0-.66-.54-1.2-1.2-1.2h-4.1c-.66 0-1.2.54-1.2 1.2v5.43c0 .47.2.92.55 1.22l3.1 2.75v14L11.9 35h-1.4c-.75 0-1.35.6-1.35 1.35v2.1c0 .75.6 1.35 1.35 1.35z"
+            fill={fill}
+          />
+          {/* Right-side cel-shade */}
+          <path
+            d="M25.8 18.2h5.2v14l2.1 2.8h1.4c.55 0 1 .45 1 1v2.1c0 .55-.45 1-1 1h-7.2v-3.1h-1.5V18.2zM29.4 7.9h4.05c.55 0 1 .45 1 1v5.3l-3.1 2.7h-4.4l2.45-2.7V7.9z"
+            fill={shade}
+          />
+          {/* Crisp structural horizontal lines (minimal Neo style) */}
+          <path
+            d="M14.2 18.2h16.6M14.2 32.1h16.6M12.2 35.1h20.6"
+            fill="none"
+            stroke={stroke}
+            strokeWidth="1.25"
+            strokeLinecap="round"
+            opacity={isWhite ? 0.65 : 0.72}
+          />
+          {/* Re-stroke outer outline */}
+          <path
+            d="M10.5 39.8h24c.75 0 1.35-.6 1.35-1.35v-2.1c0-.75-.6-1.35-1.35-1.35h-1.4l-2.1-2.8V18.2l3.1-2.75c.35-.3.55-.75.55-1.22V8.8c0-.66-.54-1.2-1.2-1.2h-4.1c-.66 0-1.2.54-1.2 1.2v2.45h-3.4V8.8c0-.66-.54-1.2-1.2-1.2h-4.1c-.66 0-1.2.54-1.2 1.2v2.45h-3.4V8.8c0-.66-.54-1.2-1.2-1.2h-4.1c-.66 0-1.2.54-1.2 1.2v5.43c0 .47.2.92.55 1.22l3.1 2.75v14L11.9 35h-1.4c-.75 0-1.35.6-1.35 1.35v2.1c0 .75.6 1.35 1.35 1.35z"
+            fill="none"
+            stroke={stroke}
+            strokeWidth={sw}
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+
+    case 'n':
+      return (
+        <svg viewBox="0 0 45 45" className={className} style={neoStyle} aria-hidden="true">
+          {/* Sleek Neo Knight silhouette (single cohesive modern profile) */}
+          <path
+            d="M12.2 39.8h23.6c.75 0 1.35-.62 1.32-1.38-.4-9.8-1.2-19.1-6.55-24.85-2.65-2.85-6.15-4.35-9.85-4.55l-2.65-2.7c-.45-.45-1.22-.18-1.3.46l-.35 2.95c-1.85.85-3.4 2.2-4.62 3.92l-4.25 6.85c-.62 1-.65 2.25-.02 3.22.72 1.12 2.1 1.58 3.35 1.15l1.65-.56c.55-.18 1.15-.02 1.54.42l.3.35c.35.4.95.46 1.38.14l4.15-3.15c.6-.45 1.46-.18 1.66.55.55 2.02.2 4.35-1.48 6.45-2.2 2.75-5.85 3.65-7.9 6.2-.75.95-1.08 2.15-1.15 3.4-.04.72.52 1.33 1.15 1.33z"
+            fill={fill}
+          />
+          {/* Smooth arched right-side mane shading */}
+          <path
+            d="M21.4 9.7c3.65.45 6.8 2.05 9.15 4.7 4.75 5.35 5.48 13.75 5.88 23.85.02.42-.3.75-.72.75h-5.4c-.35-9.8-1.45-18.9-5.8-24.2-1.45-1.78-3.05-3.1-4.8-4.05.52-.42 1.1-.78 1.69-1.05z"
+            fill={shade}
+          />
+          {/* Subtle inner throat/jaw crease & crisp base separator */}
+          <path
+            d="M12.6 35.6h23.2"
+            fill="none"
+            stroke={stroke}
+            strokeWidth="1.25"
+            strokeLinecap="round"
+            opacity={isWhite ? 0.55 : 0.7}
+          />
+          {/* Clean Neo eye & nostril */}
+          <circle cx="15.3" cy="15.6" r="1.2" fill={isWhite ? accent : '#EAE8E4'} />
+          <circle cx="9.6" cy="21.9" r="0.85" fill={isWhite ? accent : '#EAE8E4'} />
+          {/* Re-stroke clean silhouette */}
+          <path
+            d="M12.2 39.8h23.6c.75 0 1.35-.62 1.32-1.38-.4-9.8-1.2-19.1-6.55-24.85-2.65-2.85-6.15-4.35-9.85-4.55l-2.65-2.7c-.45-.45-1.22-.18-1.3.46l-.35 2.95c-1.85.85-3.4 2.2-4.62 3.92l-4.25 6.85c-.62 1-.65 2.25-.02 3.22.72 1.12 2.1 1.58 3.35 1.15l1.65-.56c.55-.18 1.15-.02 1.54.42l.3.35c.35.4.95.46 1.38.14l4.15-3.15c.6-.45 1.46-.18 1.66.55.55 2.02.2 4.35-1.48 6.45-2.2 2.75-5.85 3.65-7.9 6.2-.75.95-1.08 2.15-1.15 3.4-.04.72.52 1.33 1.15 1.33z"
+            fill="none"
+            stroke={stroke}
+            strokeWidth={sw}
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+
+    case 'b':
+      return (
+        <svg viewBox="0 0 45 45" className={className} style={neoStyle} aria-hidden="true">
+          {/* Neo Bishop: clean top orb, teardrop mitre with signature diagonal slash, sleek pedestal */}
+          <circle cx="22.5" cy="7.6" r="2.7" fill={fill} stroke={stroke} strokeWidth={sw} />
+          <path
+            d="M22.5 10.6c-6.55 3.7-9.65 9.9-7.95 16.05.42 1.52 1.22 2.75 2.25 3.65l-.7 1.35c-2.85 1.15-5.5 3.25-6.35 6.5-.2.8.4 1.65 1.25 1.65h23c.85 0 1.45-.85 1.25-1.65-.85-3.25-3.5-5.35-6.35-6.5l-.7-1.35c1.03-.9 1.83-2.13 2.25-3.65 1.7-6.15-1.4-12.35-7.95-16.05z"
+            fill={fill}
+          />
+          {/* Right-side cel-shade */}
+          <path
+            d="M23.2 11.4c5.4 3.55 8 9.2 6.5 14.8-.38 1.4-1.08 2.52-2.02 3.35l.65 1.28c2.65 1.12 5.05 3.1 5.82 6.08.15.6-.25 1.22-.85 1.22h-6.1c-.4-2.85-1.65-5.15-3.75-6.65l-.65-1.2c2.25-2.05 3.55-5.2 3.45-8.9-.08-3.6-1.2-7.15-3.05-9.98z"
+            fill={shade}
+          />
+          {/* Iconic Chess.com Neo diagonal mitre notch/slash */}
+          <path
+            d="M25.6 14.5l-5.8 6.4"
+            fill="none"
+            stroke={isWhite ? accent : '#EAE8E4'}
+            strokeWidth="2.1"
+            strokeLinecap="round"
+          />
+          {/* Clean collar band */}
+          <path
+            d="M16.5 30.8h12M12.2 35.8h20.6"
+            fill="none"
+            stroke={stroke}
+            strokeWidth="1.25"
+            strokeLinecap="round"
+            opacity={isWhite ? 0.65 : 0.72}
+          />
+          {/* Re-stroke outer outline */}
+          <path
+            d="M22.5 10.6c-6.55 3.7-9.65 9.9-7.95 16.05.42 1.52 1.22 2.75 2.25 3.65l-.7 1.35c-2.85 1.15-5.5 3.25-6.35 6.5-.2.8.4 1.65 1.25 1.65h23c.85 0 1.45-.85 1.25-1.65-.85-3.25-3.5-5.35-6.35-6.5l-.7-1.35c1.03-.9 1.83-2.13 2.25-3.65 1.7-6.15-1.4-12.35-7.95-16.05z"
+            fill="none"
+            stroke={stroke}
+            strokeWidth={sw}
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+
+    case 'q':
+      return (
+        <svg viewBox="0 0 45 45" className={className} style={neoStyle} aria-hidden="true">
+          {/* 5 Neo Crown Pearls */}
+          <g fill={fill} stroke={stroke} strokeWidth={sw}>
+            <circle cx="6.2" cy="14.5" r="2.35" />
+            <circle cx="14.1" cy="10.4" r="2.35" />
+            <circle cx="22.5" cy="8.8" r="2.45" />
+            <circle cx="30.9" cy="10.4" r="2.35" />
+            <circle cx="38.8" cy="14.5" r="2.35" />
+          </g>
+          {/* Neo Queen Crown + Flared Pedestal */}
+          <path
+            d="M11 39.8h23c.82 0 1.48-.66 1.48-1.48v-2.15c0-.66-.42-1.22-1.05-1.42l-1.58-.52 5.45-17.1-6.9 9.2-1.2-13.2-5.1 12.1-2.6-13.6-2.6 13.6-5.1-12.1-1.2 13.2-6.9-9.2 5.45 17.1-1.58.52c-.63.2-1.05.76-1.05 1.42v2.15c0 .82.66 1.48 1.48 1.48z"
+            fill={fill}
+          />
+          {/* Right-side cel-shade */}
+          <path
+            d="M27.6 34.4l5.3-16.4-6.35 8.5-1.15-12.2-1.9 9.7v15.1h10.2c.6 0 1.08-.48 1.08-1.08v-2.1c0-.5-.32-.95-.82-1.12l-1.28-.4H27.6z"
+            fill={shade}
+          />
+          {/* Crisp minimal waist & base line */}
+          <path
+            d="M12.2 34.2h20.6M11.4 36.8h22.2"
+            fill="none"
+            stroke={stroke}
+            strokeWidth="1.25"
+            strokeLinecap="round"
+            opacity={isWhite ? 0.6 : 0.72}
+          />
+          {/* Re-stroke outer outline */}
+          <path
+            d="M11 39.8h23c.82 0 1.48-.66 1.48-1.48v-2.15c0-.66-.42-1.22-1.05-1.42l-1.58-.52 5.45-17.1-6.9 9.2-1.2-13.2-5.1 12.1-2.6-13.6-2.6 13.6-5.1-12.1-1.2 13.2-6.9-9.2 5.45 17.1-1.58.52c-.63.2-1.05.76-1.05 1.42v2.15c0 .82.66 1.48 1.48 1.48z"
+            fill="none"
+            stroke={stroke}
+            strokeWidth={sw}
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+
+    case 'k':
+      return (
+        <svg viewBox="0 0 45 45" className={className} style={neoStyle} aria-hidden="true">
+          {/* Bold Neo Cross Finial */}
+          <path
+            d="M22.5 5.4v7.6M18.9 8.6h7.2"
+            fill="none"
+            stroke={stroke}
+            strokeWidth="2.8"
+            strokeLinecap="round"
+          />
+          {/* Neo King Royal Crown Lobes + Solid Pedestal */}
+          <path
+            d="M11.2 39.8h22.6c.82 0 1.48-.66 1.48-1.48v-2.15c0-.66-.42-1.22-1.05-1.42l-1.35-.45c1.6-2.2 4.35-5.6 5.2-9.55 1.15-5.3-2.55-9.6-7.65-9.6-3.2 0-5.85 1.75-7.93 4.3-2.08-2.55-4.73-4.3-7.93-4.3-5.1 0-8.8 4.3-7.65 9.6.85 3.95 3.6 7.35 5.2 9.55l-1.35.45c-.63.2-1.05.76-1.05 1.42v2.15c0 .82.66 1.48 1.48 1.48z"
+            fill={fill}
+          />
+          {/* Center Royal Crown Peak */}
+          <path
+            d="M22.5 12.2c-2.25 0-3.65 2.05-3.15 4.85.45 2.55 1.65 5.35 3.15 7.45 1.5-2.1 2.7-4.9 3.15-7.45.5-2.8-.9-4.85-3.15-4.85z"
+            fill={fill}
+          />
+          {/* Right-side cel-shade */}
+          <path
+            d="M30.4 15.8c4.45 0 7.55 3.85 6.55 8.6-.78 3.65-3.3 6.85-4.88 8.95l1.28.45c.5.18.85.65.85 1.2v2.1c0 .55-.45 1-1 1h-7.8v-4.2c1.25-2.15 2.5-5.4 2.5-9.55 0-3.5-1.15-6.4-2.85-8.1 1.55-.32 3.38-.45 5.35-.45z"
+            fill={shade}
+          />
+          {/* Crisp center rib + horizontal base bands */}
+          <path
+            d="M22.5 23.2v9.4M12.2 34.1h20.6M11.4 36.8h22.2"
+            fill="none"
+            stroke={stroke}
+            strokeWidth="1.3"
+            strokeLinecap="round"
+            opacity={isWhite ? 0.65 : 0.72}
+          />
+          {/* Re-stroke outer crown & center peak */}
+          <path
+            d="M11.2 39.8h22.6c.82 0 1.48-.66 1.48-1.48v-2.15c0-.66-.42-1.22-1.05-1.42l-1.35-.45c1.6-2.2 4.35-5.6 5.2-9.55 1.15-5.3-2.55-9.6-7.65-9.6-3.2 0-5.85 1.75-7.93 4.3-2.08-2.55-4.73-4.3-7.93-4.3-5.1 0-8.8 4.3-7.65 9.6.85 3.95 3.6 7.35 5.2 9.55l-1.35.45c-.63.2-1.05.76-1.05 1.42v2.15c0 .82.66 1.48 1.48 1.48z"
+            fill="none"
+            stroke={stroke}
+            strokeWidth={sw}
+            strokeLinejoin="round"
+          />
+          <path
+            d="M22.5 12.2c-2.25 0-3.65 2.05-3.15 4.85.45 2.55 1.65 5.35 3.15 7.45 1.5-2.1 2.7-4.9 3.15-7.45.5-2.8-.9-4.85-3.15-4.85z"
+            fill="none"
+            stroke={stroke}
+            strokeWidth={sw}
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+  }
+}
+
+/**
+ * Staunton SVG pieces supporting 9 distinct styles
  * (Neo, Classic, Merida, Wood, Club, Alpha, Glass, Icy, Royal).
  */
-export function ChessPiece({
+function ChessPieceInner({
   type,
   color,
   className = 'w-full h-full',
@@ -157,8 +420,12 @@ export function ChessPiece({
   const { prefs } = useChessTheme();
   const activeStyle = pieceTheme ?? prefs.pieceTheme;
   const pal = PIECE_PALETTES[activeStyle] ?? PIECE_PALETTES.neo;
-
   const isWhite = color === 'w';
+
+  if (activeStyle === 'neo') {
+    return renderNeoPiece(type, isWhite, className, pal);
+  }
+
   const fill = isWhite ? pal.whiteFill : pal.blackFill;
   const shade = isWhite ? pal.whiteShade : pal.blackShade;
   const highlight = isWhite ? pal.whiteHighlight : pal.blackHighlight;
@@ -167,9 +434,6 @@ export function ChessPiece({
   const sw = pal.strokeWidth;
   const shadowStyle = {
     opacity: pal.opacity ?? 1,
-    filter: isWhite
-      ? 'drop-shadow(0 2px 1.5px rgba(0, 0, 0, 0.28))'
-      : 'drop-shadow(0 2px 1.5px rgba(0, 0, 0, 0.36))',
   };
 
   switch (type) {
@@ -368,3 +632,5 @@ export function ChessPiece({
       );
   }
 }
+
+export const ChessPiece = memo(ChessPieceInner);

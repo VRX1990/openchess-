@@ -54,10 +54,10 @@ export const BOARD_THEME_PALETTES: Record<BoardTheme, BoardThemeDefinition> = {
     id: 'green',
     name: 'Classic Green',
     category: 'Classic',
-    light: '#EEEED2',
-    dark: '#769656',
-    lightHighlight: '#F6F669',
-    darkHighlight: '#BACA2B',
+    light: '#EBECD0',
+    dark: '#739552',
+    lightHighlight: '#F5F682',
+    darkHighlight: '#B9CA43',
   },
   brown: {
     id: 'brown',
@@ -227,7 +227,7 @@ export interface PieceThemeDefinition {
 }
 
 export const PIECE_THEME_OPTIONS: PieceThemeDefinition[] = [
-  { id: 'neo', name: 'Neo', description: 'Crisp Chess.com tournament shading' },
+  { id: 'neo', name: 'Neo', description: 'Crisp modern tournament shading' },
   { id: 'classic', name: 'Classic', description: 'Warm ivory & espresso Staunton' },
   { id: 'merida', name: 'Merida', description: 'Iconic balanced tournament contrast' },
   { id: 'wood', name: 'Wood', description: 'Carved oak & rich walnut grain' },

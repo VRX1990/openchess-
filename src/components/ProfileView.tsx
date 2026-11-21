@@ -840,9 +840,15 @@ export function ProfileView({
               {visibleGames.map((g) => {
                 const isBlack = isGamePlayedAsBlack(
                   g,
-                  lichessSession ? username : null,
+                  lichessSession ? username : guestName,
                 );
                 const opponent = isBlack ? g.white : g.black;
+                const oppIsGuest =
+                  opponent.name === 'Guest Opponent' ||
+                  opponent.name === 'Anonymous (Guest)' ||
+                  opponent.name === 'Anonymous';
+                const showOppRating =
+                  typeof opponent.rating === 'number' && !oppIsGuest && g.rated !== false;
                 const won =
                   g.winner === 'white'
                     ? !isBlack
@@ -897,11 +903,15 @@ export function ProfileView({
                           <span className="text-xs sm:text-sm font-bold text-white hover:underline">
                             {opponent.name}
                           </span>{' '}
-                          {opponent.rating && (
+                          {showOppRating ? (
                             <span className="text-xs text-[#9E998F] font-mono tabular-nums">
                               ({opponent.rating})
                             </span>
-                          )}
+                          ) : g.rated === false || oppIsGuest ? (
+                            <span className="text-xs text-[#9E998F] font-mono">
+                              (Unrated)
+                            </span>
+                          ) : null}
                         </div>
                         <div className="text-[10px] text-[#9E998F] truncate">
                           {g.opening ? `${g.opening} · ` : ''}

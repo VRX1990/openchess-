@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Cpu,
   Plus,
   RotateCw,
   Search,
@@ -15,14 +16,23 @@ import {
 import { countryCodeToFlagEmoji } from '../chess/analytics';
 import {
   buildPostGameReviewSummary,
-  evaluateMovesBatch,
   extractGameSkeleton,
   type BotId,
   type EvaluatedMove,
   type MoveQuality,
 } from '../chess/engine';
-import type { CoachPersonaId } from '../chess/coach';
+import {
+  buildSmartGameInsights,
+  getCoachProfile,
+  type CoachPersonaId,
+} from '../chess/coach';
+import {
+  scanGameWithStockfish19,
+  type ScanProgressTelemetry,
+} from '../chess/stockfishWorker';
+import { EvalAdvantageChart } from './EvalAdvantageChart';
 import { PlayerAvatar } from './PlayerAvatar';
+import { BotAvatar } from './BotAvatar';
 import { MOVE_QUALITY_META, MoveBadge } from './MoveBadge';
 
 export interface GameReviewSummaryScreenProps {
@@ -33,6 +43,9 @@ export interface GameReviewSummaryScreenProps {
   blackName: string;
   whiteRating?: number;
   blackRating?: number;
+  whiteRatingDelta?: number | null;
+  blackRatingDelta?: number | null;
+  isRatedMatch?: boolean;
   whiteAvatarId?: BotId | CoachPersonaId | null;
   blackAvatarId?: BotId | CoachPersonaId | null;
   whiteAvatarUrl?: string | null;
@@ -40,11 +53,15 @@ export interface GameReviewSummaryScreenProps {
   whiteFlag?: string | null;
   blackFlag?: string | null;
   currentUsername?: string | null;
+  coachId?: CoachPersonaId;
+  initialMoves?: EvaluatedMove[];
+  initialAnalyzedCount?: number;
   onRematch?: (() => void) | null;
   rematchLabel?: string;
   rematchDisabled?: boolean;
   onAddFriendOpponent?: (() => void) | null;
   onMessageOpponent?: (() => void) | null;
+  onSelectPly?: (ply: number) => void;
   onStartReview: () => void;
   onNewGame: () => void;
   onClose: () => void;
@@ -72,6 +89,9 @@ export function GameReviewSummaryScreen({
   blackName,
   whiteRating,
   blackRating,
+  whiteRatingDelta = null,
+  blackRatingDelta = null,
+  isRatedMatch = true,
   whiteAvatarId = null,
   blackAvatarId = null,
   whiteAvatarUrl = null,
@@ -79,22 +99,46 @@ export function GameReviewSummaryScreen({
   whiteFlag = null,
   blackFlag = null,
   currentUsername = null,
+  coachId = 'viktor',
+  initialMoves,
+  initialAnalyzedCount,
   onRematch = null,
   rematchLabel = 'Rematch',
   rematchDisabled = false,
   onAddFriendOpponent = null,
   onMessageOpponent = null,
+  onSelectPly,
   onStartReview,
   onNewGame,
   onClose,
 }: GameReviewSummaryScreenProps) {
-  const [moves, setMoves] = useState<EvaluatedMove[]>(() => extractGameSkeleton(pgn));
-  const [analyzedCount, setAnalyzedCount] = useState(0);
+  const hasSharedMoves = Array.isArray(initialMoves) && initialMoves.length > 0;
+  const [moves, setMoves] = useState<EvaluatedMove[]>(() =>
+    hasSharedMoves ? initialMoves : extractGameSkeleton(pgn),
+  );
+  const [analyzedCount, setAnalyzedCount] = useState<number>(() =>
+    hasSharedMoves
+      ? typeof initialAnalyzedCount === 'number'
+        ? initialAnalyzedCount
+        : initialMoves.length
+      : 0,
+  );
+  const [scanTelemetry, setScanTelemetry] = useState<ScanProgressTelemetry | null>(null);
   const [showPerformance, setShowPerformance] = useState(true);
   const [copiedShare, setCopiedShare] = useState(false);
 
-  // Progressive chunked evaluation so long games never freeze UI on game over
+  // Sync if ReviewView streams updated Stockfish 19 plies while Report modal is open
   useEffect(() => {
+    if (!hasSharedMoves || !initialMoves) return;
+    setMoves(initialMoves);
+    setAnalyzedCount(
+      typeof initialAnalyzedCount === 'number' ? initialAnalyzedCount : initialMoves.length,
+    );
+  }, [hasSharedMoves, initialAnalyzedCount, initialMoves]);
+
+  // Run Stockfish 19 WASM progressive scan when opened directly after a live game (without shared moves)
+  useEffect(() => {
+    if (hasSharedMoves) return;
     const skeleton = extractGameSkeleton(pgn);
     setMoves(skeleton);
     if (skeleton.length === 0) {
@@ -103,26 +147,24 @@ export function GameReviewSummaryScreen({
     }
 
     setAnalyzedCount(0);
-    let cancelled = false;
-    const working = [...skeleton];
-    let idx = 0;
+    const controller = new AbortController();
 
-    const step = () => {
-      if (cancelled) return;
-      idx = evaluateMovesBatch(working, idx, 8, 14);
-      setMoves([...working]);
-      setAnalyzedCount(idx);
-      if (idx < working.length) {
-        window.setTimeout(step, 8);
-      }
-    };
+    void scanGameWithStockfish19({
+      skeleton,
+      preset: 'fast',
+      signal: controller.signal,
+      onMovesUpdate: (updated, telemetry) => {
+        if (controller.signal.aborted) return;
+        setMoves(updated);
+        setAnalyzedCount(telemetry.analyzedPlies);
+        setScanTelemetry(telemetry);
+      },
+    });
 
-    const timer = window.setTimeout(step, 16);
     return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
+      controller.abort();
     };
-  }, [pgn]);
+  }, [hasSharedMoves, pgn]);
 
   const summary = useMemo(
     () =>
@@ -135,42 +177,39 @@ export function GameReviewSummaryScreen({
     [blackRating, moves, resultLabel, whiteRating],
   );
 
+  const missedWinsWhite = useMemo(
+    () => moves.filter((m) => m.color === 'w' && m.isMissedWin).length,
+    [moves],
+  );
+  const missedWinsBlack = useMemo(
+    () => moves.filter((m) => m.color === 'b' && m.isMissedWin).length,
+    [moves],
+  );
+
+  const focusedColor = useMemo(() => {
+    if (
+      currentUsername &&
+      blackName.toLowerCase() === currentUsername.toLowerCase()
+    ) {
+      return 'b' as const;
+    }
+    if (blackName.toLowerCase() === 'you') {
+      return 'b' as const;
+    }
+    return 'w' as const;
+  }, [blackName, currentUsername]);
+
+  const coachInsights = useMemo(
+    () => buildSmartGameInsights(moves, focusedColor, coachId),
+    [coachId, focusedColor, moves],
+  );
+  const activeCoach = useMemo(() => getCoachProfile(coachId), [coachId]);
+
   const isAnalyzing = moves.length > 0 && analyzedCount < moves.length;
   const whiteWon = resultLabel === '1-0';
   const blackWon = resultLabel === '0-1';
-
-  // White-vs-Black Eval Area Graph SVG coordinates
-  const graphData = useMemo(() => {
-    const w = 360;
-    const h = 84;
-    const midY = h / 2;
-    const pts = moves.length > 0 ? [0, ...moves.map((m) => m.evalCp)] : [0, 0];
-    const total = Math.max(1, pts.length - 1);
-
-    const coords = pts.map((cp, i) => {
-      const x = (i / total) * w;
-      const clamped = Math.max(-700, Math.min(700, cp));
-      // White advantage rises UP (y closer to 0), Black advantage drops DOWN (y closer to h)
-      const norm = clamped / 700;
-      const y = midY - norm * (h * 0.44);
-      return { x, y, move: i > 0 ? moves[i - 1] : null };
-    });
-
-    const linePath = coords.map((c, i) => `${i === 0 ? 'M' : 'L'} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`).join(' ');
-    const areaPath = `${linePath} L ${w} ${h} L 0 ${h} Z`;
-
-    const keyDots = coords.filter(
-      (c) =>
-        c.move &&
-        (c.move.quality === 'Brilliant' ||
-          c.move.quality === 'Great' ||
-          c.move.quality === 'Inaccuracy' ||
-          c.move.quality === 'Mistake' ||
-          c.move.quality === 'Blunder'),
-    );
-
-    return { w, h, midY, areaPath, linePath, keyDots };
-  }, [moves]);
+  const progressPct =
+    moves.length > 0 ? Math.min(100, Math.round((analyzedCount / moves.length) * 100)) : 100;
 
   const handleShare = () => {
     const text = [
@@ -193,7 +232,7 @@ export function GameReviewSummaryScreen({
       data-testid="post-game-review-screen"
       className="animate-fade-in fixed inset-0 z-50 bg-[#262421] text-white flex flex-col overflow-hidden"
     >
-      {/* Top Header Bar matching reference */}
+      {/* Top Header Bar */}
       <header className="shrink-0 h-13 bg-[#262421] border-b border-white/[0.07] px-3 sm:px-5 flex items-center justify-between">
         <button
           type="button"
@@ -209,7 +248,7 @@ export function GameReviewSummaryScreen({
             Game Review
           </h1>
           <p className="text-[11px] text-[#9E998F] truncate leading-none mt-0.5">
-            {resultTitle} ({resultLabel})
+            {resultTitle} ({resultLabel}) · {isRatedMatch ? 'Rated' : 'Casual'}
           </p>
         </div>
 
@@ -238,52 +277,42 @@ export function GameReviewSummaryScreen({
       {/* Scrollable Summary Content */}
       <div className="flex-1 overflow-y-auto px-3.5 sm:px-6 py-3 space-y-4">
         <div className="max-w-lg mx-auto space-y-4">
-          {/* Eval Timeline Area Graph */}
-          <div className="rounded-xl overflow-hidden bg-[#1A1917] border border-white/10 shadow-inner">
-            <svg
-              viewBox={`0 0 ${graphData.w} ${graphData.h}`}
-              className="w-full h-20 block"
-              preserveAspectRatio="none"
-              aria-label="Game evaluation advantage timeline"
-            >
-              <rect x="0" y="0" width={graphData.w} height={graphData.h} fill="#2A2824" />
-              <path d={graphData.areaPath} fill="#F2F0EC" />
-              <line
-                x1="0"
-                y1={graphData.midY}
-                x2={graphData.w}
-                y2={graphData.midY}
-                stroke="rgba(120,115,105,0.45)"
-                strokeWidth="1"
-              />
-              <path
-                d={graphData.linePath}
-                fill="none"
-                stroke="#9E998F"
-                strokeWidth="1.5"
-              />
-              {graphData.keyDots.map((dot, idx) => {
-                const dotColor = dot.move ? MOVE_QUALITY_META[dot.move.quality].bg : '#81B64C';
-                return (
-                  <circle
-                    key={idx}
-                    cx={dot.x}
-                    cy={dot.y}
-                    r="3.2"
-                    fill={dotColor}
-                    stroke="#1D1B18"
-                    strokeWidth="1"
-                  />
-                );
-              })}
-            </svg>
+          {/* Interactive Eval Timeline Graph + Visualized Stockfish 19 Scan Progress */}
+          <div className="space-y-1.5">
+            <EvalAdvantageChart
+              moves={moves}
+              selectedPly={moves.length}
+              analyzedCount={analyzedCount}
+              heightClass="h-20"
+              onSelectPly={
+                onSelectPly
+                  ? (ply) => {
+                      onSelectPly(ply);
+                      onClose();
+                    }
+                  : undefined
+              }
+            />
+
+            <div className="flex items-center justify-between gap-2 px-1 text-[11px] font-mono tabular-nums text-[#9E998F]">
+              <span className="flex items-center gap-1.5 min-w-0 truncate">
+                <Cpu className="w-3.5 h-3.5 text-[#81B64C] shrink-0" />
+                <span className="truncate">
+                  {isAnalyzing
+                    ? `Analyzing ${scanTelemetry?.currentMoveSan || `move ${Math.max(1, Math.ceil((analyzedCount + 1) / 2))}`}...`
+                    : 'Analysis Complete'}
+                </span>
+              </span>
+              <span className="shrink-0 font-bold text-[#C8C4BC]">
+                {analyzedCount}/{moves.length} · {progressPct}%
+              </span>
+            </div>
+
             {isAnalyzing && (
-              <div className="h-1 bg-[#1A1917]">
+              <div className="h-1.5 rounded-full bg-[#1A1917] overflow-hidden">
                 <div
-                  className="h-full bg-[#81B64C] transition-all duration-100"
-                  style={{
-                    width: `${Math.round((analyzedCount / Math.max(1, moves.length)) * 100)}%`,
-                  }}
+                  className="h-full bg-[#81B64C] transition-all duration-150"
+                  style={{ width: `${progressPct}%` }}
                 />
               </div>
             )}
@@ -293,15 +322,34 @@ export function GameReviewSummaryScreen({
           <div className="grid grid-cols-[96px_1fr_1fr] sm:grid-cols-[120px_1fr_1fr] items-center gap-2.5 text-center">
             <div className="text-left text-xs font-bold text-[#B8B4AC]">Players</div>
 
-            <div className="flex flex-col items-center gap-1.5 min-w-0">
+            <div className="flex flex-col items-center gap-1 min-w-0">
               <span className="text-xs font-extrabold text-white truncate max-w-full">
                 {whiteName} {countryCodeToFlagEmoji(whiteFlag ?? undefined)}
               </span>
+              <span
+                data-testid="summary-white-rating"
+                className="text-[11px] font-mono tabular-nums text-[#C8C4BC] flex items-center justify-center gap-1"
+              >
+                {typeof whiteRating === 'number' ? (
+                  <>
+                    <span>({whiteRating})</span>
+                    {typeof whiteRatingDelta === 'number' && whiteRatingDelta !== 0 && (
+                      <span
+                        className={`font-bold ${
+                          whiteRatingDelta > 0 ? 'text-[#81B64C]' : 'text-[#FA412D]'
+                        }`}
+                      >
+                        {whiteRatingDelta > 0 ? `+${whiteRatingDelta}` : whiteRatingDelta}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-[#9E998F]">(Unrated)</span>
+                )}
+              </span>
               <div
                 className={`w-16 h-16 sm:w-18 sm:h-18 rounded-xl bg-[#EAE8E3] flex items-center justify-center overflow-hidden shadow-md ${
-                  whiteWon
-                    ? 'ring-3 ring-[#81B64C]'
-                    : 'ring-1 ring-white/15'
+                  whiteWon ? 'ring-3 ring-[#81B64C]' : 'ring-1 ring-white/15'
                 }`}
               >
                 <PlayerAvatar
@@ -321,15 +369,34 @@ export function GameReviewSummaryScreen({
               </div>
             </div>
 
-            <div className="flex flex-col items-center gap-1.5 min-w-0">
+            <div className="flex flex-col items-center gap-1 min-w-0">
               <span className="text-xs font-extrabold text-white truncate max-w-full">
                 {blackName} {countryCodeToFlagEmoji(blackFlag ?? undefined)}
               </span>
+              <span
+                data-testid="summary-black-rating"
+                className="text-[11px] font-mono tabular-nums text-[#C8C4BC] flex items-center justify-center gap-1"
+              >
+                {typeof blackRating === 'number' ? (
+                  <>
+                    <span>({blackRating})</span>
+                    {typeof blackRatingDelta === 'number' && blackRatingDelta !== 0 && (
+                      <span
+                        className={`font-bold ${
+                          blackRatingDelta > 0 ? 'text-[#81B64C]' : 'text-[#FA412D]'
+                        }`}
+                      >
+                        {blackRatingDelta > 0 ? `+${blackRatingDelta}` : blackRatingDelta}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-[#9E998F]">(Unrated)</span>
+                )}
+              </span>
               <div
                 className={`w-16 h-16 sm:w-18 sm:h-18 rounded-xl bg-[#1A1917] flex items-center justify-center overflow-hidden shadow-md ${
-                  blackWon
-                    ? 'ring-3 ring-[#81B64C]'
-                    : 'ring-1 ring-white/15'
+                  blackWon ? 'ring-3 ring-[#81B64C]' : 'ring-1 ring-white/15'
                 }`}
               >
                 <PlayerAvatar
@@ -361,6 +428,78 @@ export function GameReviewSummaryScreen({
             </div>
           </div>
 
+          {/* Coach Report & Key Moments Card */}
+          {moves.length > 0 && (
+            <div
+              data-testid="summary-coach-report"
+              className="rounded-xl bg-[#1E1C19] border border-white/10 p-3 space-y-2.5 text-xs"
+            >
+              <div className="flex items-start gap-2.5">
+                <div className="shrink-0 mt-0.5">
+                  <BotAvatar botId={activeCoach.id} size={32} />
+                </div>
+                <div className="min-w-0 flex-1 space-y-0.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-extrabold text-[#AEE076] truncate">
+                      {coachInsights.summaryHeadline}
+                    </span>
+                    <span className="text-[11px] font-semibold text-[#9E998F] shrink-0">
+                      {activeCoach.name}
+                    </span>
+                  </div>
+                  <p className="text-[#E6E2DA] leading-snug">
+                    {coachInsights.coachVerdict}
+                  </p>
+                </div>
+              </div>
+
+              {coachInsights.keyMoments.length > 0 && (
+                <div className="space-y-1.5 pt-2 border-t border-white/8">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#9E998F]">
+                    Key Moments
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {coachInsights.keyMoments.map((km) => (
+                      <button
+                        key={`${km.kind}-${km.ply}`}
+                        type="button"
+                        onClick={() => {
+                          onSelectPly?.(km.ply);
+                          onClose();
+                        }}
+                        title={km.note}
+                        className="px-2.5 py-1 rounded-lg bg-[#262421] hover:bg-[#312E2A] border border-white/10 text-[11px] font-bold text-[#DEDAD2] flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <MoveBadge quality={km.quality} size="sm" />
+                        <span>
+                          {km.label}: {km.moveNumber}
+                          {km.color === 'b' ? '...' : '.'}
+                          {km.san}
+                        </span>
+                        <span className="font-mono text-[#9E998F]">{km.evalSwingText}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-1 pt-2 border-t border-white/8 text-[11px] leading-snug">
+                <p className="text-[#C8E89C]">
+                  <span className="font-bold text-[#9CD363]">Worked well:</span>{' '}
+                  {coachInsights.strengthSummary}
+                </p>
+                <p className="text-[#E6E2DA]">
+                  <span className="font-bold text-[#F7C045]">Focus next:</span>{' '}
+                  {coachInsights.weaknessSummary}
+                </p>
+                <p className="text-[#DEDAD2]">
+                  <span className="font-bold text-[#E59A28]">Practice plan:</span>{' '}
+                  {coachInsights.focusDrill}
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Per-Move Quality Breakdown Table */}
           <div className="border-t border-white/10 pt-2.5 space-y-1.5">
             {QUALITY_ROWS.map((row) => {
@@ -373,18 +512,37 @@ export function GameReviewSummaryScreen({
                   className="grid grid-cols-[96px_1fr_32px_1fr] sm:grid-cols-[120px_1fr_36px_1fr] items-center gap-2 py-0.5"
                 >
                   <span className="text-xs font-bold text-[#D6D2CA]">{row.label}</span>
-                  <span className={`text-center font-mono text-sm font-extrabold tabular-nums ${meta.textColor}`}>
+                  <span
+                    className={`text-center font-mono text-sm font-extrabold tabular-nums ${meta.textColor}`}
+                  >
                     {wVal}
                   </span>
                   <div className="flex justify-center">
                     <MoveBadge quality={row.quality} size="sm" />
                   </div>
-                  <span className={`text-center font-mono text-sm font-extrabold tabular-nums ${meta.textColor}`}>
+                  <span
+                    className={`text-center font-mono text-sm font-extrabold tabular-nums ${meta.textColor}`}
+                  >
                     {bVal}
                   </span>
                 </div>
               );
             })}
+
+            {(missedWinsWhite > 0 || missedWinsBlack > 0) && (
+              <div className="grid grid-cols-[96px_1fr_32px_1fr] sm:grid-cols-[120px_1fr_36px_1fr] items-center gap-2 py-0.5">
+                <span className="text-xs font-bold text-[#D6D2CA]">Missed Win</span>
+                <span className="text-center font-mono text-sm font-extrabold tabular-nums text-[#E59A28]">
+                  {missedWinsWhite}
+                </span>
+                <div className="flex justify-center text-xs font-mono font-extrabold text-[#E59A28]">
+                  ×
+                </div>
+                <span className="text-center font-mono text-sm font-extrabold tabular-nums text-[#E59A28]">
+                  {missedWinsBlack}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Collapse / Expand Divider */}
@@ -404,7 +562,7 @@ export function GameReviewSummaryScreen({
             </button>
           </div>
 
-          {/* Game Rating + Phase Breakdown (Opening / Tactics / Strategy / Endgame) */}
+          {/* Game Rating + Phase Breakdown */}
           {showPerformance && (
             <div className="space-y-3 pb-2 animate-view-enter">
               <div className="grid grid-cols-[96px_1fr_1fr] sm:grid-cols-[120px_1fr_1fr] items-center gap-2.5">

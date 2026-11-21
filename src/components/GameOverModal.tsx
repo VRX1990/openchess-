@@ -5,8 +5,11 @@ interface GameOverModalProps {
   subtitle: string;
   playerWon: boolean | null;
   moveCount: number;
-  playerLabel: string;
-  opponentLabel: string;
+  whiteName: string;
+  blackName: string;
+  whiteRating?: number;
+  blackRating?: number;
+  isRatedMatch?: boolean;
   onReview: () => void;
   onPlayAgain: () => void;
   onClose: () => void;
@@ -17,12 +20,16 @@ export function GameOverModal({
   subtitle,
   playerWon,
   moveCount,
-  playerLabel,
-  opponentLabel,
+  whiteName,
+  blackName,
+  whiteRating,
+  blackRating,
+  isRatedMatch = true,
   onReview,
   onPlayAgain,
   onClose,
 }: GameOverModalProps) {
+  const isAborted = title.toLowerCase().includes('abort');
   return (
     <div
       className="animate-fade-in fixed inset-0 z-50 bg-black/65 flex items-center justify-center p-4"
@@ -57,10 +64,17 @@ export function GameOverModal({
 
         <div className="p-5 space-y-4">
           <div className="grid grid-cols-3 gap-2 text-center bg-[#1E1C19] rounded-md p-3 border border-white/8">
-            <div>
+            <div className="min-w-0">
               <div className="text-[11px] text-[#9E998F]">White</div>
               <div className="text-xs font-semibold text-[#F2F0EC] truncate mt-0.5">
-                {playerLabel}
+                {whiteName}
+              </div>
+              <div className="text-[11px] font-mono text-[#B8B4AC] tabular-nums mt-0.5">
+                {typeof whiteRating === 'number'
+                  ? `(${whiteRating})`
+                  : isRatedMatch
+                    ? ''
+                    : '(Unrated)'}
               </div>
             </div>
             <div>
@@ -68,37 +82,53 @@ export function GameOverModal({
               <div className="text-sm font-mono font-bold text-[#F2F0EC] tabular-nums mt-0.5">
                 {moveCount}
               </div>
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-[#9E998F] mt-0.5">
+                {isRatedMatch ? 'Rated' : 'Casual'}
+              </div>
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="text-[11px] text-[#9E998F]">Black</div>
               <div className="text-xs font-semibold text-[#F2F0EC] truncate mt-0.5">
-                {opponentLabel}
+                {blackName}
+              </div>
+              <div className="text-[11px] font-mono text-[#B8B4AC] tabular-nums mt-0.5">
+                {typeof blackRating === 'number'
+                  ? `(${blackRating})`
+                  : isRatedMatch
+                    ? ''
+                    : '(Unrated)'}
               </div>
             </div>
           </div>
 
           <div className="flex flex-col gap-2">
-            <button
-              type="button"
-              onClick={onReview}
-              className="w-full py-2.5 px-4 rounded bg-[#81B64C] hover:bg-[#90C55B] text-[#191815] font-bold text-sm transition-colors flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <SearchCheck className="w-4 h-4" />
-              <span>Game Review &amp; AI Debrief</span>
-            </button>
+            {!isAborted && moveCount > 0 && (
+              <button
+                type="button"
+                onClick={onReview}
+                className="w-full py-2.5 px-4 rounded bg-[#81B64C] hover:bg-[#90C55B] text-[#191815] font-bold text-sm transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <SearchCheck className="w-4 h-4" />
+                <span>Game Review &amp; AI Debrief</span>
+              </button>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={onPlayAgain}
-                className="py-2 px-3 rounded bg-[#35322D] hover:bg-[#413D37] text-[#F2F0EC] font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                className={`py-2.5 px-3 rounded font-bold text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer ${
+                  isAborted || moveCount === 0
+                    ? 'bg-[#81B64C] hover:bg-[#90C55B] text-[#191815]'
+                    : 'bg-[#35322D] hover:bg-[#413D37] text-[#F2F0EC] font-semibold'
+                }`}
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                <span>Play Again</span>
+                <span>{isAborted ? 'Find New Game' : 'Play Again'}</span>
               </button>
               <button
                 type="button"
                 onClick={onClose}
-                className="py-2 px-3 rounded bg-[#1E1C19] hover:bg-[#2E2B27] border border-white/10 text-[#C8C4BC] font-medium text-xs transition-colors cursor-pointer"
+                className="py-2.5 px-3 rounded bg-[#1E1C19] hover:bg-[#2E2B27] border border-white/10 text-[#C8C4BC] font-medium text-xs transition-colors cursor-pointer"
               >
                 Inspect Board
               </button>

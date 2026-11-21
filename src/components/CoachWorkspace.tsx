@@ -10,8 +10,6 @@ import {
   Sparkles,
 } from 'lucide-react';
 import {
-  analyzeClientStockfish19Nnue,
-  computeClientStockfish19NnueMultiPv,
   evaluateMovesBatch,
   extractGameSkeleton,
   summarizeGameReview,
@@ -20,16 +18,24 @@ import {
 } from '../chess/engine';
 import type { CloudEvalSummary } from '../chess/lichess';
 import {
+  formatEvalDisplay,
+  type PositionAnalysisSnapshot,
+} from '../chess/reviewAnalysis';
+import { analyzeLivePositionWithStockfish19 } from '../chess/stockfishWorker';
+import {
   buildSmartGameInsights,
   buildSmartMoveAnalysis,
   getCoachProfile,
   type CoachPersonaId,
 } from '../chess/coach';
+import { EvalAdvantageChart } from './EvalAdvantageChart';
 import { MOVE_QUALITY_META, MoveBadge } from './MoveBadge';
 import { TutorPanel } from './TutorPanel';
+import { BotAvatar } from './BotAvatar';
 
 export interface AiDebrief {
   headline: string;
+  gameStory?: string;
   strength: string;
   priorityFix: string;
   sundayDrill: string;
@@ -50,6 +56,16 @@ export interface CoachWorkspaceProps {
   selectedPly?: number;
   onSelectPly?: (ply: number) => void;
   onHighlightArrow?: (arrow: { from: string; to: string } | null) => void;
+  onPlayVariation?: (lineSan: string[], baseFen: string) => void;
+  onLiveEvalUpdate?: (snap: {
+    evalCp: number;
+    mateIn: number | null;
+    bestMoveFrom: string;
+    bestMoveTo: string;
+    bestMoveSan: string;
+    depth: number;
+  }) => void;
+  isExploring?: boolean;
   queuedPrompt?: { id: number; text: string } | null;
   defaultTab?: 'report' | 'tutor';
   onMoveStepCloseSheet?: () => void;
@@ -71,6 +87,9 @@ export function CoachWorkspace({
   selectedPly: controlledPly,
   onSelectPly,
   onHighlightArrow,
+  onPlayVariation,
+  onLiveEvalUpdate,
+  isExploring = false,
   queuedPrompt = null,
   defaultTab = 'report',
   onMoveStepCloseSheet,
@@ -81,13 +100,16 @@ export function CoachWorkspace({
   const [internalAnalyzedCount, setInternalAnalyzedCount] = useState(0);
   const [internalPly, setInternalPly] = useState<number>(0);
 
-  const [cloudEval, setCloudEval] = useState<(CloudEvalSummary & { available: boolean }) | null>(
-    null,
-  );
+  const [cloudEval, setCloudEval] = useState<
+    (CloudEvalSummary & { available: boolean; nps?: number; engineLabel?: string }) | null
+  >(null);
   const [cloudLoading, setCloudLoading] = useState(false);
   const [selectedLineIdx, setSelectedLineIdx] = useState<number>(0);
-  const cloudCacheRef = useRef<Map<string, CloudEvalSummary & { available: boolean }>>(new Map());
+  const cloudCacheRef = useRef<
+    Map<string, CloudEvalSummary & { available: boolean; nps?: number; engineLabel?: string }>
+  >(new Map());
   const latestCloudFenRef = useRef<string>('');
+  const liveAbortRef = useRef<AbortController | null>(null);
 
   const [debrief, setDebrief] = useState<AiDebrief | null>(null);
   const [debriefLoading, setDebriefLoading] = useState(false);
@@ -203,14 +225,15 @@ export function CoachWorkspace({
   );
 
   const activeFen = useMemo(() => {
+    if (isExploring) return fen;
     if (currentMove) return currentMove.fenAfter;
     if (moves.length > 0 && activePly === 0) {
       return moves[0].fenBefore;
     }
     return fen;
-  }, [activePly, currentMove, fen, moves]);
+  }, [activePly, currentMove, fen, isExploring, moves]);
 
-  const activeEval = currentMove ? currentMove.evalCp : evalCp;
+  const activeEval = isExploring ? evalCp : currentMove ? currentMove.evalCp : evalCp;
   const currentMeta = currentMove ? MOVE_QUALITY_META[currentMove.quality] : null;
 
   const criticalMoves = useMemo(
@@ -228,6 +251,30 @@ export function CoachWorkspace({
     onMoveStepCloseSheet?.();
   };
 
+  const snapshotToCloudPayload = (
+    snap: PositionAnalysisSnapshot,
+  ): CloudEvalSummary & { available: boolean; nps?: number; engineLabel?: string } => ({
+    available: snap.lines.length > 0,
+    source: snap.source === 'lichess-cloud' ? 'lichess-cloud' : 'stockfish-19-nnue',
+    depth: snap.depth,
+    knodes: snap.nodes ? Math.max(1, Math.round(snap.nodes / 1000)) : 0,
+    nps: snap.nps,
+    engineLabel:
+      snap.source === 'stockfish-19-wasm'
+        ? 'Analysis Engine'
+        : snap.source === 'lichess-cloud'
+          ? 'Cloud Engine'
+          : 'Local Engine',
+    lines: snap.lines.map((l) => ({
+      evalText: l.evalText,
+      evalCp: l.evalCp,
+      firstMoveFrom: l.firstMoveFrom,
+      firstMoveTo: l.firstMoveTo,
+      firstMoveSan: l.firstMoveSan,
+      lineSan: l.lineSan,
+    })),
+  });
+
   const fetchCloudEval = useCallback(
     async (targetFen: string, forceRefresh = false) => {
       if (!targetFen) return;
@@ -240,70 +287,66 @@ export function CoachWorkspace({
           return;
         }
       }
+
+      liveAbortRef.current?.abort();
+      const controller = new AbortController();
+      liveAbortRef.current = controller;
       setCloudLoading(true);
-      // 1. Run Client-Side Stockfish 19 NNUE immediately in the browser
-      const clientSf19 = await analyzeClientStockfish19Nnue(targetFen, 19, 3);
-      if (clientSf19.available && clientSf19.lines.length > 0) {
-        const clientPayload: CloudEvalSummary & { available: boolean } = {
-          available: true,
-          source: 'stockfish-19-nnue',
-          depth: clientSf19.depth,
-          knodes: clientSf19.knodes,
-          lines: clientSf19.lines,
-        };
-        cloudCacheRef.current.set(targetFen, clientPayload);
-        if (latestCloudFenRef.current === targetFen) {
-          setCloudEval(clientPayload);
-          setSelectedLineIdx(0);
-        }
-      }
+
       try {
-        const res = await fetch(`/api/lichess/eval?fen=${encodeURIComponent(targetFen)}`);
-        const data = (await res.json()) as CloudEvalSummary & { available: boolean };
-        if (data?.available && Array.isArray(data.lines) && data.lines.length > 0) {
-          const enriched: CloudEvalSummary & { available: boolean } = {
-            ...data,
-            source: 'stockfish-19-nnue',
-            depth: Math.max(19, data.depth || 19),
-            lines:
-              data.lines.length >= 2 || !clientSf19.available
-                ? data.lines
-                : [
-                    data.lines[0],
-                    ...clientSf19.lines.filter(
-                      (l) => l.firstMoveSan !== data.lines[0]?.firstMoveSan,
-                    ),
-                  ].slice(0, 3),
-          };
-          cloudCacheRef.current.set(targetFen, enriched);
-          if (latestCloudFenRef.current !== targetFen) return;
-          setCloudEval(enriched);
-          setSelectedLineIdx(0);
-        } else if (!clientSf19.available && latestCloudFenRef.current === targetFen) {
-          setCloudEval({ available: false, depth: 0, knodes: 0, lines: [] });
-        }
-      } catch {
-        if (latestCloudFenRef.current !== targetFen) return;
-        if (!clientSf19.available) {
-          const syncFallback = computeClientStockfish19NnueMultiPv(targetFen, 19, 3);
-          setCloudEval({
-            available: syncFallback.available,
-            source: 'stockfish-19-nnue',
-            depth: syncFallback.depth,
-            knodes: syncFallback.knodes,
-            lines: syncFallback.lines,
+        const snap = await analyzeLivePositionWithStockfish19(targetFen, {
+          depth: forceRefresh ? 19 : 16,
+          movetimeMs: forceRefresh ? 1500 : 850,
+          multiPv: 3,
+          forceRefresh,
+          signal: controller.signal,
+          onProgress: (partial) => {
+            if (latestCloudFenRef.current !== targetFen || controller.signal.aborted) return;
+            const payload = snapshotToCloudPayload(partial);
+            setCloudEval(payload);
+            if (partial.bestMoveFrom && partial.bestMoveTo) {
+              onLiveEvalUpdate?.({
+                evalCp: partial.evalCp,
+                mateIn: partial.mateIn,
+                bestMoveFrom: partial.bestMoveFrom,
+                bestMoveTo: partial.bestMoveTo,
+                bestMoveSan: partial.bestMoveSan,
+                depth: partial.depth,
+              });
+            }
+          },
+        });
+
+        if (latestCloudFenRef.current !== targetFen || controller.signal.aborted) return;
+        const payload = snapshotToCloudPayload(snap);
+        cloudCacheRef.current.set(targetFen, payload);
+        setCloudEval(payload);
+        setSelectedLineIdx(0);
+        if (snap.bestMoveFrom && snap.bestMoveTo) {
+          onLiveEvalUpdate?.({
+            evalCp: snap.evalCp,
+            mateIn: snap.mateIn,
+            bestMoveFrom: snap.bestMoveFrom,
+            bestMoveTo: snap.bestMoveTo,
+            bestMoveSan: snap.bestMoveSan,
+            depth: snap.depth,
           });
         }
-      } finally {
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') return;
         if (latestCloudFenRef.current === targetFen) {
+          setCloudEval({ available: false, depth: 0, knodes: 0, lines: [] });
+        }
+      } finally {
+        if (latestCloudFenRef.current === targetFen && !controller.signal.aborted) {
           setCloudLoading(false);
         }
       }
     },
-    [],
+    [onLiveEvalUpdate],
   );
 
-  // Auto-load Client-Side Stockfish 19 NNUE Multi-PV lines whenever Report tab & position settle
+  // Auto-load real Stockfish 19 WASM Multi-PV lines whenever Report tab & position settle
   useEffect(() => {
     if (activeTab !== 'report') return;
     latestCloudFenRef.current = activeFen;
@@ -311,13 +354,27 @@ export function CoachWorkspace({
     if (cached) {
       setCloudEval(cached);
       setSelectedLineIdx(0);
+      const top = cached.lines[0];
+      if (top) {
+        onLiveEvalUpdate?.({
+          evalCp: top.evalCp,
+          mateIn: null,
+          bestMoveFrom: top.firstMoveFrom,
+          bestMoveTo: top.firstMoveTo,
+          bestMoveSan: top.firstMoveSan,
+          depth: cached.depth,
+        });
+      }
       return;
     }
     const timer = window.setTimeout(() => {
       void fetchCloudEval(activeFen);
-    }, 180);
-    return () => window.clearTimeout(timer);
-  }, [activeFen, activeTab, fetchCloudEval]);
+    }, isExploring ? 60 : 120);
+    return () => {
+      window.clearTimeout(timer);
+      liveAbortRef.current?.abort();
+    };
+  }, [activeFen, activeTab, fetchCloudEval, isExploring, onLiveEvalUpdate]);
 
   const runAiDebrief = async () => {
     if (debriefLoading) return;
@@ -359,6 +416,12 @@ export function CoachWorkspace({
           accuracy:
             playerColor === 'w' ? analysis.whiteAccuracy : analysis.blackAccuracy,
           mistakes: keyMoments,
+          bestFind: smartInsights.bestMomentText ?? undefined,
+          phaseAccuracies: {
+            opening: smartInsights.openingAccuracy,
+            middlegame: smartInsights.middlegameAccuracy,
+            endgame: smartInsights.endgameAccuracy,
+          },
           coachProfile: {
             id: activeCoach.id,
             name: activeCoach.name,
@@ -380,27 +443,6 @@ export function CoachWorkspace({
     }
   };
 
-  const sparkPoints = useMemo(() => {
-    const w = 320;
-    const h = 54;
-    if (analysis.moves.length === 0) {
-      const clamped = Math.max(-600, Math.min(600, activeEval));
-      const y = h / 2 - (clamped / 600) * (h / 2 - 4);
-      return `0,${y.toFixed(1)} ${w},${y.toFixed(1)}`;
-    }
-    return analysis.moves
-      .map((m, i) => {
-        const x =
-          analysis.moves.length === 1
-            ? w / 2
-            : (i / (analysis.moves.length - 1)) * w;
-        const clamped = Math.max(-600, Math.min(600, m.evalCp));
-        const y = h / 2 - (clamped / 600) * (h / 2 - 4);
-        return `${x.toFixed(1)},${y.toFixed(1)}`;
-      })
-      .join(' ');
-  }, [activeEval, analysis.moves]);
-
   const showBestMoveArrow =
     currentMove &&
     (currentMove.quality === 'Inaccuracy' ||
@@ -420,30 +462,25 @@ export function CoachWorkspace({
     { quality: 'Blunder', label: 'Blun', count: analysis.counts.Blunder },
   ];
 
-  const evalFormatted =
-    Math.abs(activeEval) >= 90000
-      ? activeEval > 0
-        ? 'White Mate'
-        : 'Black Mate'
-      : `${activeEval >= 0 ? '+' : ''}${(activeEval / 100).toFixed(2)}`;
+  const evalFormatted = formatEvalDisplay(activeEval, currentMove?.mateIn ?? null);
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 overflow-hidden bg-[#21201D]">
-      {/* Exact Reference Two-Tab Header: Coach Report | Ask AI Tutor */}
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden bg-[#262421]">
+      {/* Chess.com Flush Two-Tab Header: Coach Report | Coach Chat */}
       <div
         role="tablist"
         aria-label="Coach workspace tabs"
-        className="grid grid-cols-2 bg-[#1A1917] border-b border-white/10 p-1 gap-1 shrink-0"
+        className="grid grid-cols-2 bg-[#1F1E1B] shrink-0"
       >
         <button
           type="button"
           role="tab"
           aria-selected={activeTab === 'report'}
           onClick={() => setActiveTab('report')}
-          className={`py-2 px-2 rounded text-xs font-semibold transition-colors cursor-pointer ${
+          className={`py-2.5 px-2 text-xs font-bold transition-colors cursor-pointer ${
             activeTab === 'report'
-              ? 'bg-[#312E2A] text-[#F2F0EC]'
-              : 'text-[#9E998F] hover:text-[#F2F0EC]'
+              ? 'bg-[#262421] text-white'
+              : 'text-[#9B9A97] hover:text-white'
           }`}
         >
           Coach Report
@@ -453,39 +490,39 @@ export function CoachWorkspace({
           role="tab"
           aria-selected={activeTab === 'tutor'}
           onClick={() => setActiveTab('tutor')}
-          className={`py-2 px-2 rounded text-xs font-semibold transition-colors cursor-pointer ${
+          className={`py-2.5 px-2 text-xs font-bold transition-colors cursor-pointer ${
             activeTab === 'tutor'
-              ? 'bg-[#312E2A] text-[#F2F0EC]'
-              : 'text-[#9E998F] hover:text-[#F2F0EC]'
+              ? 'bg-[#262421] text-white'
+              : 'text-[#9B9A97] hover:text-white'
           }`}
         >
-          Ask AI Tutor
+          Coach Chat
         </button>
       </div>
 
       {activeTab === 'report' ? (
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-          <div className="p-2 border-b border-white/10 space-y-1.5 bg-[#1A1917] shrink-0 overflow-y-auto max-h-[68%]">
+          <div className="p-2 border-b border-white/10 space-y-1.5 bg-[#1A1917] shrink-0 overflow-y-auto max-h-[72%]">
             {/* 2-col Accuracy Cards */}
             <div className="grid grid-cols-2 gap-1.5">
-              <div className="p-2 rounded bg-[#262421] border border-white/8 flex items-center justify-between">
+              <div className="px-2 py-1.5 rounded bg-[#262421] border border-white/8 flex items-center justify-between">
                 <span className="text-xs text-[#B8B4AC]">White Acc.</span>
-                <span className="font-mono text-base font-bold text-[#F2F0EC] tabular-nums">
+                <span className="font-mono text-sm font-bold text-[#F2F0EC] tabular-nums">
                   {analysis.whiteAccuracy}%
                 </span>
               </div>
-              <div className="p-2 rounded bg-[#262421] border border-white/8 flex items-center justify-between">
+              <div className="px-2 py-1.5 rounded bg-[#262421] border border-white/8 flex items-center justify-between">
                 <span className="text-xs text-[#B8B4AC]">Black Acc.</span>
-                <span className="font-mono text-base font-bold text-[#F2F0EC] tabular-nums">
+                <span className="font-mono text-sm font-bold text-[#F2F0EC] tabular-nums">
                   {analysis.blackAccuracy}%
                 </span>
               </div>
             </div>
 
             {/* Active Move Verdict Card + Master Cloud Multi-PV */}
-            <div className="p-2.5 rounded bg-[#262421] border border-white/10 space-y-2">
+            <div className="p-2 rounded bg-[#262421] border border-white/10 space-y-1.5">
               <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2.5 min-w-0">
+                <div className="flex items-center gap-2 min-w-0">
                   <MoveBadge quality={currentMove?.quality ?? 'Good'} size="md" />
                   <div className="min-w-0">
                     {currentMove && currentMeta ? (
@@ -531,10 +568,10 @@ export function CoachWorkspace({
                     onClick={() => void fetchCloudEval(activeFen, true)}
                     disabled={cloudLoading}
                     className="px-2 py-1 rounded bg-[#1E1C19] hover:bg-[#312E2A] border border-white/10 text-[11px] font-semibold text-[#AEE076] flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                    title="Stockfish 19 NNUE (Client-Side Multi-PV)"
+                    title="Search deeper with analysis engine"
                   >
                     <Cpu className="w-3 h-3" />
-                    <span>{cloudLoading ? '...' : 'SF 19 NNUE'}</span>
+                    <span>{cloudLoading ? 'Analyzing...' : 'Deeper Line'}</span>
                   </button>
                   {criticalMoves.length > 0 && (
                     <button
@@ -550,10 +587,12 @@ export function CoachWorkspace({
                 </div>
               </div>
 
-              {smartMove && (
-                <div className="pt-1.5 border-t border-white/8 space-y-1">
+              {smartMove && !isExploring && (
+                <div className="pt-1 border-t border-white/8 space-y-1">
                   <p className="text-[11px] text-[#E6E2DA] leading-snug">
-                    {smartMove.why}
+                    {currentMove?.classificationNote && currentMove.quality !== 'Book'
+                      ? `${currentMove.classificationNote} — ${smartMove.why}`
+                      : smartMove.why}
                   </p>
                   {smartMove.betterPlan && (
                     <p className="text-[11px] text-[#AEE076] font-semibold leading-snug">
@@ -579,54 +618,143 @@ export function CoachWorkspace({
 
               {cloudEval && !cloudEval.available && (
                 <p className="text-[11px] text-[#9E998F]">
-                  Engine lines unavailable offline — switch to Ask AI Tutor for strategic advice.
+                  Position is terminal — switch to Coach Chat for strategic guidance.
                 </p>
               )}
 
               {cloudEval && cloudEval.available && cloudEval.lines.length > 0 && (
                 <div className="space-y-1 pt-1 border-t border-white/8">
-                  <div
-                    data-testid="engine-source-label"
-                    className="text-[10px] font-mono text-[#9E998F] tabular-nums"
-                  >
-                    {`Stockfish 19 NNUE (Client-Side) · Depth ${Math.max(19, cloudEval.depth || 19)}`}
-                  </div>
-                  {cloudEval.lines.slice(0, 3).map((line, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => {
-                        setSelectedLineIdx(idx);
-                        onHighlightArrow?.({
-                          from: line.firstMoveFrom,
-                          to: line.firstMoveTo,
-                        });
-                      }}
-                      className={`w-full flex items-center gap-2 text-left px-2 py-1 rounded font-mono text-[11px] tabular-nums cursor-pointer transition-colors ${
-                        selectedLineIdx === idx
-                          ? 'bg-[#312E2A] ring-1 ring-[#81B64C]/40'
-                          : 'bg-[#1A1917] hover:bg-[#312E2A]'
-                      }`}
+                  <div className="flex items-center justify-between gap-2">
+                    <div
+                      data-testid="engine-source-label"
+                      className="text-[11px] font-bold text-[#9B9A97]"
                     >
-                      <span className="font-bold text-[#81B64C] w-11 shrink-0">
-                        {line.evalText}
-                      </span>
-                      <span className="text-[#DEDAD2] truncate">
-                        {line.lineSan.join(' ')}
-                      </span>
-                    </button>
-                  ))}
+                      Top Lines
+                    </div>
+                    {onPlayVariation && cloudEval.lines[selectedLineIdx]?.lineSan.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const targetLine = cloudEval.lines[selectedLineIdx];
+                          if (targetLine?.lineSan.length) {
+                            onPlayVariation(targetLine.lineSan, activeFen);
+                          }
+                        }}
+                        className="px-2 py-0.5 rounded bg-[#81B64C]/20 hover:bg-[#81B64C]/35 text-[10px] font-bold text-[#AEE076] cursor-pointer"
+                      >
+                        Play Line
+                      </button>
+                    )}
+                  </div>
+                  {cloudEval.lines.slice(0, 3).map((line, idx) => {
+                    const blackBetter = line.evalText.trim().startsWith('-');
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => {
+                          setSelectedLineIdx(idx);
+                          onHighlightArrow?.({
+                            from: line.firstMoveFrom,
+                            to: line.firstMoveTo,
+                          });
+                        }}
+                        className={`w-full flex items-center gap-2 text-left px-1.5 py-1 rounded-[4px] text-[12px] cursor-pointer transition-colors ${
+                          selectedLineIdx === idx
+                            ? 'bg-[#312E2A] ring-1 ring-white/15'
+                            : 'bg-[#21201D] hover:bg-[#2C2A27]'
+                        }`}
+                      >
+                        <span
+                          className={`min-w-[44px] px-1.5 py-0.5 rounded-[3px] text-center font-mono text-[11px] font-extrabold tabular-nums shrink-0 leading-none ${
+                            blackBetter
+                              ? 'bg-[#1F1E1B] text-white border border-white/15'
+                              : 'bg-white text-[#262421]'
+                          }`}
+                        >
+                          {line.evalText}
+                        </span>
+                        <span className="font-semibold text-[#E5E3DF] truncate">
+                          {line.lineSan.join(' ')}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
 
-            {/* Smart Game Insights Strip (Phase Accuracies + Turning Point) */}
+            {/* Coach Report Card (Verdict, Key Moments, Strengths & Phase Breakdown) */}
             {analysis.moves.length > 0 && (
-              <div className="p-2 rounded bg-[#262421] border border-white/8 space-y-1.5 text-[11px]">
-                <div className="font-bold text-[#AEE076] truncate">
-                  {smartInsights.summaryHeadline}
+              <div
+                data-testid="coach-report-summary-card"
+                className="p-2.5 rounded-lg bg-[#262421] border border-white/10 space-y-2 text-[11px]"
+              >
+                <div className="flex items-start gap-2">
+                  <div className="shrink-0 mt-0.5">
+                    <BotAvatar botId={coachId} size={26} />
+                  </div>
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-[#AEE076] truncate">
+                        {smartInsights.summaryHeadline}
+                      </span>
+                      <span className="text-[10px] font-semibold text-[#9E998F] shrink-0">
+                        {getCoachProfile(coachId).name}
+                      </span>
+                    </div>
+                    <p className="text-[#E6E2DA] leading-snug">
+                      {smartInsights.coachVerdict}
+                    </p>
+                  </div>
                 </div>
-                <p className="text-[#D6D2CA] leading-snug">{smartInsights.coachVerdict}</p>
+
+                {smartInsights.keyMoments.length > 0 && (
+                  <div className="space-y-1 pt-1 border-t border-white/8">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-[#9E998F]">
+                      Key Moments (Click to Jump)
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {smartInsights.keyMoments.map((km) => (
+                        <button
+                          key={`${km.kind}-${km.ply}`}
+                          type="button"
+                          data-testid={`coach-key-moment-${km.ply}`}
+                          onClick={() => {
+                            setPly(km.ply);
+                            onMoveStepCloseSheet?.();
+                          }}
+                          title={km.note}
+                          className={`px-2 py-1 rounded text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors border ${
+                            activePly === km.ply
+                              ? 'bg-[#81B64C]/25 border-[#81B64C] text-white'
+                              : 'bg-[#1A1917] hover:bg-[#312E2A] border-white/8 text-[#DEDAD2]'
+                          }`}
+                        >
+                          <MoveBadge quality={km.quality} size="sm" />
+                          <span>
+                            {km.label}: {km.moveNumber}
+                            {km.color === 'b' ? '...' : '.'}
+                            {km.san}
+                          </span>
+                          <span className="font-mono text-[#9E998F]">{km.evalSwingText}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-1 pt-1 border-t border-white/8 text-[11px] leading-snug">
+                  <p className="text-[#C8E89C]">
+                    <span className="font-bold text-[#9CD363]">Worked well:</span>{' '}
+                    {smartInsights.strengthSummary}
+                  </p>
+                  <p className="text-[#E6E2DA]">
+                    <span className="font-bold text-[#F7C045]">Focus next:</span>{' '}
+                    {smartInsights.weaknessSummary}
+                  </p>
+                </div>
+
                 <div className="grid grid-cols-3 gap-1 pt-0.5 font-mono text-[10px] tabular-nums">
                   <div className="px-1.5 py-1 rounded bg-[#1A1917] flex items-center justify-between">
                     <span className="text-[#9E998F]">Open</span>
@@ -656,25 +784,17 @@ export function CoachWorkspace({
               </div>
             )}
 
-            {/* Evaluation Timeline SVG Sparkline */}
-            <div className="bg-[#262421] rounded border border-white/8 p-1">
-              <svg viewBox="0 0 320 54" className="w-full h-8" aria-label="Evaluation timeline">
-                <line
-                  x1="0"
-                  y1="27"
-                  x2="320"
-                  y2="27"
-                  stroke="rgba(255,255,255,0.14)"
-                  strokeWidth="1"
-                />
-                <polyline
-                  fill="none"
-                  stroke="#81B64C"
-                  strokeWidth="2"
-                  points={sparkPoints}
-                />
-              </svg>
-            </div>
+            {/* Interactive Evaluation Advantage Graph */}
+            <EvalAdvantageChart
+              moves={analysis.moves}
+              selectedPly={activePly}
+              analyzedCount={analyzedCount}
+              heightClass="h-[46px]"
+              onSelectPly={(ply) => {
+                setPly(ply);
+                onMoveStepCloseSheet?.();
+              }}
+            />
 
             {/* Move Quality Counts Strip */}
             <div className="flex items-center justify-between gap-1 text-[11px] font-mono tabular-nums text-[#C8C4BC]">
@@ -710,18 +830,21 @@ export function CoachWorkspace({
               </div>
             )}
 
-            {/* Generate Coach Review CTA / Debrief Card */}
+            {/* Full Coach Debrief Card */}
             {debrief ? (
-              <div className="p-3 rounded bg-[#262421] border border-[#81B64C]/35 space-y-1.5 text-xs">
+              <div className="p-2.5 rounded-lg bg-[#262421] border border-[#81B64C]/35 space-y-1.5 text-xs">
                 <div className="font-bold text-[#9CD363]">{debrief.headline}</div>
-                <p className="text-[#DEDAD2]">
+                {debrief.gameStory && (
+                  <p className="text-[#E6E2DA] leading-snug">{debrief.gameStory}</p>
+                )}
+                <p className="text-[#DEDAD2] leading-snug">
                   <strong>Strength:</strong> {debrief.strength}
                 </p>
-                <p className="text-[#DEDAD2]">
+                <p className="text-[#DEDAD2] leading-snug">
                   <strong>Priority Fix:</strong> {debrief.priorityFix}
                 </p>
-                <p className="text-[#E59A28]">
-                  <strong>Daily Sharping Drill:</strong> {debrief.sundayDrill}
+                <p className="text-[#E59A28] leading-snug">
+                  <strong>Next Drill:</strong> {debrief.sundayDrill}
                 </p>
               </div>
             ) : (
@@ -729,13 +852,13 @@ export function CoachWorkspace({
                 type="button"
                 onClick={() => void runAiDebrief()}
                 disabled={debriefLoading}
-                className="w-full min-h-[44px] py-2 px-3 rounded-xl bg-[#81B64C] hover:bg-[#8EC556] border-b-4 border-[#457524] active:border-b-0 active:translate-y-[2px] text-white font-extrabold text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                className="w-full min-h-[38px] py-1.5 px-3 rounded-xl bg-[#81B64C] hover:bg-[#8EC556] border-b-[3px] border-[#457524] active:border-b-0 active:translate-y-[2px] text-white font-extrabold text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
               >
                 <Sparkles className="w-3.5 h-3.5" />
                 <span>
                   {debriefLoading
-                    ? 'Coach OpenChess Reviewing...'
-                    : 'Generate Coach Review'}
+                    ? `${getCoachProfile(coachId).name} Reviewing...`
+                    : 'Full Coach Debrief'}
                 </span>
               </button>
             )}

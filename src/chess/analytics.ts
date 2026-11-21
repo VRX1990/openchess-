@@ -1097,10 +1097,12 @@ export function isGamePlayedAsBlack(
   const whiteLower = game.white?.name?.trim().toLowerCase() ?? '';
   const blackLower = game.black?.name?.trim().toLowerCase() ?? '';
   if (lowerUser) {
-    if (blackLower === lowerUser) return true;
-    if (whiteLower === lowerUser) return false;
+    if (blackLower === lowerUser && whiteLower !== lowerUser) return true;
+    if (whiteLower === lowerUser && blackLower !== lowerUser) return false;
   }
   if (blackLower === 'you' && whiteLower !== 'you') return true;
+  if (whiteLower === 'guest opponent' && blackLower !== 'guest opponent') return true;
+  if (!lowerUser && blackLower === 'guest player' && whiteLower !== 'guest player') return true;
   return false;
 }
 

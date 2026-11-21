@@ -69,7 +69,12 @@ import {
   savePlayedGame,
 } from '../chess/analytics';
 import { parseUciMovesToGameState, type LichessAccount, type LichessUserGame } from '../chess/lichess';
-import { playErrorSound, playGameOverSound, playMoveSound } from '../chess/sound';
+import {
+  playErrorSound,
+  playGameOverSound,
+  playMoveSound,
+  playPremoveSound,
+} from '../chess/sound';
 import { ChessBoard, type BoardTheme } from './ChessBoard';
 import { ChessPiece } from './ChessPiece';
 import { EvaluationBar } from './EvaluationBar';
@@ -79,11 +84,20 @@ import { GameReviewSummaryScreen } from './GameReviewSummaryScreen';
 import { BottomSheet } from './BottomSheet';
 import { BotAvatar } from './BotAvatar';
 import { PlayerAvatar } from './PlayerAvatar';
+import { MoveSanText } from './MoveSanText';
 import { loadUserAvatar } from '../chess/avatars';
 import {
+  computeLiveInterpolatedClockMs,
   enqueuePremoveMove,
+  formatHighPrecisionClock,
+  formatOnlinePlayerDisplay,
   formatOnlineTimeControl,
+  formatOpponentPresenceText,
+  isPlaceholderPlayerUsername,
+  resolveOnlineSignalQuality,
+  stripPlatformFromText,
   type ChessServerName,
+  type OpponentPresenceStatus,
   type QueuedPremove,
 } from '../chess/onlineHelpers';
 import { MOVE_QUALITY_META, MoveBadge } from './MoveBadge';
@@ -116,6 +130,7 @@ export interface PlayPreset {
   timeId?: string;
   matchedInitialSeconds?: number;
   matchedIncrementSeconds?: number;
+  rated?: boolean;
   serverSource?: ChessServerName;
   mode?: PlayMode;
   color?: Color | 'random';
@@ -165,13 +180,6 @@ interface PlayViewProps {
   onLaunchRoom?: (opts: { roomId: string; timeId: string; color: 'w' | 'b' }) => void;
 }
 
-function formatClock(seconds: number): string {
-  const s = Math.max(0, Math.floor(seconds));
-  const mins = Math.floor(s / 60);
-  const secs = s % 60;
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
-
 export function PlayView({
   boardTheme,
   preset = null,
@@ -219,6 +227,9 @@ export function PlayView({
     roomId: string;
     lichessGameId: string;
     opponentConnected: boolean;
+    opponentStatus: OpponentPresenceStatus;
+    opponentGoneSeconds: number | null;
+    bridgeLagMs: number | null;
     whiteName: string;
     blackName: string;
     whiteRating?: number;
@@ -235,39 +246,75 @@ export function PlayView({
     drawOfferBy: 'w' | 'b' | null;
     rematchOfferBy: 'w' | 'b' | null;
     error: string | null;
-  }>({
-    roomId: preset?.wsRoomId ?? '',
-    lichessGameId: preset?.lichessGameId ?? '',
-    opponentConnected: false,
-    whiteName: 'White',
-    blackName: 'Black',
-    matchedClock:
+  }>(() => {
+    const ownName = lichessUsername?.trim() || loadGuestPlayerName();
+    const guestPerfs = loadGuestPerfs();
+    const initSec =
       typeof preset?.matchedInitialSeconds === 'number'
-        ? {
-            initialSeconds: preset.matchedInitialSeconds,
-            incrementSeconds: preset.matchedIncrementSeconds ?? 0,
-          }
-        : undefined,
-    serverSource: preset?.serverSource,
-    drawOfferBy: null,
-    rematchOfferBy: null,
-    error: null,
+        ? preset.matchedInitialSeconds
+        : TIME_CONTROLS.find((t) => t.id === (preset?.timeId ?? '10+0'))?.initialSeconds ?? 600;
+    const incSec =
+      typeof preset?.matchedIncrementSeconds === 'number'
+        ? preset.matchedIncrementSeconds
+        : TIME_CONTROLS.find((t) => t.id === (preset?.timeId ?? '10+0'))?.incrementSeconds ?? 0;
+    const catName = formatOnlineTimeControl(initSec, incSec).category;
+    const catKey: 'bullet' | 'blitz' | 'rapid' =
+      catName === 'Bullet' ? 'bullet' : catName === 'Blitz' ? 'blitz' : 'rapid';
+    const ownRating =
+      (catKey === 'bullet'
+        ? lichessPerfs?.bullet?.rating
+        : catKey === 'blitz'
+          ? lichessPerfs?.blitz?.rating
+          : lichessPerfs?.rapid?.rating) ?? guestPerfs[catKey].rating;
+    const isWsOnline = preset?.mode === 'online-ws';
+    const assignedW = isWsOnline && preset?.color === 'w';
+    const assignedB = isWsOnline && preset?.color === 'b';
+    return {
+      roomId: preset?.wsRoomId ?? '',
+      lichessGameId: preset?.lichessGameId ?? '',
+      opponentConnected: Boolean(isWsOnline && preset?.wsAction === 'join'),
+      opponentStatus: isWsOnline && preset?.wsAction === 'join' ? 'active' : 'joining',
+      opponentGoneSeconds: null,
+      bridgeLagMs: null,
+      whiteName: assignedW ? ownName : isWsOnline ? 'Connecting...' : 'White',
+      blackName: assignedB ? ownName : isWsOnline ? 'Connecting...' : 'Black',
+      whiteRating: assignedW ? ownRating : undefined,
+      blackRating: assignedB ? ownRating : undefined,
+      rated: preset?.rated,
+      matchedClock:
+        typeof preset?.matchedInitialSeconds === 'number'
+          ? {
+              initialSeconds: preset.matchedInitialSeconds,
+              incrementSeconds: preset.matchedIncrementSeconds ?? 0,
+            }
+          : undefined,
+      serverSource: preset?.serverSource,
+      drawOfferBy: null,
+      rematchOfferBy: null,
+      error: null,
+    };
   });
   const [copiedInvite, setCopiedInvite] = useState(false);
   const [wsConnectionState, setWsConnectionState] = useState<
     'connecting' | 'connected' | 'reconnecting'
   >('connecting');
   const [wsLatencyMs, setWsLatencyMs] = useState<number | null>(null);
+  const wsLatencyMsRef = useRef<number | null>(null);
+  wsLatencyMsRef.current = wsLatencyMs;
   const everConnectedOpponentRef = useRef(false);
   const [opponentTyping, setOpponentTyping] = useState(false);
   const typingTimerRef = useRef<number | null>(null);
   const lastTypingSentRef = useRef<number>(0);
+  const pendingWsMovesRef = useRef<Array<{ from: string; to: string; promotion?: PieceSymbol }>>([]);
   const optimisticMoveRef = useRef<{
     ply: number;
     from: string;
     to: string;
     prevFen: string;
+    createdAt: number;
   } | null>(null);
+  const optimisticSyncTimerRef = useRef<number | null>(null);
+  const justJoinedWsRoomRef = useRef(false);
 
   const chessRef = useRef<Chess>(new Chess());
   const [fen, setFen] = useState(() => chessRef.current.fen());
@@ -296,9 +343,22 @@ export function PlayView({
     return { id: tc.id, label: tc.label, category: tc.category };
   }, [isOnlineMode, onlineInfo.matchedClock, tc.category, tc.id, tc.label]);
 
-  const [whiteClock, setWhiteClock] = useState(tc.initialSeconds);
-  const [blackClock, setBlackClock] = useState(tc.initialSeconds);
+  const [whiteClockMs, setWhiteClockMs] = useState(tc.initialSeconds * 1000);
+  const [blackClockMs, setBlackClockMs] = useState(tc.initialSeconds * 1000);
   const [clockRunning, setClockRunning] = useState(false);
+  const clockAnchorRef = useRef<{
+    whiteMs: number;
+    blackMs: number;
+    syncedAtMs: number;
+    turn: Color;
+    running: boolean;
+  }>({
+    whiteMs: tc.initialSeconds * 1000,
+    blackMs: tc.initialSeconds * 1000,
+    syncedAtMs: Date.now(),
+    turn: 'w',
+    running: false,
+  });
 
   const [gameOverState, setGameOverState] = useState<{
     title: string;
@@ -306,6 +366,14 @@ export function PlayView({
     playerWon: boolean | null;
     resultLabel: string;
     modalOpen: boolean;
+    whiteName?: string;
+    blackName?: string;
+    whiteRating?: number;
+    blackRating?: number;
+    whiteRatingDelta?: number | null;
+    blackRatingDelta?: number | null;
+    isRatedMatch?: boolean;
+    pgnSnapshot?: string;
   } | null>(null);
 
   const [rightTab, setRightTab] = useState<'match' | 'moves' | 'tutor' | 'chat'>(
@@ -313,7 +381,7 @@ export function PlayView({
       ? 'tutor'
       : preset?.mode === 'online-ws' || preset?.mode === 'online-lichess'
         ? 'chat'
-        : 'match',
+        : 'moves',
   );
   const [mobileSheet, setMobileSheet] = useState<'none' | 'setup' | 'tutor' | 'chat' | 'options'>('none');
   const rightTabRef = useRef(rightTab);
@@ -325,6 +393,7 @@ export function PlayView({
   const [chatError, setChatError] = useState<string | null>(null);
   const [unreadChat, setUnreadChat] = useState(0);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const mobileStepperScrollRef = useRef<HTMLDivElement | null>(null);
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
 
   useEffect(() => {
@@ -407,6 +476,12 @@ export function PlayView({
   const activeOpponentName = isCoachMode ? activeCoach.name : activeBot.name;
 
   const liveChess = useMemo(() => new Chess(fen), [fen]);
+
+  useEffect(() => {
+    if (mobileStepperScrollRef.current) {
+      mobileStepperScrollRef.current.scrollLeft = mobileStepperScrollRef.current.scrollWidth;
+    }
+  }, [history.length]);
 
   const displayedFen = useMemo(() => {
     if (viewPly === null || viewPly === history.length) return fen;
@@ -507,11 +582,18 @@ export function PlayView({
         subtitleLower.includes('abort') ||
         subtitleLower.includes('left before game started') ||
         (opponentType !== 'local' && moveHistory.length === 0 && resultLabel === '1/2-1/2');
-      const isUnratedOnline = opponentType === 'online-ws' && info.rated === false;
-      const oppRating =
-        isBotOrCoach
-          ? effectiveBotElo
-          : (playerColor === 'w' ? info.blackRating : info.whiteRating) ?? 1200;
+      const isUnratedOnline =
+        opponentType === 'online-ws' &&
+        (info.rated === false ||
+          (info.rated === undefined &&
+            typeof (playerColor === 'w' ? info.blackRating : info.whiteRating) !== 'number'));
+      const isRatedMatch = opponentType !== 'local' && !isUnratedOnline;
+      const rawOppRating = isBotOrCoach
+        ? effectiveBotElo
+        : playerColor === 'w'
+          ? info.blackRating
+          : info.whiteRating;
+      const oppRating = rawOppRating ?? 1200;
       const guestPerfs = loadGuestPerfs();
       const currentPlayerRating =
         (category === 'bullet'
@@ -524,6 +606,19 @@ export function PlayView({
           ? currentPlayerRating
           : calculateUpdatedElo(currentPlayerRating, oppRating, outcome);
       const ratingDelta = nextPlayerRating - currentPlayerRating;
+      const oppOutcome: 'win' | 'loss' | 'draw' =
+        outcome === 'win' ? 'loss' : outcome === 'loss' ? 'win' : 'draw';
+      const oppDelta =
+        isOnlineMode &&
+        typeof rawOppRating === 'number' &&
+        !isAbortedMatch &&
+        !isUnratedOnline
+          ? calculateUpdatedElo(rawOppRating, currentPlayerRating, oppOutcome) - rawOppRating
+          : null;
+      const nextOppRating =
+        typeof rawOppRating === 'number'
+          ? rawOppRating + (oppDelta ?? 0)
+          : undefined;
       const ratingBanner =
         opponentType === 'local' || isAbortedMatch || isUnratedOnline
           ? ''
@@ -532,13 +627,6 @@ export function PlayView({
         ? subtitle
         : `${subtitle}${ratingBanner}`;
 
-      setGameOverState({
-        title,
-        subtitle: enrichedSubtitle,
-        playerWon,
-        resultLabel,
-        modalOpen: true,
-      });
       const safeWhiteName =
         info.whiteName && info.whiteName !== 'Waiting for Friend...' ? info.whiteName : '';
       const safeBlackName =
@@ -559,22 +647,46 @@ export function PlayView({
           : opponentType === 'local'
             ? 'Black'
             : safeBlackName || (playerColor === 'b' ? lichessUsername || 'You' : 'Opponent');
+      const oppNameIsGuest =
+        playerColor === 'w'
+          ? blackNameResolved === 'Guest Opponent' || blackNameResolved === 'Anonymous (Guest)' || blackNameResolved === 'Anonymous'
+          : whiteNameResolved === 'Guest Opponent' || whiteNameResolved === 'Anonymous (Guest)' || whiteNameResolved === 'Anonymous';
+      const resolvedOppRatingFinal =
+        oppNameIsGuest || (isUnratedOnline && typeof rawOppRating !== 'number')
+          ? undefined
+          : nextOppRating;
       const whiteRatingResolved =
         isBotOrCoach
           ? playerColor === 'b'
             ? effectiveBotElo
             : nextPlayerRating
-          : playerColor === 'w'
-            ? nextPlayerRating
-            : info.whiteRating;
+          : opponentType === 'local'
+            ? undefined
+            : playerColor === 'w'
+              ? nextPlayerRating
+              : resolvedOppRatingFinal;
       const blackRatingResolved =
         isBotOrCoach
           ? playerColor === 'w'
             ? effectiveBotElo
             : nextPlayerRating
+          : opponentType === 'local'
+            ? undefined
+            : playerColor === 'b'
+              ? nextPlayerRating
+              : resolvedOppRatingFinal;
+      const whiteRatingDelta =
+        opponentType === 'local' || isAbortedMatch || isUnratedOnline
+          ? null
+          : playerColor === 'w'
+            ? ratingDelta
+            : oppDelta;
+      const blackRatingDelta =
+        opponentType === 'local' || isAbortedMatch || isUnratedOnline
+          ? null
           : playerColor === 'b'
-            ? nextPlayerRating
-            : info.blackRating;
+            ? ratingDelta
+            : oppDelta;
 
       chessRef.current.setHeader('White', whiteNameResolved);
       chessRef.current.setHeader('Black', blackNameResolved);
@@ -585,6 +697,22 @@ export function PlayView({
       if (moveHistory.length > 0) {
         setPgn(enrichedPgn);
       }
+
+      setGameOverState({
+        title,
+        subtitle: enrichedSubtitle,
+        playerWon,
+        resultLabel,
+        modalOpen: true,
+        whiteName: whiteNameResolved,
+        blackName: blackNameResolved,
+        whiteRating: whiteRatingResolved,
+        blackRating: blackRatingResolved,
+        whiteRatingDelta,
+        blackRatingDelta,
+        isRatedMatch,
+        pgnSnapshot: enrichedPgn,
+      });
 
       const gameId =
         info.lichessGameId ||
@@ -607,9 +735,7 @@ export function PlayView({
 
         const record: LichessUserGame = {
           id: info.roomId ? `ws-${info.roomId}-${matchStartedAtRef.current}` : gameId,
-          rated:
-            opponentType === 'online-lichess' ||
-            (opponentType === 'online-ws' && info.rated !== false),
+          rated: isRatedMatch,
           speed: category,
           status,
           winner,
@@ -698,12 +824,15 @@ export function PlayView({
       const moverColor = game.turn();
       const fenBefore = game.fen();
 
-      // Online WebSocket multiplayer: optimistic 0ms local execution + authoritative server sync
+      // Online WebSocket multiplayer: optimistic 0ms local execution + authoritative server sync (queues if WS is connecting/reconnecting)
       if (opponentType === 'online-ws') {
         if (moverColor !== playerColor) return false;
-        if (!onlineInfo.opponentConnected) return false;
         const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+        const canQueueWhileJoining =
+          onlineInfo.opponentConnected ||
+          everConnectedOpponentRef.current ||
+          preset?.wsAction === 'join';
+        if (!canQueueWhileJoining) return false;
         try {
           const moved = game.move({ from, to, promotion: promotion ?? 'q' });
           if (!moved) return false;
@@ -712,7 +841,23 @@ export function PlayView({
             from: moved.from,
             to: moved.to,
             prevFen: fenBefore,
+            createdAt: Date.now(),
           };
+          if (optimisticSyncTimerRef.current) {
+            window.clearTimeout(optimisticSyncTimerRef.current);
+          }
+          optimisticSyncTimerRef.current = window.setTimeout(() => {
+            optimisticSyncTimerRef.current = null;
+            if (!optimisticMoveRef.current) return;
+            const curWs = wsRef.current;
+            if (curWs && curWs.readyState === WebSocket.OPEN) {
+              try {
+                curWs.send(JSON.stringify({ type: 'room:sync' }));
+              } catch {
+                // ignore
+              }
+            }
+          }, 1500);
           setPendingBlunder(null);
           setCloudArrow(null);
           setFen(game.fen());
@@ -731,22 +876,24 @@ export function PlayView({
             check: game.inCheck(),
             castle: moved.flags.includes('k') || moved.flags.includes('q'),
           });
-          try {
-            ws.send(
-              JSON.stringify({
-                type: 'move',
-                from: moved.from,
-                to: moved.to,
-                promotion: moved.promotion ?? 'q',
-              }),
-            );
-          } catch {
-            optimisticMoveRef.current = null;
-            game.undo();
-            setFen(game.fen());
-            setPgn(game.pgn());
-            setHistory(game.history({ verbose: true }));
-            return false;
+          const movePayload = {
+            from: moved.from,
+            to: moved.to,
+            promotion: (moved.promotion ?? 'q') as PieceSymbol,
+          };
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            try {
+              ws.send(
+                JSON.stringify({
+                  type: 'move',
+                  ...movePayload,
+                }),
+              );
+            } catch {
+              pendingWsMovesRef.current.push(movePayload);
+            }
+          } else {
+            pendingWsMovesRef.current.push(movePayload);
           }
           return true;
         } catch {
@@ -902,11 +1049,30 @@ export function PlayView({
         setHintSquares(null);
         setClockRunning(true);
 
-        if (move.color === 'w' && tc.incrementSeconds > 0) {
-          setWhiteClock((s) => s + tc.incrementSeconds);
-        } else if (move.color === 'b' && tc.incrementSeconds > 0) {
-          setBlackClock((s) => s + tc.incrementSeconds);
-        }
+        const nowMs = Date.now();
+        const elapsedSinceAnchor = clockAnchorRef.current.running
+          ? Math.max(0, nowMs - clockAnchorRef.current.syncedAtMs)
+          : 0;
+        const curWhiteMs =
+          clockAnchorRef.current.turn === 'w'
+            ? Math.max(0, clockAnchorRef.current.whiteMs - elapsedSinceAnchor)
+            : clockAnchorRef.current.whiteMs;
+        const curBlackMs =
+          clockAnchorRef.current.turn === 'b'
+            ? Math.max(0, clockAnchorRef.current.blackMs - elapsedSinceAnchor)
+            : clockAnchorRef.current.blackMs;
+        const incMs = tc.incrementSeconds > 0 ? tc.incrementSeconds * 1000 : 0;
+        const nextWMs = move.color === 'w' ? curWhiteMs + incMs : curWhiteMs;
+        const nextBMs = move.color === 'b' ? curBlackMs + incMs : curBlackMs;
+        clockAnchorRef.current = {
+          whiteMs: nextWMs,
+          blackMs: nextBMs,
+          syncedAtMs: nowMs,
+          turn: game.turn(),
+          running: !game.isGameOver(),
+        };
+        setWhiteClockMs(nextWMs);
+        setBlackClockMs(nextBMs);
 
         playMoveSound({
           capture: Boolean(move.captured),
@@ -988,7 +1154,13 @@ export function PlayView({
       if (botTimeoutRef.current) window.clearTimeout(botTimeoutRef.current);
       clearCoachMoveBadge();
       setPremoveQueue([]);
+      pendingWsMovesRef.current = [];
       optimisticMoveRef.current = null;
+      if (optimisticSyncTimerRef.current) {
+        window.clearTimeout(optimisticSyncTimerRef.current);
+        optimisticSyncTimerRef.current = null;
+      }
+      justJoinedWsRoomRef.current = false;
       everConnectedOpponentRef.current = false;
       if (!keepOnlineMode && (opponentType === 'online-ws' || opponentType === 'online-lichess')) {
         setOpponentType('bot');
@@ -1016,8 +1188,16 @@ export function PlayView({
       setGameOverState(null);
       setClockRunning(false);
       setFlipped(false);
-      setWhiteClock(chosenTc.initialSeconds);
-      setBlackClock(chosenTc.initialSeconds);
+      const resetMs = chosenTc.initialSeconds * 1000;
+      setWhiteClockMs(resetMs);
+      setBlackClockMs(resetMs);
+      clockAnchorRef.current = {
+        whiteMs: resetMs,
+        blackMs: resetMs,
+        syncedAtMs: Date.now(),
+        turn: 'w',
+        running: false,
+      };
       setPlayerColor(chosenColor);
       setMobileSheet('none');
     },
@@ -1046,21 +1226,56 @@ export function PlayView({
       setUnreadChat(0);
       setRightTab('chat');
       setWsLatencyMs(null);
+      const chosenInitColor: Color | undefined =
+        preset.color === 'w' ? 'w' : preset.color === 'b' ? 'b' : undefined;
+      const ownName = lichessUsername?.trim() || loadGuestPlayerName();
+      const guestPerfs = loadGuestPerfs();
+      const presetInitSec =
+        typeof preset.matchedInitialSeconds === 'number'
+          ? preset.matchedInitialSeconds
+          : (TIME_CONTROLS.find((t) => t.id === preset.timeId)?.initialSeconds ?? tc.initialSeconds);
+      const presetIncSec =
+        typeof preset.matchedIncrementSeconds === 'number'
+          ? preset.matchedIncrementSeconds
+          : (TIME_CONTROLS.find((t) => t.id === preset.timeId)?.incrementSeconds ?? tc.incrementSeconds);
+      const catName = formatOnlineTimeControl(presetInitSec, presetIncSec).category;
+      const catKey: 'bullet' | 'blitz' | 'rapid' =
+        catName === 'Bullet' ? 'bullet' : catName === 'Blitz' ? 'blitz' : 'rapid';
+      const ownRating =
+        (catKey === 'bullet'
+          ? lichessPerfs?.bullet?.rating
+          : catKey === 'blitz'
+            ? lichessPerfs?.blitz?.rating
+            : lichessPerfs?.rapid?.rating) ?? guestPerfs[catKey].rating;
+      const isJoiningLive = nextMode === 'online-ws' && preset.wsAction === 'join';
       const resetOnline = {
         roomId: preset.wsRoomId ?? '',
         lichessGameId: preset.lichessGameId ?? '',
-        opponentConnected: false,
-        whiteName: 'White',
-        blackName: 'Black',
-        whiteRating: undefined,
-        blackRating: undefined,
+        opponentConnected: isJoiningLive,
+        opponentStatus: (isJoiningLive ? 'active' : 'joining') as OpponentPresenceStatus,
+        opponentGoneSeconds: null,
+        bridgeLagMs: null,
+        whiteName:
+          chosenInitColor === 'w'
+            ? ownName
+            : nextMode === 'online-ws'
+              ? 'Connecting...'
+              : 'White',
+        blackName:
+          chosenInitColor === 'b'
+            ? ownName
+            : nextMode === 'online-ws'
+              ? 'Connecting...'
+              : 'Black',
+        whiteRating: chosenInitColor === 'w' ? ownRating : undefined,
+        blackRating: chosenInitColor === 'b' ? ownRating : undefined,
         whiteAvatarUrl: undefined,
         blackAvatarUrl: undefined,
         whiteFlag: undefined,
         blackFlag: undefined,
         whiteTitle: undefined,
         blackTitle: undefined,
-        rated: undefined,
+        rated: preset.rated !== false,
         matchedClock:
           typeof preset.matchedInitialSeconds === 'number'
             ? {
@@ -1084,7 +1299,7 @@ export function PlayView({
         setRightTab('tutor');
         setCoachGuard(preset.coachGuard ?? false);
       } else {
-        if (rightTab === 'chat') setRightTab('match');
+        setRightTab('moves');
         if (typeof preset.coachGuard === 'boolean') {
           setCoachGuard(preset.coachGuard);
         }
@@ -1227,6 +1442,7 @@ export function PlayView({
 
         const resolvedPlayerName = lichessUsername?.trim() || loadGuestPlayerName();
         if (action === 'join' && currentRoomId) {
+          justJoinedWsRoomRef.current = pendingWsMovesRef.current.length === 0;
           const preferredSide = isReconnect
             ? playerColorRef.current
             : preset?.color === 'w' || preset?.color === 'b'
@@ -1245,6 +1461,16 @@ export function PlayView({
               flag,
             }),
           );
+          if (pendingWsMovesRef.current.length > 0) {
+            const queued = pendingWsMovesRef.current.splice(0, pendingWsMovesRef.current.length);
+            for (const qm of queued) {
+              try {
+                ws.send(JSON.stringify({ type: 'move', ...qm }));
+              } catch {
+                // ignore
+              }
+            }
+          }
         } else {
           ws.send(
             JSON.stringify({
@@ -1258,6 +1484,7 @@ export function PlayView({
               flag,
               initialSeconds: tc.initialSeconds,
               incrementSeconds: tc.incrementSeconds,
+              rated: preset?.rated !== false,
               color: preset?.color === 'b' ? 'b' : preset?.color === 'w' ? 'w' : 'random',
             }),
           );
@@ -1275,7 +1502,12 @@ export function PlayView({
             return;
           }
           if (msg.type === 'move:rejected') {
+            pendingWsMovesRef.current = [];
             optimisticMoveRef.current = null;
+            if (optimisticSyncTimerRef.current) {
+              window.clearTimeout(optimisticSyncTimerRef.current);
+              optimisticSyncTimerRef.current = null;
+            }
             setPremoveQueue([]);
             playErrorSound();
             if (typeof msg.fen === 'string') {
@@ -1314,30 +1546,57 @@ export function PlayView({
             }
 
             const prevLen = chessRef.current.history().length;
-            chessRef.current = rebuilt;
             const nextHistory = rebuilt.history({ verbose: true });
             const latestMove = nextHistory[nextHistory.length - 1];
             const opt = optimisticMoveRef.current;
+            const forceAuthoritativeSync = Boolean(
+              justJoinedWsRoomRef.current &&
+                pendingWsMovesRef.current.length === 0 &&
+                (!opt || Date.now() - opt.createdAt > 1500 || nextHistory.length >= opt.ply),
+            );
+            justJoinedWsRoomRef.current = false;
             const matchedOptimistic = Boolean(
               opt &&
                 nextHistory.length === opt.ply &&
                 msg.lastMove?.from === opt.from &&
                 msg.lastMove?.to === opt.to,
             );
-            if (matchedOptimistic || (opt && nextHistory.length <= opt.ply)) {
-              optimisticMoveRef.current = null;
-            }
-            setFen(rebuilt.fen());
-            setPgn(rebuilt.pgn());
-            setHistory(nextHistory);
-            if (msg.lastMove) {
-              setLastMove(msg.lastMove);
-              if (nextHistory.length > prevLen && !matchedOptimistic) {
-                playMoveSound({
-                  capture: Boolean(msg.lastMove.captured),
-                  check: rebuilt.inCheck(),
-                  castle: Boolean(latestMove && (latestMove.flags.includes('k') || latestMove.flags.includes('q'))),
-                });
+            const isStalePreOptimisticState = Boolean(
+              !forceAuthoritativeSync &&
+                opt &&
+                !msg.winner &&
+                !matchedOptimistic &&
+                nextHistory.length === opt.ply - 1 &&
+                rebuilt.fen() === opt.prevFen &&
+                Date.now() - opt.createdAt <= 1800,
+            );
+            if (!isStalePreOptimisticState) {
+              chessRef.current = rebuilt;
+              if (
+                forceAuthoritativeSync ||
+                matchedOptimistic ||
+                Boolean(msg.winner) ||
+                (opt && nextHistory.length >= opt.ply) ||
+                (opt && Date.now() - opt.createdAt > 1800)
+              ) {
+                optimisticMoveRef.current = null;
+                if (optimisticSyncTimerRef.current) {
+                  window.clearTimeout(optimisticSyncTimerRef.current);
+                  optimisticSyncTimerRef.current = null;
+                }
+              }
+              setFen(rebuilt.fen());
+              setPgn(rebuilt.pgn());
+              setHistory(nextHistory);
+              if (msg.lastMove) {
+                setLastMove(msg.lastMove);
+                if (nextHistory.length > prevLen && !matchedOptimistic) {
+                  playMoveSound({
+                    capture: Boolean(msg.lastMove.captured),
+                    check: rebuilt.inCheck(),
+                    castle: Boolean(latestMove && (latestMove.flags.includes('k') || latestMove.flags.includes('q'))),
+                  });
+                }
               }
             }
             const nextMatchedClock =
@@ -1355,19 +1614,81 @@ export function PlayView({
               );
               if (matchedTc) setTimeControlId(matchedTc.id);
             }
-            setWhiteClock(Math.round((msg.whiteClockMs ?? tc.initialSeconds * 1000) / 1000));
-            setBlackClock(Math.round((msg.blackClockMs ?? tc.initialSeconds * 1000) / 1000));
-            setClockRunning(Boolean(msg.opponentConnected && !msg.winner && nextHistory.length > 0));
+            const rawWhiteClockMs = Math.max(
+              0,
+              typeof msg.whiteClockMs === 'number' ? msg.whiteClockMs : tc.initialSeconds * 1000,
+            );
+            const rawBlackClockMs = Math.max(
+              0,
+              typeof msg.blackClockMs === 'number' ? msg.blackClockMs : tc.initialSeconds * 1000,
+            );
+            const isClockActive = Boolean(
+              msg.opponentConnected && !msg.winner && nextHistory.length > 0,
+            );
+            const activeTurnAfter = rebuilt.turn();
+            const oneWayCompMs =
+              isClockActive && typeof msg.serverTimeMs === 'number'
+                ? Math.min(250, Math.max(0, (wsLatencyMsRef.current ?? 0) / 2))
+                : 0;
+            const syncedWhiteMs =
+              activeTurnAfter === 'w' ? Math.max(0, rawWhiteClockMs - oneWayCompMs) : rawWhiteClockMs;
+            const syncedBlackMs =
+              activeTurnAfter === 'b' ? Math.max(0, rawBlackClockMs - oneWayCompMs) : rawBlackClockMs;
+            clockAnchorRef.current = {
+              whiteMs: syncedWhiteMs,
+              blackMs: syncedBlackMs,
+              syncedAtMs: Date.now(),
+              turn: activeTurnAfter,
+              running: isClockActive,
+            };
+            setWhiteClockMs(syncedWhiteMs);
+            setBlackClockMs(syncedBlackMs);
+            setClockRunning(isClockActive);
+            const guestPerfs = loadGuestPerfs();
+            const stateCat = formatOnlineTimeControl(
+              typeof msg.initialSeconds === 'number' ? msg.initialSeconds : tc.initialSeconds,
+              typeof msg.incrementSeconds === 'number' ? msg.incrementSeconds : tc.incrementSeconds,
+            ).category;
+            const stateCatKey: 'bullet' | 'blitz' | 'rapid' =
+              stateCat === 'Bullet' ? 'bullet' : stateCat === 'Blitz' ? 'blitz' : 'rapid';
+            const fallbackOwnRating =
+              (stateCatKey === 'bullet'
+                ? lichessPerfs?.bullet?.rating
+                : stateCatKey === 'blitz'
+                  ? lichessPerfs?.blitz?.rating
+                  : lichessPerfs?.rapid?.rating) ?? guestPerfs[stateCatKey].rating;
+            const resolvedPresenceStatus: OpponentPresenceStatus =
+              msg.opponentStatus === 'joining' ||
+              msg.opponentStatus === 'active' ||
+              msg.opponentStatus === 'disconnected'
+                ? msg.opponentStatus
+                : msg.opponentConnected
+                  ? 'active'
+                  : everConnectedOpponentRef.current
+                    ? 'disconnected'
+                    : 'joining';
             const nextOnline = {
               ...latestOnlineRef.current,
               roomId: msg.roomId || latestOnlineRef.current.roomId,
               opponentConnected: Boolean(msg.opponentConnected),
-              whiteName: msg.whiteName || 'White',
-              blackName: msg.blackName || 'Black',
+              opponentStatus: resolvedPresenceStatus,
+              opponentGoneSeconds:
+                typeof msg.opponentGoneSeconds === 'number' ? msg.opponentGoneSeconds : null,
+              bridgeLagMs: typeof msg.bridgeLagMs === 'number' ? msg.bridgeLagMs : null,
+              whiteName: msg.whiteName || (msg.opponentConnected ? 'Guest Opponent' : 'Connecting...'),
+              blackName: msg.blackName || (msg.opponentConnected ? 'Guest Opponent' : 'Connecting...'),
               whiteRating:
-                typeof msg.whiteRating === 'number' ? msg.whiteRating : undefined,
+                typeof msg.whiteRating === 'number'
+                  ? msg.whiteRating
+                  : myColor === 'w'
+                    ? fallbackOwnRating
+                    : undefined,
               blackRating:
-                typeof msg.blackRating === 'number' ? msg.blackRating : undefined,
+                typeof msg.blackRating === 'number'
+                  ? msg.blackRating
+                  : myColor === 'b'
+                    ? fallbackOwnRating
+                    : undefined,
               whiteAvatarUrl:
                 typeof msg.whiteAvatarUrl === 'string' ? msg.whiteAvatarUrl : undefined,
               blackAvatarUrl:
@@ -1411,13 +1732,27 @@ export function PlayView({
             }
 
             if (msg.winner && !gameOverStateRef.current) {
-              const won = msg.winner === 'draw' ? null : msg.winner === myColor;
-              const label = msg.winner === 'w' ? '1-0' : msg.winner === 'b' ? '0-1' : '1/2-1/2';
-              const title =
-                msg.winner === 'draw'
-                  ? 'Draw'
-                  : `${msg.winner === 'w' ? 'White' : 'Black'} Wins`;
-              finishGame(title, msg.endReason || 'Online match ended.', won, label);
+              const cleanEndReason = stripPlatformFromText(String(msg.endReason || ''));
+              const isAborted =
+                Boolean(msg.aborted) ||
+                msg.winner === 'aborted' ||
+                /abort|before (?:the )?(?:game started|first move)/i.test(cleanEndReason);
+              if (isAborted) {
+                finishGame(
+                  'Game Aborted',
+                  cleanEndReason || 'Game aborted before starting.',
+                  null,
+                  '*',
+                );
+              } else {
+                const won = msg.winner === 'draw' ? null : msg.winner === myColor;
+                const label = msg.winner === 'w' ? '1-0' : msg.winner === 'b' ? '0-1' : '1/2-1/2';
+                const title =
+                  msg.winner === 'draw'
+                    ? 'Draw'
+                    : `${msg.winner === 'w' ? 'White' : 'Black'} Wins`;
+                finishGame(title, cleanEndReason || 'Online match ended.', won, label);
+              }
             }
           } else if (msg.type === 'chat:typing') {
             setOpponentTyping(true);
@@ -1485,6 +1820,10 @@ export function PlayView({
       document.removeEventListener('visibilitychange', handleWakeOrOnline);
       if (pingTimer) window.clearInterval(pingTimer);
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      if (optimisticSyncTimerRef.current) {
+        window.clearTimeout(optimisticSyncTimerRef.current);
+        optimisticSyncTimerRef.current = null;
+      }
       wsRef.current?.close();
       wsRef.current = null;
     };
@@ -1510,16 +1849,28 @@ export function PlayView({
           : winner === 'black'
             ? myColor === 'b'
             : null;
-      const resultLabel = winner === 'white' ? '1-0' : winner === 'black' ? '0-1' : '1/2-1/2';
+      const isAborted = status === 'aborted' || status === 'noStart';
+      const resultLabel = isAborted
+        ? '*'
+        : winner === 'white'
+          ? '1-0'
+          : winner === 'black'
+            ? '0-1'
+            : '1/2-1/2';
       const title =
         winner === 'white'
           ? 'White Wins'
           : winner === 'black'
             ? 'Black Wins'
-            : status === 'aborted'
+            : isAborted
               ? 'Game Aborted'
               : 'Draw';
-      finishGame(title, `Online game ended (${status}).`, won, resultLabel);
+      finishGame(
+        title,
+        isAborted ? 'Game aborted before starting.' : `Online game ended (${status}).`,
+        won,
+        resultLabel,
+      );
     };
 
     const run = async () => {
@@ -1578,45 +1929,57 @@ export function PlayView({
                   typeof ev.clock?.increment === 'number'
                     ? ev.clock.increment
                     : (latestOnlineRef.current.matchedClock?.incrementSeconds ?? 0);
-                const nextOnline = {
-                  ...latestOnlineRef.current,
-                  opponentConnected: true,
-                  whiteName: wName,
-                  blackName: bName,
-                  whiteRating: ev.white?.rating,
-                  blackRating: ev.black?.rating,
-                  rated: typeof ev.rated === 'boolean' ? ev.rated : latestOnlineRef.current.rated,
-                  serverSource: 'Lichess' as ChessServerName,
-                  matchedClock:
-                    typeof clockInit === 'number'
-                      ? { initialSeconds: clockInit, incrementSeconds: clockInc }
-                      : latestOnlineRef.current.matchedClock,
-                  error: null,
-                };
-                latestOnlineRef.current = nextOnline;
-                setOnlineInfo(nextOnline);
+                  const nextOnline = {
+                    ...latestOnlineRef.current,
+                    opponentConnected: true,
+                    opponentStatus: 'active' as OpponentPresenceStatus,
+                    opponentGoneSeconds: null,
+                    whiteName: wName,
+                    blackName: bName,
+                    whiteRating: ev.white?.rating,
+                    blackRating: ev.black?.rating,
+                    rated: typeof ev.rated === 'boolean' ? ev.rated : latestOnlineRef.current.rated,
+                    serverSource: 'Lichess' as ChessServerName,
+                    matchedClock:
+                      typeof clockInit === 'number'
+                        ? { initialSeconds: clockInit, incrementSeconds: clockInc }
+                        : latestOnlineRef.current.matchedClock,
+                    error: null,
+                  };
+                  latestOnlineRef.current = nextOnline;
+                  setOnlineInfo(nextOnline);
 
-                const st = ev.state;
-                if (st) {
-                  const parsed = parseUciMovesToGameState(st.moves || '', initialFen);
-                  const rebuilt = new Chess(initialFen === 'startpos' ? undefined : initialFen);
-                  if (parsed.pgn) {
-                    try {
-                      rebuilt.loadPgn(parsed.pgn);
-                    } catch {
-                      rebuilt.load(parsed.fen);
+                  const st = ev.state;
+                  if (st) {
+                    const parsed = parseUciMovesToGameState(st.moves || '', initialFen);
+                    const rebuilt = new Chess(initialFen === 'startpos' ? undefined : initialFen);
+                    if (parsed.pgn) {
+                      try {
+                        rebuilt.loadPgn(parsed.pgn);
+                      } catch {
+                        rebuilt.load(parsed.fen);
+                      }
                     }
+                    chessRef.current = rebuilt;
+                    setFen(rebuilt.fen());
+                    setPgn(rebuilt.pgn());
+                    setHistory(rebuilt.history({ verbose: true }));
+                    setLastMove(parsed.lastMove);
+                    const wMs = typeof st.wtime === 'number' ? Math.max(0, st.wtime) : clockAnchorRef.current.whiteMs;
+                    const bMs = typeof st.btime === 'number' ? Math.max(0, st.btime) : clockAnchorRef.current.blackMs;
+                    const isRun = st.status === 'started' && parsed.plyCount > 0;
+                    clockAnchorRef.current = {
+                      whiteMs: wMs,
+                      blackMs: bMs,
+                      syncedAtMs: Date.now(),
+                      turn: rebuilt.turn(),
+                      running: isRun,
+                    };
+                    setWhiteClockMs(wMs);
+                    setBlackClockMs(bMs);
+                    setClockRunning(isRun);
+                    handleStatusEnd(st.status, st.winner);
                   }
-                  chessRef.current = rebuilt;
-                  setFen(rebuilt.fen());
-                  setPgn(rebuilt.pgn());
-                  setHistory(rebuilt.history({ verbose: true }));
-                  setLastMove(parsed.lastMove);
-                  if (typeof st.wtime === 'number') setWhiteClock(Math.round(st.wtime / 1000));
-                  if (typeof st.btime === 'number') setBlackClock(Math.round(st.btime / 1000));
-                  setClockRunning(st.status === 'started' && parsed.plyCount > 0);
-                  handleStatusEnd(st.status, st.winner);
-                }
               } else if (ev.type === 'gameState') {
                 const parsed = parseUciMovesToGameState(ev.moves || '', initialFen);
                 const prevLen = chessRef.current.history().length;
@@ -1640,11 +2003,23 @@ export function PlayView({
                     castle: false,
                   });
                 }
-                if (typeof ev.wtime === 'number') setWhiteClock(Math.round(ev.wtime / 1000));
-                if (typeof ev.btime === 'number') setBlackClock(Math.round(ev.btime / 1000));
-                setClockRunning(ev.status === 'started' && parsed.plyCount > 0);
+                const wMs = typeof ev.wtime === 'number' ? Math.max(0, ev.wtime) : clockAnchorRef.current.whiteMs;
+                const bMs = typeof ev.btime === 'number' ? Math.max(0, ev.btime) : clockAnchorRef.current.blackMs;
+                const isRun = ev.status === 'started' && parsed.plyCount > 0;
+                clockAnchorRef.current = {
+                  whiteMs: wMs,
+                  blackMs: bMs,
+                  syncedAtMs: Date.now(),
+                  turn: rebuilt.turn(),
+                  running: isRun,
+                };
+                setWhiteClockMs(wMs);
+                setBlackClockMs(bMs);
+                setClockRunning(isRun);
                 setOnlineInfo((prev) => ({
                   ...prev,
+                  opponentConnected: true,
+                  opponentStatus: 'active',
                   drawOfferBy: ev.wdraw ? 'w' : ev.bdraw ? 'b' : null,
                 }));
                 handleStatusEnd(ev.status, ev.winner);
@@ -1824,34 +2199,36 @@ export function PlayView({
     };
   }, [activeCoach.id, applyMoveOnBoard, botId, effectiveBotElo, fen, gameOverState, isBotOrCoach, isCoachMode, liveChess, playerColor]);
 
-  // Countdown clock (local clock for bot/coach/local; smooth visual ticker synced by server for online)
+  // Smooth 100ms server-anchored clock interpolation with tenths display under 20s
   useEffect(() => {
     if (!clockRunning || gameOverState) return;
+    clockAnchorRef.current = {
+      ...clockAnchorRef.current,
+      turn: liveChess.turn(),
+      running: true,
+    };
     const interval = window.setInterval(() => {
-      if (liveChess.turn() === 'w') {
-        setWhiteClock((prev) => {
-          if (prev <= 1) {
-            if (!isOnlineMode) {
-              const playerWon = isBotOrCoach ? playerColor === 'b' : null;
-              finishGame('Black Wins on Time', 'White clock reached 0:00', playerWon, '0-1');
-            }
-            return 0;
-          }
-          return prev - 1;
-        });
-      } else {
-        setBlackClock((prev) => {
-          if (prev <= 1) {
-            if (!isOnlineMode) {
-              const playerWon = isBotOrCoach ? playerColor === 'w' : null;
-              finishGame('White Wins on Time', 'Black clock reached 0:00', playerWon, '1-0');
-            }
-            return 0;
-          }
-          return prev - 1;
-        });
+      const anchor = clockAnchorRef.current;
+      const computed = computeLiveInterpolatedClockMs({
+        baseWhiteClockMs: anchor.whiteMs,
+        baseBlackClockMs: anchor.blackMs,
+        syncedAtMs: anchor.syncedAtMs,
+        nowMs: Date.now(),
+        turn: liveChess.turn(),
+        running: anchor.running,
+      });
+      setWhiteClockMs(computed.whiteMs);
+      setBlackClockMs(computed.blackMs);
+      if (!isOnlineMode) {
+        if (liveChess.turn() === 'w' && computed.whiteMs <= 0) {
+          const playerWon = isBotOrCoach ? playerColor === 'b' : null;
+          finishGame('Black Wins on Time', 'White clock reached 0:00', playerWon, '0-1');
+        } else if (liveChess.turn() === 'b' && computed.blackMs <= 0) {
+          const playerWon = isBotOrCoach ? playerColor === 'w' : null;
+          finishGame('White Wins on Time', 'Black clock reached 0:00', playerWon, '1-0');
+        }
       }
-    }, 1000);
+    }, 100);
 
     return () => window.clearInterval(interval);
   }, [clockRunning, finishGame, gameOverState, isBotOrCoach, isOnlineMode, liveChess, playerColor]);
@@ -2009,6 +2386,13 @@ export function PlayView({
     wsRef.current.send(JSON.stringify({ type: `rematch:${action}` }));
   };
 
+  const handleClaimAbandonment = () => {
+    if (gameOverState || opponentType !== 'online-ws') return;
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'claim_abandonment' }));
+    }
+  };
+
   const emitTypingIndicator = () => {
     if (opponentType !== 'online-ws' || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       return;
@@ -2117,33 +2501,44 @@ export function PlayView({
 
   // Live 1-line Coach OpenChess situational prompt (fair-play hidden during online rated/live games)
   const coachStatusLine = useMemo(() => {
-    if (gameOverState) return `${gameOverState.title}. Tap Review!`;
+    if (gameOverState) {
+      return gameOverState.resultLabel === '*'
+        ? `${gameOverState.title}.`
+        : `${gameOverState.title}. Tap Review!`;
+    }
     if (opponentType === 'online-ws') {
       if (onlineInfo.error) return onlineInfo.error;
       if (wsConnectionState === 'reconnecting') return 'Reconnecting to live match server...';
-      if (!onlineInfo.opponentConnected) {
-        return everConnectedOpponentRef.current || history.length > 0
-          ? 'Opponent disconnected — waiting for reconnect...'
-          : 'Share room code or invite link above to start.';
+      if (onlineInfo.opponentStatus === 'disconnected' || !onlineInfo.opponentConnected) {
+        if (onlineInfo.opponentStatus === 'disconnected' || everConnectedOpponentRef.current || history.length > 0) {
+          return typeof onlineInfo.opponentGoneSeconds === 'number' && onlineInfo.opponentGoneSeconds > 0
+            ? `Opponent offline · Reconnecting (${onlineInfo.opponentGoneSeconds}s)`
+            : 'Opponent offline — you can claim win or wait for reconnect.';
+        }
+        if (wsConnectionState === 'connecting' || preset?.wsAction === 'join' || onlineInfo.opponentStatus === 'joining') {
+          return onlineInfo.roomId && preset?.wsAction === 'create'
+            ? 'Share room code or invite link above to start.'
+            : `${effectiveTc.category} (${effectiveTc.label}) · Syncing opponent...`;
+        }
+        return 'Share room code or invite link above to start.';
       }
       if (onlineInfo.drawOfferBy && onlineInfo.drawOfferBy !== playerColor) {
         return 'Opponent offered a draw.';
       }
-      const sourcePrefix = onlineInfo.serverSource ? `${onlineInfo.serverSource} · ` : '';
       return liveChess.turn() === playerColor
-        ? `${sourcePrefix}${effectiveTc.category} (${effectiveTc.label}) · Your move`
-        : `${sourcePrefix}${effectiveTc.category} (${effectiveTc.label}) · Opponent's turn`;
+        ? `${effectiveTc.category} (${effectiveTc.label}) · Your move`
+        : `${effectiveTc.category} (${effectiveTc.label}) · Opponent thinking...`;
     }
     if (opponentType === 'online-lichess') {
       if (onlineInfo.error) return onlineInfo.error;
       return liveChess.turn() === playerColor
-        ? `Lichess · ${effectiveTc.category} (${effectiveTc.label}) · Your move`
-        : `Lichess · ${effectiveTc.category} (${effectiveTc.label}) · Opponent thinking...`;
+        ? `${effectiveTc.category} (${effectiveTc.label}) · Your move`
+        : `${effectiveTc.category} (${effectiveTc.label}) · Opponent thinking...`;
     }
     if (pendingBlunder) return `Coach paused ${pendingBlunder.san} — review this move.`;
     if (liveChess.inCheck()) return 'King in check! Escape, block, or capture.';
-    if (hintLoading) return 'Stockfish 19 NNUE finding strongest move...';
-    if (hintSan && hintSquares) return `Stockfish 19 NNUE Hint: Try ${hintSan}`;
+    if (hintLoading) return 'Calculating strongest move...';
+    if (hintSan && hintSquares) return `Engine Hint: Try ${hintSan}`;
     if (history.length === 0) {
       return isCoachMode
         ? 'Play your opening move — Coach OpenChess will review every turn live.'
@@ -2168,10 +2563,13 @@ export function PlayView({
     onlineInfo.drawOfferBy,
     onlineInfo.error,
     onlineInfo.opponentConnected,
-    onlineInfo.serverSource,
+    onlineInfo.opponentGoneSeconds,
+    onlineInfo.opponentStatus,
+    onlineInfo.roomId,
     opponentType,
     pendingBlunder,
     playerColor,
+    preset?.wsAction,
     wsConnectionState,
   ]);
 
@@ -2180,8 +2578,9 @@ export function PlayView({
 
   const renderPlayerStrip = (side: Color, position: 'top' | 'bottom') => {
     const isBotSide = isBotOrCoach && side !== playerColor;
+    const isSelfSide = side === playerColor;
     const isTurn = !gameOverState && liveChess.turn() === side;
-    const clockSeconds = side === 'w' ? whiteClock : blackClock;
+    const sideMs = side === 'w' ? whiteClockMs : blackClockMs;
     const capturedPieces =
       side === 'w' ? material.whiteCaptured : material.blackCaptured;
     const adv =
@@ -2201,38 +2600,53 @@ export function PlayView({
       (side === 'w' ? onlineInfo.whiteAvatarUrl : onlineInfo.blackAvatarUrl) ||
       (side === playerColor ? loadUserAvatar(lichessUsername) : undefined);
 
-    const onlineLabel =
-      typeof sideRating === 'number'
-        ? `${sideName} (${sideRating})`
-        : sideName !== 'White' &&
-            sideName !== 'Black' &&
-            sideName !== 'Waiting for Friend...' &&
-            sideName !== 'Anonymous (Guest)' &&
-            onlineInfo.opponentConnected
-          ? `${sideName} (Unrated)`
-          : sideName;
+    const formattedPlayer = formatOnlinePlayerDisplay({
+      name: sideName,
+      rating: sideRating,
+      connected: isSelfSide || onlineInfo.opponentConnected,
+      isSelf: isSelfSide,
+    });
+    const onlineLabel = formattedPlayer.ratingBadge
+      ? `${formattedPlayer.displayName} ${formattedPlayer.ratingBadge}`
+      : formattedPlayer.displayName;
     const isClickableOnlinePlayer =
       isOnlineMode &&
       Boolean(onOpenPlayerProfile) &&
-      /^[a-zA-Z0-9_-]{2,30}$/.test(sideName) &&
-      sideName !== 'White' &&
-      sideName !== 'Black' &&
-      sideName !== 'Anonymous';
+      !isPlaceholderPlayerUsername(sideName) &&
+      /^[a-zA-Z0-9_-]{2,30}$/.test(sideName);
+
+    const presenceMeta =
+      isOnlineMode && !isSelfSide && !gameOverState
+        ? formatOpponentPresenceText({
+            status: onlineInfo.opponentStatus,
+            goneSeconds: onlineInfo.opponentGoneSeconds,
+            isOpponentTurn: isTurn && onlineInfo.opponentConnected,
+            moveCount: history.length,
+          })
+        : null;
+    const signalMeta = isOnlineMode
+      ? resolveOnlineSignalQuality(
+          isSelfSide ? wsLatencyMs : (onlineInfo.bridgeLagMs ?? wsLatencyMs),
+          isSelfSide ? wsConnectionState === 'connected' : onlineInfo.opponentConnected,
+        )
+      : null;
+    const canClaimOfflineAbandonment =
+      opponentType === 'online-ws' &&
+      !isSelfSide &&
+      !gameOverState &&
+      onlineInfo.opponentStatus === 'disconnected';
 
     const playerIdentityContent = (
       <>
         {isBotSide ? (
-          <div
-            className="w-8 h-8 rounded-md bg-[#35322D] border border-white/10 overflow-hidden flex items-center justify-center text-[11px] font-bold text-[#F2F0EC] shrink-0"
-            style={{ borderColor: isCoachMode ? '#81B64C66' : `${activeBot.accent}66` }}
-          >
+          <div className="w-[38px] h-[38px] rounded-[3px] bg-[#262421] overflow-hidden flex items-center justify-center text-[11px] font-bold text-[#F2F0EC] shrink-0">
             <BotAvatar id={isCoachMode ? activeCoach.id : activeBot.id} />
           </div>
         ) : (
           <PlayerAvatar
             username={
               isOnlineMode
-                ? sideName
+                ? formattedPlayer.displayName
                 : opponentType === 'local'
                   ? side === 'w'
                     ? 'White'
@@ -2241,50 +2655,103 @@ export function PlayView({
             }
             isCurrentUser={
               isOnlineMode
-                ? side === playerColor
-                : opponentType !== 'local' && side === playerColor
+                ? isSelfSide
+                : opponentType !== 'local' && isSelfSide
             }
             avatarUrl={
               isOnlineMode
                 ? sideAvatarUrl
-                : opponentType !== 'local' && side === playerColor
+                : opponentType !== 'local' && isSelfSide
                   ? loadUserAvatar(lichessUsername)
                   : undefined
             }
-            size={32}
-            rounded="rounded-md"
+            size={38}
+            rounded="rounded-[3px]"
           />
         )}
         <div className="min-w-0">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
             {isOnlineMode && sideTitle && (
               <span className="px-1 py-0.5 rounded bg-[#B8860B] text-[9px] font-extrabold text-white shrink-0">
                 {sideTitle}
               </span>
             )}
-            <span className="text-xs sm:text-sm font-semibold text-[#F2F0EC] truncate">
+            <span className="text-xs sm:text-sm font-semibold text-[#F2F0EC] truncate max-w-[130px] sm:max-w-[200px]">
               {isBotSide
-                ? `${activeOpponentName} (${effectiveBotElo})`
+                ? activeOpponentName
                 : isOnlineMode
-                  ? onlineLabel
+                  ? formattedPlayer.displayName
                   : opponentType === 'local'
                     ? side === 'w'
                       ? 'White'
                       : 'Black'
                     : 'You'}
             </span>
+            {(isBotSide || (isOnlineMode && formattedPlayer.ratingBadge)) && (
+              <span
+                data-testid="player-rating-badge"
+                className="text-xs sm:text-sm font-mono font-semibold text-[#B8B4AC] shrink-0 tabular-nums"
+              >
+                {isBotSide ? `(${effectiveBotElo})` : formattedPlayer.ratingBadge}
+              </span>
+            )}
             {isOnlineMode && sideFlag && (
               <span className="text-xs leading-none shrink-0" aria-hidden="true">
                 {sideFlag}
               </span>
             )}
-            {isTurn && (
-              <span className="text-[11px] font-medium text-[#81B64C] whitespace-nowrap">
-                · Turn
+            {presenceMeta ? (
+              <span
+                data-testid="opponent-presence-badge"
+                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
+                  presenceMeta.tone === 'bad'
+                    ? 'bg-[#5C2320] text-[#F5B8B0]'
+                    : presenceMeta.tone === 'warn'
+                      ? 'bg-[#3D3118] text-[#F7C045]'
+                      : 'bg-[#2C3622] text-[#AEE076]'
+                }`}
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    presenceMeta.tone === 'bad'
+                      ? 'bg-[#E06C5A] animate-pulse'
+                      : presenceMeta.tone === 'warn'
+                        ? 'bg-[#F7C045] animate-pulse'
+                        : isTurn
+                          ? 'bg-[#81B64C] animate-pulse'
+                          : 'bg-[#81B64C]'
+                  }`}
+                />
+                <span>{presenceMeta.label}</span>
+              </span>
+            ) : (
+              isTurn && (
+                <span className="text-[11px] font-medium text-[#81B64C] whitespace-nowrap">
+                  · Turn
+                </span>
+              )
+            )}
+            {signalMeta && (
+              <span
+                title={`Connection: ${signalMeta.label} (${signalMeta.lagText})`}
+                aria-label={`Connection ${signalMeta.label}`}
+                className="inline-flex items-end gap-[1.5px] h-3 shrink-0 ml-0.5"
+              >
+                {[1, 2, 3, 4].map((barIdx) => (
+                  <span
+                    key={barIdx}
+                    style={{
+                      height: `${barIdx * 2.5 + 2}px`,
+                      backgroundColor:
+                        barIdx <= signalMeta.bars ? signalMeta.color : 'rgba(255,255,255,0.16)',
+                    }}
+                    className="w-[2.5px] rounded-[1px]"
+                  />
+                ))}
               </span>
             )}
           </div>
-          <div className="flex items-center gap-0.5 h-3.5">
+          <div className="flex items-center gap-0.5 min-h-[14px]">
             {capturedPieces.slice(0, 10).map((piece, idx) => (
               <div key={`${position}-${piece}-${idx}`} className="w-3 h-3">
                 <ChessPiece
@@ -2304,7 +2771,11 @@ export function PlayView({
     );
 
     return (
-      <div className="flex items-center justify-between gap-2 py-1.5 px-1">
+      <div
+        data-testid={`player-strip-${position}`}
+        data-side={side}
+        className="flex items-center justify-between gap-2 py-1 px-1"
+      >
         {isClickableOnlinePlayer ? (
           <button
             type="button"
@@ -2319,26 +2790,41 @@ export function PlayView({
           </div>
         )}
 
-        <div
-          data-testid={`clock-${side}`}
-          className={`px-2.5 py-1 rounded-md font-mono text-sm sm:text-base font-extrabold tabular-nums shrink-0 border flex items-center gap-1.5 transition-colors ${
-            isTurn
-              ? clockSeconds <= 10
-                ? 'bg-[#CA3431] text-white border-[#FF7D6B] shadow-sm'
-                : 'bg-white text-[#21201D] border-white shadow-sm'
-              : 'bg-[#262421] text-[#8E8980] border-white/10'
-          }`}
-        >
-          <Clock
-            className={`w-3.5 h-3.5 ${
+        <div className="flex items-center gap-1.5 shrink-0">
+          {canClaimOfflineAbandonment && (
+            <button
+              type="button"
+              onClick={handleClaimAbandonment}
+              className="px-2.5 py-1 rounded-md bg-[#81B64C] hover:bg-[#8EC556] text-[#191815] text-xs font-extrabold cursor-pointer whitespace-nowrap shadow-sm"
+            >
+              {history.length >= 2 ? 'Claim Win' : 'Abort Game'}
+            </button>
+          )}
+          <div
+            data-testid={`clock-${side}`}
+            className={`min-w-[106px] sm:min-w-[122px] h-[36px] sm:h-[40px] px-3 rounded-[4px] font-mono text-[18px] sm:text-[21px] font-bold tabular-nums shrink-0 flex items-center justify-between gap-2 transition-colors ${
               isTurn
-                ? clockSeconds <= 10
-                  ? 'text-white'
-                  : 'text-[#21201D]'
-                : 'text-[#6D6961]'
+                ? sideMs <= 20_000
+                  ? 'bg-[#B33430] text-white'
+                  : 'bg-[#FFFFFF] text-[#262421]'
+                : side === 'w'
+                  ? 'bg-[#9E9D9B] text-[#262421]'
+                  : 'bg-[#262421] text-[#8B8985]'
             }`}
-          />
-          <span>{formatClock(clockSeconds)}</span>
+          >
+            <Clock
+              className={`w-4 h-4 shrink-0 ${
+                isTurn
+                  ? sideMs <= 20_000
+                    ? 'text-white'
+                    : 'text-[#262421]'
+                  : side === 'w'
+                    ? 'text-[#3C3A36]'
+                    : 'text-[#6D6961]'
+              }`}
+            />
+            <span>{formatHighPrecisionClock(sideMs)}</span>
+          </div>
         </div>
       </div>
     );
@@ -2729,8 +3215,8 @@ export function PlayView({
         >
           {onlineInfo.opponentConnected
             ? wsLatencyMs !== null
-              ? `${onlineInfo.serverSource ?? 'Live'} · ${wsLatencyMs}ms`
-              : `${onlineInfo.serverSource ?? 'Live'}`
+              ? `Live · ${wsLatencyMs}ms`
+              : 'Live'
             : 'Room Open'}
         </span>
       </div>
@@ -2845,7 +3331,7 @@ export function PlayView({
             {onlineInfo.whiteName} vs {onlineInfo.blackName}
           </div>
           <div className="text-[11px] text-[#9E998F] mt-0.5 tabular-nums">
-            {onlineInfo.serverSource ?? (opponentType === 'online-lichess' ? 'Lichess' : 'OpenChess')} · {effectiveTc.label} ({effectiveTc.category})
+            Live Match · {effectiveTc.label} ({effectiveTc.category})
             {onlineInfo.roomId ? ` · Room ${onlineInfo.roomId}` : ''}
             {wsLatencyMs !== null ? ` · ${wsLatencyMs} ms` : ''}
           </div>
@@ -2953,7 +3439,7 @@ export function PlayView({
     <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_370px] xl:grid-cols-[minmax(0,1fr)_410px] gap-4 lg:gap-5 items-start">
       {/* Left/Center Arena */}
       <div className="flex justify-center">
-        <div className="w-full max-w-[min(560px,100vw)] lg:max-w-[min(560px,max(360px,calc(100dvh-195px)))] min-h-[calc(100dvh-6.25rem)] lg:min-h-0 flex flex-col justify-between pb-24 lg:pb-0">
+        <div className="w-full max-w-[min(560px,100vw)] lg:max-w-[min(calc(100dvh-112px),750px)] lg:min-h-0 flex flex-col lg:justify-between pb-[118px] lg:pb-0">
           <div>
             {/* Chess.com Mobile Play Top Header (← · OpenChess · Options/Gear) */}
             <div className="lg:hidden flex items-center justify-between h-10 px-0.5 mb-1">
@@ -2990,38 +3476,35 @@ export function PlayView({
               </button>
             </div>
 
-            {/* Live WebSocket Friend Room Share / Reconnect Banner */}
-            {opponentType === 'online-ws' && !onlineInfo.opponentConnected && !gameOverState && onlineInfo.roomId && (
+            {/* Live WebSocket Friend Room Invite Banner (pre-start only) */}
+            {opponentType === 'online-ws' &&
+              !onlineInfo.opponentConnected &&
+              !gameOverState &&
+              onlineInfo.roomId &&
+              !everConnectedOpponentRef.current &&
+              history.length === 0 &&
+              wsConnectionState !== 'reconnecting' &&
+              !(wsConnectionState === 'connecting' && preset?.wsAction === 'join') && (
               <div className="mb-1.5 px-3 py-2 rounded-xl bg-[#262421] border border-[#81B64C]/50 flex items-center justify-between gap-2 text-xs">
                 <div className="flex items-center gap-2 min-w-0">
-                  <Wifi className={`w-4 h-4 shrink-0 ${wsConnectionState === 'reconnecting' ? 'text-[#E59A28] animate-pulse' : 'text-[#81B64C]'}`} />
+                  <Wifi className="w-4 h-4 shrink-0 text-[#81B64C]" />
                   <span className="text-[#DEDAD2] truncate">
-                    {wsConnectionState === 'reconnecting' ? (
-                      'Reconnecting to live match server...'
-                    ) : everConnectedOpponentRef.current || history.length > 0 ? (
-                      'Opponent disconnected — waiting for reconnect...'
-                    ) : (
-                      <>
-                        Room <strong className="font-mono text-white tracking-wider">{onlineInfo.roomId}</strong> · Waiting for opponent
-                      </>
-                    )}
+                    Room <strong className="font-mono text-white tracking-wider">{onlineInfo.roomId}</strong> · Waiting for opponent
                   </span>
                 </div>
-                {!everConnectedOpponentRef.current && history.length === 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const url = `${window.location.origin}/?room=${onlineInfo.roomId}`;
-                      navigator.clipboard?.writeText(url).catch(() => {});
-                      setCopiedInvite(true);
-                      window.setTimeout(() => setCopiedInvite(false), 1800);
-                    }}
-                    className="px-2.5 py-1 rounded-lg bg-[#81B64C] text-[#191815] font-extrabold text-[11px] flex items-center gap-1 shrink-0 cursor-pointer"
-                  >
-                    {copiedInvite ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                    <span>{copiedInvite ? 'Copied Link' : 'Copy Invite'}</span>
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const url = `${window.location.origin}/?room=${onlineInfo.roomId}`;
+                    navigator.clipboard?.writeText(url).catch(() => {});
+                    setCopiedInvite(true);
+                    window.setTimeout(() => setCopiedInvite(false), 1800);
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-[#81B64C] text-[#191815] font-extrabold text-[11px] flex items-center gap-1 shrink-0 cursor-pointer"
+                >
+                  {copiedInvite ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedInvite ? 'Copied Link' : 'Copy Invite'}</span>
+                </button>
               </div>
             )}
 
@@ -3240,43 +3723,48 @@ export function PlayView({
                   )}
                 </div>
               </div>
-            ) : (
-              <div className="flex items-center gap-2 mb-1 px-0.5 min-h-[42px]">
-                <span className="w-7 h-7 rounded-lg bg-[#81B64C] border-b-2 border-[#457524] text-white font-extrabold text-[10px] flex items-center justify-center shrink-0 shadow-sm">
-                  {isOnlineMode ? 'LIVE' : 'GM'}
-                </span>
-                <div className="relative flex-1 min-w-0 flex items-center justify-between gap-2 px-3 py-1.5 rounded-xl bg-[#262421] border border-white/10 shadow-sm">
-                  <span
+            ) : opponentType === 'bot' ? (
+              <div className="lg:hidden flex items-center gap-2.5 px-1.5 py-2 mb-1">
+                <div className="w-[54px] h-[54px] rounded-[6px] overflow-hidden bg-[#262421] shrink-0">
+                  <BotAvatar id={activeBot.id} />
+                </div>
+                <div className="relative flex-1 min-w-0 cc-speech-bubble px-3.5 py-2.5 min-h-[52px] flex items-center">
+                  <svg
+                    viewBox="0 0 10 14"
+                    className="w-2.5 h-3.5 absolute -left-2 top-1/2 -translate-y-1/2 text-white fill-current"
                     aria-hidden="true"
-                    className="absolute -left-1.5 top-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 bg-[#262421] border-l border-b border-white/10"
-                  />
-                  <p className="text-xs font-semibold text-white leading-snug truncate relative z-10">
-                    {coachStatusLine}
+                  >
+                    <path d="M10 0 L0 7 L10 14 Z" />
+                  </svg>
+                  <p className="text-[13.5px] font-semibold text-[#262421] leading-snug">
+                    {history.length === 0
+                      ? `Hi, I'm ${activeBot.name}! Let's play!`
+                      : lastMove?.san?.startsWith('O-O')
+                        ? 'Making your king safer, smart.'
+                        : lastMove?.san?.includes('+')
+                          ? 'Whoa, nice check! Let me find a way out.'
+                          : lastMove?.captured
+                            ? "Interesting exchange—I'll have to stay sharp!"
+                            : history.length === 4
+                              ? "Don't forget, you can use hints and takebacks during our game. Good luck!"
+                              : liveChess.turn() !== playerColor
+                                ? 'Hmm, let me think about this position...'
+                                : [
+                                    'Nice move! Let me see how to respond.',
+                                    'Good development! Your turn.',
+                                    'Interesting idea—keep up the pressure!',
+                                    'Steady play! Watch the center squares.',
+                                  ][history.length % 4]}
                   </p>
-                  <div className="flex items-center gap-1.5 shrink-0 relative z-10">
-                    {opponentType === 'bot' && (
-                      <button
-                        type="button"
-                        onClick={() => setCoachGuard((g) => !g)}
-                        aria-pressed={coachGuard}
-                        className={`text-[11px] font-bold px-2.5 py-0.5 rounded-md border whitespace-nowrap cursor-pointer ${
-                          coachGuard
-                            ? 'bg-[#81B64C]/20 border-[#81B64C]/60 text-[#AEE076]'
-                            : 'bg-[#1A1917] border-white/10 text-[#9E998F]'
-                        }`}
-                        title="Instant warning before hanging pieces or mate"
-                      >
-                        Guard {coachGuard ? 'On' : 'Off'}
-                      </button>
-                    )}
-                  </div>
                 </div>
               </div>
-            )}
+            ) : null}
           </div>
 
-          <div className="my-auto py-1">
-            {renderPlayerStrip(topColor, 'top')}
+          <div className="lg:my-auto py-0.5 lg:py-1">
+            <div className={opponentType === 'bot' ? 'hidden lg:block' : ''}>
+              {renderPlayerStrip(topColor, 'top')}
+            </div>
 
             {/* Edge-to-Edge Full-Width Chessboard on Mobile (Image 2 Reference) */}
             <div className="-mx-2.5 sm:mx-0 flex items-stretch gap-0 sm:gap-2.5">
@@ -3289,7 +3777,13 @@ export function PlayView({
                 <ChessBoard
                   fen={displayedFen}
                   orientation={orientation}
-                  interactive={!gameOverState && viewPly === null && (!isOnlineMode || onlineInfo.opponentConnected)}
+                  interactive={
+                    !gameOverState &&
+                    viewPly === null &&
+                    (!isOnlineMode ||
+                      onlineInfo.opponentConnected ||
+                      (opponentType === 'online-ws' && everConnectedOpponentRef.current))
+                  }
                   allowedColor={isBotOrCoach || isOnlineMode ? playerColor : 'both'}
                   lastMove={
                     viewPly === null
@@ -3324,6 +3818,7 @@ export function PlayView({
                       promo === 'q' || promo === 'r' || promo === 'b' || promo === 'n'
                         ? promo
                         : undefined;
+                    playPremoveSound();
                     setPremoveQueue((prev) =>
                       enqueuePremoveMove(prev, { from, to, promotion }, 5),
                     );
@@ -3344,7 +3839,7 @@ export function PlayView({
             {premoveQueue.length > 0 && !gameOverState && (
               <div
                 data-testid="premove-queue-bar"
-                className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-[#262421] border border-white/10 flex items-center justify-between gap-2 text-[11px]"
+                className="mt-1 px-2 py-1 rounded-lg bg-[#262421] border border-white/10 flex items-center justify-between gap-2 text-[11px]"
               >
                 <div className="flex items-center gap-1.5 min-w-0 overflow-x-auto">
                   <span className="font-extrabold text-[#E8C547] uppercase tracking-wider shrink-0">
@@ -3370,11 +3865,16 @@ export function PlayView({
               </div>
             )}
 
-            {renderPlayerStrip(bottomColor, 'bottom')}
+            <div className={opponentType === 'bot' ? 'hidden lg:block' : ''}>
+              {renderPlayerStrip(bottomColor, 'bottom')}
+            </div>
           </div>
 
           {/* Chess.com Mobile < 1. e4 > Horizontal Move Stepper */}
-          <div className="lg:hidden fixed bottom-14 left-0 right-0 z-20 bg-[#2B2926]/95 border-t border-white/5 flex items-center justify-between gap-2 px-2.5 py-1">
+          <div
+            data-testid="mobile-move-stepper"
+            className="lg:hidden fixed bottom-14 left-0 right-0 z-20 h-11 bg-[#2B2926]/95 border-t border-white/5 flex items-center justify-between gap-2 px-2.5"
+          >
             <button
               type="button"
               aria-label="Previous move"
@@ -3387,39 +3887,44 @@ export function PlayView({
               <ChevronLeft className="w-5 h-5" />
             </button>
 
-            <div className="flex-1 flex items-center justify-center gap-2 overflow-x-auto font-mono text-xs tabular-nums min-h-[28px]">
+            <div
+              ref={mobileStepperScrollRef}
+              className={`flex-1 flex items-center gap-2 overflow-x-auto font-mono text-xs tabular-nums min-h-[28px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
+                movePairs.length === 0
+                  ? 'justify-center'
+                  : 'justify-start px-3 [mask-image:linear-gradient(to_right,transparent,black_14px,black_calc(100%-14px),transparent)]'
+              }`}
+            >
               {movePairs.length === 0 ? (
-                <span className="text-[#847F76] font-sans">
-                  Tap or drag a piece to start
-                </span>
+                <span className="text-[#847F76] font-sans" />
               ) : (
                 movePairs.map((p) => (
-                  <span key={p.moveNumber} className="inline-flex items-center gap-1 whitespace-nowrap">
-                    <span className="text-[#847F76]">{p.moveNumber}.</span>
+                  <span key={p.moveNumber} className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                    <span className="text-[#8E8C88] font-sans font-semibold">{p.moveNumber}.</span>
                     {p.white && (
                       <button
                         type="button"
                         onClick={() => setViewPly(p.whitePly)}
-                        className={`px-1.5 py-0.5 rounded font-bold cursor-pointer ${
+                        className={`px-1.5 py-0.5 rounded-[4px] font-sans text-[13px] font-bold cursor-pointer ${
                           (viewPly ?? history.length) === p.whitePly
-                            ? 'bg-[#3D3B37] text-white'
-                            : 'text-[#C8C4BC]'
+                            ? 'bg-[#4B4844] text-white border-b-2 border-[#767470]'
+                            : 'text-[#DEDCD8]'
                         }`}
                       >
-                        {p.white.san}
+                        <MoveSanText san={p.white.san} />
                       </button>
                     )}
                     {p.black && (
                       <button
                         type="button"
                         onClick={() => setViewPly(p.blackPly)}
-                        className={`px-1.5 py-0.5 rounded font-bold cursor-pointer ${
+                        className={`px-1.5 py-0.5 rounded-[4px] font-sans text-[13px] font-bold cursor-pointer ${
                           (viewPly ?? history.length) === p.blackPly
-                            ? 'bg-[#3D3B37] text-white'
-                            : 'text-[#C8C4BC]'
+                            ? 'bg-[#4B4844] text-white border-b-2 border-[#767470]'
+                            : 'text-[#DEDCD8]'
                         }`}
                       >
-                        {p.black.san}
+                        <MoveSanText san={p.black.san} />
                       </button>
                     )}
                   </span>
@@ -3442,8 +3947,13 @@ export function PlayView({
             </button>
           </div>
 
-          {/* Chess.com Mobile Pinned Flat Action Bar (Online: Options / Chat / Resign / Draw / Flip) */}
-          <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 h-14 bg-[#262421] border-t border-white/10 grid grid-cols-5 items-center">
+          {/* Mobile Pinned Flat Action Bar (Bot/Local: 4-col Options/Abort-Resign/Hint/Undo; Online: 5-col) */}
+          <div
+            data-testid="mobile-action-bar"
+            className={`lg:hidden fixed bottom-0 left-0 right-0 z-30 h-14 bg-[#262421] border-t border-white/10 grid items-center ${
+              isOnlineMode ? 'grid-cols-5' : 'grid-cols-4'
+            }`}
+          >
             <button
               type="button"
               onClick={() => setMobileSheet(isOnlineMode ? 'options' : 'setup')}
@@ -3452,7 +3962,7 @@ export function PlayView({
               <SlidersHorizontal className="w-4 h-4" />
               <span>Options</span>
             </button>
-            {isOnlineMode ? (
+            {isOnlineMode && (
               <button
                 type="button"
                 onClick={() => {
@@ -3471,24 +3981,13 @@ export function PlayView({
                 </div>
                 <span>Chat</span>
               </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setMobileSheet('tutor')}
-                className="min-h-[44px] h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-bold text-[#81B64C] cursor-pointer"
-              >
-                <MessageSquare className="w-4 h-4" />
-                <span>Coach</span>
-              </button>
             )}
             <button
               type="button"
               onClick={
                 history.length > 0 && !gameOverState
                   ? handleResign
-                  : isOnlineMode
-                    ? requestLeaveGame
-                    : () => setFlipped((f) => !f)
+                  : requestLeaveGame
               }
               className="min-h-[44px] h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold text-[#C8C4BC] hover:text-white cursor-pointer"
             >
@@ -3504,8 +4003,8 @@ export function PlayView({
                 </>
               ) : (
                 <>
-                  <ArrowLeftRight className="w-4 h-4" />
-                  <span>Flip</span>
+                  <Flag className="w-4 h-4" />
+                  <span>Abort</span>
                 </>
               )}
             </button>
@@ -3537,7 +4036,7 @@ export function PlayView({
                   disabled={Boolean(gameOverState) || hintLoading}
                   className="min-h-[44px] h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-semibold text-[#C8C4BC] hover:text-white cursor-pointer disabled:opacity-40"
                 >
-                  <Lightbulb className="w-4 h-4 text-[#E59A28]" />
+                  <Lightbulb className="w-4 h-4 text-[#C8C4BC]" />
                   <span>{hintLoading ? 'Finding...' : 'Hint'}</span>
                 </button>
                 <button
@@ -3620,12 +4119,12 @@ export function PlayView({
         </div>
       </div>
 
-      {/* Desktop Right Dock */}
-      <aside className="hidden lg:flex bg-[#21201D] border border-white/10 rounded-lg overflow-hidden flex-col lg:h-[min(670px,calc(100dvh-2.5rem))]">
+      {/* Desktop Right Dock — Flush #262421 Panel */}
+      <aside className="hidden lg:flex bg-[#262421] rounded-[5px] shadow-[0_6px_22px_rgba(0,0,0,0.28)] overflow-hidden flex-col lg:h-[min(calc(100dvh-2rem),836px)]">
         <div
           role="tablist"
           aria-label="Play workspace panels"
-          className="grid grid-cols-3 bg-[#1A1917] border-b border-white/10 p-1 gap-1 shrink-0"
+          className="grid grid-cols-3 bg-[#1F1E1B] shrink-0"
         >
           {(isOnlineMode
             ? ([
@@ -3648,10 +4147,10 @@ export function PlayView({
                 if (tab.id === 'chat') setUnreadChat(0);
                 setRightTab(tab.id);
               }}
-              className={`py-2 px-2 rounded text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+              className={`py-3 px-2 text-[12px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
                 rightTab === tab.id
-                  ? 'bg-[#312E2A] text-[#F2F0EC]'
-                  : 'text-[#9E998F] hover:text-[#F2F0EC]'
+                  ? 'bg-[#262421] text-white'
+                  : 'text-[#9B9A97] hover:text-white'
               }`}
             >
               {tab.label}
@@ -3664,61 +4163,97 @@ export function PlayView({
 
         {rightTab === 'moves' && (
           <div className="flex flex-col flex-1 overflow-hidden">
-            <div className="flex-1 overflow-y-auto p-3">
+            {/* Opening / Status Subheader + Compact Guard Toggle */}
+            <div className="px-3 py-2 border-b border-white/[0.06] flex items-center justify-between gap-2 shrink-0 bg-[#23211E]">
+              <span className="text-[12px] font-semibold text-[#A9A6A0] truncate">
+                {history.length === 0 ? 'Starting Position' : coachStatusLine}
+              </span>
+              {opponentType === 'bot' && (
+                <button
+                  type="button"
+                  onClick={() => setCoachGuard((g) => !g)}
+                  aria-pressed={coachGuard}
+                  className={`text-[10px] font-bold px-2 py-0.5 rounded-[4px] border whitespace-nowrap cursor-pointer shrink-0 ${
+                    coachGuard
+                      ? 'bg-[#81B64C]/20 border-[#81B64C]/60 text-[#AEE076]'
+                      : 'bg-[#1A1917] border-white/10 text-[#9B9A97] hover:text-white'
+                  }`}
+                  title="Instant warning before hanging pieces or mate"
+                >
+                  Guard {coachGuard ? 'On' : 'Off'}
+                </button>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto">
               {movePairs.length === 0 ? (
-                <div className="text-center py-12 text-xs text-[#8E8980]">
+                <div className="text-center py-12 px-4 text-xs text-[#9B9A97]">
                   Play your opening move on the board to record notation.
                 </div>
               ) : (
-                <div className="space-y-1 font-mono text-xs tabular-nums">
-                  {movePairs.map((pair) => (
-                    <div
-                      key={pair.moveNumber}
-                      className="grid grid-cols-[36px_1fr_1fr] items-center rounded overflow-hidden"
-                    >
-                      <span className="px-2 py-1.5 text-[#8E8980]">
-                        {pair.moveNumber}.
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setViewPly(pair.whitePly)}
-                        className={`px-2 py-1.5 text-left rounded cursor-pointer ${
-                          (viewPly ?? history.length) === pair.whitePly
-                            ? 'bg-[#81B64C]/25 text-[#F2F0EC] font-bold'
-                            : 'text-[#DEDAD2] hover:bg-white/5'
-                        }`}
+                <div className="font-mono text-[13px] tabular-nums">
+                  {movePairs.map((pair) => {
+                    const whiteActive = (viewPly ?? history.length) === pair.whitePly;
+                    const blackActive = pair.black
+                      ? (viewPly ?? history.length) === pair.blackPly
+                      : false;
+                    return (
+                      <div
+                        key={pair.moveNumber}
+                        className="grid grid-cols-[40px_1fr_1fr] items-center even:bg-[#2B2926]"
                       >
-                        {pair.white?.san}
-                      </button>
-                      {pair.black ? (
+                        <span className="px-2.5 py-1.5 text-[#8B8985] text-[12px]">
+                          {pair.moveNumber}.
+                        </span>
                         <button
                           type="button"
-                          onClick={() => setViewPly(pair.blackPly)}
-                          className={`px-2 py-1.5 text-left rounded cursor-pointer ${
-                            (viewPly ?? history.length) === pair.blackPly
-                              ? 'bg-[#81B64C]/25 text-[#F2F0EC] font-bold'
-                              : 'text-[#DEDAD2] hover:bg-white/5'
-                          }`}
+                          onClick={() => setViewPly(pair.whitePly)}
+                          className="px-2 py-1 text-left cursor-pointer hover:bg-white/[0.04] transition-colors"
                         >
-                          {pair.black.san}
+                          <span
+                            className={`inline-block rounded-[3px] px-1.5 py-0.5 leading-tight ${
+                              whiteActive
+                                ? 'bg-[#4B4844] text-white font-bold border-b-2 border-[#767470]'
+                                : 'text-[#E3E1DD]'
+                            }`}
+                          >
+                            {pair.white?.san && <MoveSanText san={pair.white.san} />}
+                          </span>
                         </button>
-                      ) : (
-                        <span />
-                      )}
-                    </div>
-                  ))}
+                        {pair.black ? (
+                          <button
+                            type="button"
+                            onClick={() => setViewPly(pair.blackPly)}
+                            className="px-2 py-1 text-left cursor-pointer hover:bg-white/[0.04] transition-colors"
+                          >
+                            <span
+                              className={`inline-block rounded-[3px] px-1.5 py-0.5 leading-tight ${
+                                blackActive
+                                  ? 'bg-[#4B4844] text-white font-bold border-b-2 border-[#767470]'
+                                  : 'text-[#E3E1DD]'
+                              }`}
+                            >
+                              <MoveSanText san={pair.black.san} />
+                            </span>
+                          </button>
+                        ) : (
+                          <span />
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
 
-            <div className="p-3 border-t border-white/10 bg-[#1A1917] space-y-2 shrink-0">
+            <div className="p-3 bg-[#1F1E1B] border-t border-white/[0.06] space-y-2 shrink-0">
               <div className="grid grid-cols-4 gap-1.5">
                 <button
                   type="button"
                   aria-label="First move"
                   onClick={() => setViewPly(0)}
                   disabled={history.length === 0}
-                  className="py-2 rounded bg-[#2B2925] hover:bg-[#383530] flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                  className="py-2 rounded-[5px] cc-btn-secondary flex items-center justify-center disabled:opacity-40 cursor-pointer"
                 >
                   <ChevronFirst className="w-4 h-4" />
                 </button>
@@ -3729,7 +4264,7 @@ export function PlayView({
                     setViewPly((p) => Math.max(0, (p ?? history.length) - 1))
                   }
                   disabled={history.length === 0}
-                  className="py-2 rounded bg-[#2B2925] hover:bg-[#383530] flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                  className="py-2 rounded-[5px] cc-btn-secondary flex items-center justify-center disabled:opacity-40 cursor-pointer"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
@@ -3742,7 +4277,7 @@ export function PlayView({
                     )
                   }
                   disabled={history.length === 0}
-                  className="py-2 rounded bg-[#2B2925] hover:bg-[#383530] flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                  className="py-2 rounded-[5px] cc-btn-secondary flex items-center justify-center disabled:opacity-40 cursor-pointer"
                 >
                   <ChevronRight className="w-4 h-4" />
                 </button>
@@ -3751,7 +4286,7 @@ export function PlayView({
                   aria-label="Latest move"
                   onClick={() => setViewPly(null)}
                   disabled={history.length === 0}
-                  className="py-2 rounded bg-[#2B2925] hover:bg-[#383530] flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                  className="py-2 rounded-[5px] cc-btn-secondary flex items-center justify-center disabled:opacity-40 cursor-pointer"
                 >
                   <ChevronLast className="w-4 h-4" />
                 </button>
@@ -3767,10 +4302,10 @@ export function PlayView({
                     gameOverState?.resultLabel ?? '*',
                   )
                 }
-                className="w-full py-2 px-3 rounded bg-[#312E2A] hover:bg-[#3E3A35] border border-white/10 text-xs font-semibold text-[#F2F0EC] flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40"
+                className="w-full h-[40px] px-3 rounded-[6px] cc-btn-secondary text-[13px] font-extrabold text-white flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40"
               >
-                <SearchCheck className="w-3.5 h-3.5 text-[#81B64C]" />
-                <span>Analyze Game in Review</span>
+                <SearchCheck className="w-4 h-4 text-[#81B64C]" />
+                <span>Game Review</span>
               </button>
             </div>
           </div>
@@ -3915,31 +4450,34 @@ export function PlayView({
         </div>
       )}
 
-      {gameOverState && gameOverState.modalOpen && history.length > 0 && (
+      {gameOverState && gameOverState.modalOpen && history.length > 0 && gameOverState.resultLabel !== '*' && (
         <GameReviewSummaryScreen
-          pgn={pgn}
+          pgn={gameOverState.pgnSnapshot || pgn}
           resultLabel={gameOverState.resultLabel}
           resultTitle={gameOverState.title}
           whiteName={
-            isOnlineMode
+            gameOverState.whiteName ??
+            (isOnlineMode
               ? onlineInfo.whiteName
               : isBotOrCoach
                 ? playerColor === 'w'
                   ? lichessUsername || 'You'
                   : activeOpponentName
-                : 'White'
+                : 'White')
           }
           blackName={
-            isOnlineMode
+            gameOverState.blackName ??
+            (isOnlineMode
               ? onlineInfo.blackName
               : isBotOrCoach
                 ? playerColor === 'b'
                   ? lichessUsername || 'You'
                   : activeOpponentName
-                : 'Black'
+                : 'Black')
           }
           whiteRating={
-            isOnlineMode
+            gameOverState.whiteRating ??
+            (isOnlineMode
               ? onlineInfo.whiteRating
               : isBotOrCoach
                 ? playerColor === 'w'
@@ -3947,12 +4485,13 @@ export function PlayView({
                       ? lichessPerfs?.bullet?.rating
                       : tc.category === 'Blitz'
                         ? lichessPerfs?.blitz?.rating
-                        : lichessPerfs?.rapid?.rating) ?? 1200
+                        : lichessPerfs?.rapid?.rating) ?? loadGuestPerfs()[tc.category === 'Bullet' ? 'bullet' : tc.category === 'Blitz' ? 'blitz' : 'rapid'].rating
                   : effectiveBotElo
-                : 1200
+                : undefined)
           }
           blackRating={
-            isOnlineMode
+            gameOverState.blackRating ??
+            (isOnlineMode
               ? onlineInfo.blackRating
               : isBotOrCoach
                 ? playerColor === 'b'
@@ -3960,10 +4499,13 @@ export function PlayView({
                       ? lichessPerfs?.bullet?.rating
                       : tc.category === 'Blitz'
                         ? lichessPerfs?.blitz?.rating
-                        : lichessPerfs?.rapid?.rating) ?? 1200
+                        : lichessPerfs?.rapid?.rating) ?? loadGuestPerfs()[tc.category === 'Bullet' ? 'bullet' : tc.category === 'Blitz' ? 'blitz' : 'rapid'].rating
                   : effectiveBotElo
-                : 1200
+                : undefined)
           }
+          whiteRatingDelta={gameOverState.whiteRatingDelta}
+          blackRatingDelta={gameOverState.blackRatingDelta}
+          isRatedMatch={gameOverState.isRatedMatch ?? (opponentType !== 'online-ws' || onlineInfo.rated !== false)}
           whiteAvatarId={
             isBotOrCoach && playerColor === 'b'
               ? isCoachMode
@@ -4014,10 +4556,7 @@ export function PlayView({
             if (opponentType !== 'online-ws' || !onAddFriend) return null;
             const opp = playerColor === 'w' ? onlineInfo.blackName : onlineInfo.whiteName;
             if (
-              !opp ||
-              opp === 'Anonymous' ||
-              opp === 'Anonymous (Live)' ||
-              opp === 'Waiting for Friend...' ||
+              isPlaceholderPlayerUsername(opp) ||
               friends.some((f) => f.toLowerCase() === opp.toLowerCase())
             ) {
               return null;
@@ -4027,7 +4566,7 @@ export function PlayView({
           onMessageOpponent={(() => {
             if (opponentType !== 'online-ws' || !onMessagePlayer) return null;
             const opp = playerColor === 'w' ? onlineInfo.blackName : onlineInfo.whiteName;
-            if (!opp || opp === 'Anonymous' || opp === 'Anonymous (Live)' || opp === 'Waiting for Friend...') {
+            if (isPlaceholderPlayerUsername(opp)) {
               return null;
             }
             return () => {
@@ -4036,8 +4575,9 @@ export function PlayView({
             };
           })()}
           onStartReview={() => {
+            const targetPgn = gameOverState.pgnSnapshot || pgn;
             setGameOverState((prev) => (prev ? { ...prev, modalOpen: false } : null));
-            onSendToReview(pgn, playerColor, gameOverState.resultLabel);
+            onSendToReview(targetPgn, playerColor, gameOverState.resultLabel);
           }}
           onNewGame={() => startNewGame()}
           onClose={() => {
@@ -4051,36 +4591,37 @@ export function PlayView({
         />
       )}
 
-      {gameOverState && gameOverState.modalOpen && history.length === 0 && (
+      {gameOverState && gameOverState.modalOpen && (history.length === 0 || gameOverState.resultLabel === '*') && (
         <GameOverModal
           title={gameOverState.title}
           subtitle={gameOverState.subtitle}
           playerWon={gameOverState.playerWon}
-          moveCount={0}
-          playerLabel={
-            isOnlineMode
-              ? playerColor === 'w'
-                ? onlineInfo.whiteName
-                : onlineInfo.blackName
+          moveCount={history.length}
+          whiteName={
+            gameOverState.whiteName ??
+            (isOnlineMode
+              ? onlineInfo.whiteName
               : isBotOrCoach
                 ? playerColor === 'w'
                   ? lichessUsername || 'You'
                   : activeOpponentName
-                : 'White'
+                : 'White')
           }
-          opponentLabel={
-            isOnlineMode
-              ? playerColor === 'w'
-                ? onlineInfo.blackName
-                : onlineInfo.whiteName
+          blackName={
+            gameOverState.blackName ??
+            (isOnlineMode
+              ? onlineInfo.blackName
               : isBotOrCoach
                 ? playerColor === 'b'
                   ? lichessUsername || 'You'
                   : activeOpponentName
-                : 'Black'
+                : 'Black')
           }
+          whiteRating={gameOverState.whiteRating ?? (isOnlineMode ? onlineInfo.whiteRating : undefined)}
+          blackRating={gameOverState.blackRating ?? (isOnlineMode ? onlineInfo.blackRating : undefined)}
+          isRatedMatch={gameOverState.isRatedMatch ?? (opponentType !== 'online-ws' || onlineInfo.rated !== false)}
           onReview={() =>
-            onSendToReview(pgn, playerColor, gameOverState.resultLabel)
+            onSendToReview(gameOverState.pgnSnapshot || pgn, playerColor, gameOverState.resultLabel)
           }
           onPlayAgain={() => startNewGame()}
           onClose={() =>

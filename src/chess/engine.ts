@@ -208,7 +208,7 @@ export const BOT_PROFILES: BotProfile[] = [
     rating: 2450,
     title: 'Grandmaster',
     tier: 'Master',
-    style: 'Grandmaster calculation backed by Stockfish NNUE.',
+    style: 'Grandmaster calculation backed by neural network evaluation.',
     depth: 4,
     blunderRate: 0.0,
     accent: '#D1A23A',
@@ -228,15 +228,15 @@ export const BOT_PROFILES: BotProfile[] = [
   },
   {
     id: 'chronos',
-    name: 'Stockfish',
+    name: 'Chronos',
     rating: 2950,
-    title: 'Stockfish 19 NNUE',
+    title: 'Neural Master',
     tier: 'Grandmaster',
-    style: 'Official Stockfish 19 NNUE client-side calculation engine with relentless defense.',
+    style: 'Maximum-strength calculation engine with relentless positional and tactical defense.',
     depth: 4,
     blunderRate: 0.0,
     accent: '#81B64C',
-    initials: 'SF',
+    initials: 'CH',
   },
   {
     id: 'apex',
@@ -277,6 +277,15 @@ export interface EvaluatedMove {
   bestMoveTo?: string;
   cpLoss: number;
   quality: MoveQuality;
+  mateIn?: number | null;
+  bestLineSan?: string[];
+  winChanceBefore?: number;
+  winChanceAfter?: number;
+  accuracyPercent?: number;
+  isMissedWin?: boolean;
+  evalDepth?: number;
+  evalSource?: 'stockfish-19-wasm' | 'lichess-cloud' | 'local-book' | 'local-js';
+  classificationNote?: string;
 }
 
 export interface GameReviewResult {
@@ -922,7 +931,7 @@ export function getBotTierMeta(elo: number): { title: string; style: string } {
   }
   return {
     title: 'Maximum Engine',
-    style: 'Plays top-depth Stockfish 19 NNUE lines at engine strength.',
+    style: 'Plays top-depth engine lines at master strength.',
   };
 }
 
@@ -1401,8 +1410,12 @@ export function summarizeGameReview(evaluated: EvaluatedMove[]): GameReviewResul
   };
   let whiteLossSum = 0;
   let whiteMoves = 0;
+  let whiteAccSum = 0;
+  let whiteAccCount = 0;
   let blackLossSum = 0;
   let blackMoves = 0;
+  let blackAccSum = 0;
+  let blackAccCount = 0;
 
   for (const m of evaluated) {
     counts[m.quality] += 1;
@@ -1410,19 +1423,40 @@ export function summarizeGameReview(evaluated: EvaluatedMove[]): GameReviewResul
     if (m.color === 'w') {
       whiteLossSum += cappedLoss;
       whiteMoves += 1;
+      if (typeof m.accuracyPercent === 'number') {
+        whiteAccSum += m.accuracyPercent;
+        whiteAccCount += 1;
+      }
     } else {
       blackLossSum += cappedLoss;
       blackMoves += 1;
+      if (typeof m.accuracyPercent === 'number') {
+        blackAccSum += m.accuracyPercent;
+        blackAccCount += 1;
+      }
     }
   }
 
   const lossToAccuracy = (avgLoss: number) =>
     Math.max(15, Math.min(99, Math.round(100 * Math.exp(-0.0038 * avgLoss))));
 
+  const whiteAccuracy =
+    whiteMoves === 0
+      ? 100
+      : whiteAccCount === whiteMoves
+        ? Math.max(12, Math.min(99.9, Math.round((whiteAccSum / whiteMoves) * 10) / 10))
+        : lossToAccuracy(whiteLossSum / whiteMoves);
+  const blackAccuracy =
+    blackMoves === 0
+      ? 100
+      : blackAccCount === blackMoves
+        ? Math.max(12, Math.min(99.9, Math.round((blackAccSum / blackMoves) * 10) / 10))
+        : lossToAccuracy(blackLossSum / blackMoves);
+
   return {
     moves: evaluated,
-    whiteAccuracy: whiteMoves ? lossToAccuracy(whiteLossSum / whiteMoves) : 100,
-    blackAccuracy: blackMoves ? lossToAccuracy(blackLossSum / blackMoves) : 100,
+    whiteAccuracy,
+    blackAccuracy,
     counts,
   };
 }
@@ -1492,8 +1526,12 @@ export function buildPostGameReviewSummary(params: {
 
   let wLoss = 0;
   let wN = 0;
+  let wAccSum = 0;
+  let wAccCount = 0;
   let bLoss = 0;
   let bN = 0;
+  let bAccSum = 0;
+  let bAccCount = 0;
 
   const wOpen: number[] = [];
   const bOpen: number[] = [];
@@ -1509,6 +1547,10 @@ export function buildPostGameReviewSummary(params: {
       whiteCounts[m.quality] += 1;
       wLoss += capped;
       wN += 1;
+      if (typeof m.accuracyPercent === 'number') {
+        wAccSum += m.accuracyPercent;
+        wAccCount += 1;
+      }
       if (i < 16) wOpen.push(capped);
       else if (i < 46) wStrat.push(capped);
       else wEnd.push(capped);
@@ -1516,20 +1558,27 @@ export function buildPostGameReviewSummary(params: {
       blackCounts[m.quality] += 1;
       bLoss += capped;
       bN += 1;
+      if (typeof m.accuracyPercent === 'number') {
+        bAccSum += m.accuracyPercent;
+        bAccCount += 1;
+      }
       if (i < 16) bOpen.push(capped);
       else if (i < 46) bStrat.push(capped);
       else bEnd.push(capped);
     }
   }
 
-  const exactAcc = (sum: number, count: number) => {
+  const exactAcc = (sum: number, count: number, accSum: number, accCount: number) => {
     if (count === 0) return 99.0;
+    if (accCount === count) {
+      return Math.round(Math.max(12, Math.min(99.9, accSum / count)) * 10) / 10;
+    }
     const raw = 100 * Math.exp(-0.0038 * (sum / count));
     return Math.round(Math.max(12, Math.min(99.9, raw)) * 10) / 10;
   };
 
-  const whiteAccuracyExact = exactAcc(wLoss, wN);
-  const blackAccuracyExact = exactAcc(bLoss, bN);
+  const whiteAccuracyExact = exactAcc(wLoss, wN, wAccSum, wAccCount);
+  const blackAccuracyExact = exactAcc(bLoss, bN, bAccSum, bAccCount);
 
   const avg = (arr: number[]) =>
     arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 25;
@@ -1700,7 +1749,7 @@ export function resolveSingleHintMove(
   return null;
 }
 
-export const STOCKFISH_19_NNUE_ENGINE_VERSION = 'Stockfish 19 NNUE';
+export const STOCKFISH_19_NNUE_ENGINE_VERSION = 'OpenChess Engine';
 
 export interface ClientStockfish19Line {
   evalText: string;
