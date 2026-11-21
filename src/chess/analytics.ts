@@ -672,8 +672,9 @@ export function recordGuestMatchResult(params: {
 }
 
 export function formatLastSeenAgo(seenAtMs?: number, nowMs: number = Date.now()): string {
-  if (!seenAtMs || !Number.isFinite(seenAtMs)) return 'Active player';
-  const diffSec = Math.max(0, Math.floor((nowMs - seenAtMs) / 1000));
+  if (!seenAtMs || !Number.isFinite(seenAtMs) || seenAtMs <= 0) return 'Active player';
+  const normalizedMs = seenAtMs < 100_000_000_000 ? seenAtMs * 1000 : seenAtMs;
+  const diffSec = Math.max(0, Math.floor((nowMs - normalizedMs) / 1000));
   if (diffSec < 180) return 'Online now';
   const mins = Math.floor(diffSec / 60);
   if (mins < 60) return `Online ${mins} ${mins === 1 ? 'min' : 'mins'} ago`;
@@ -682,7 +683,10 @@ export function formatLastSeenAgo(seenAtMs?: number, nowMs: number = Date.now())
   const days = Math.floor(hours / 24);
   if (days < 30) return `Online ${days} ${days === 1 ? 'day' : 'days'} ago`;
   const months = Math.floor(days / 30);
-  return `Online ${months} ${months === 1 ? 'mo' : 'mos'} ago`;
+  if (months < 12) return `Online ${months} ${months === 1 ? 'mo' : 'mos'} ago`;
+  const years = Math.floor(days / 365);
+  if (years <= 3) return `Online ${years} ${years === 1 ? 'yr' : 'yrs'} ago`;
+  return 'Offline';
 }
 
 export function formatJoinedDate(createdAtMs?: number): string {

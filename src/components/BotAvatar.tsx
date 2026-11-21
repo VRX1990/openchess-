@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { BotId } from '../chess/engine';
 
 interface BotAvatarProps {
@@ -30,19 +30,24 @@ const BOT_IMAGE_MAP: Partial<Record<BotId | 'coach', string>> = {
 };
 
 function CatGrandmasterAvatar({ className = 'w-full h-full' }: { className?: string }) {
+  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
+  const bgId = `${uid}-cat-bg`;
+  const furId = `${uid}-cat-fur`;
+  const eyeId = `${uid}-cat-eye`;
+
   return (
     <svg viewBox="0 0 120 120" className={className} aria-label="Cat 3200 bot avatar">
       <defs>
-        <radialGradient id="catBgGrad" cx="50%" cy="45%" r="65%">
+        <radialGradient id={bgId} cx="50%" cy="45%" r="65%">
           <stop offset="0%" stopColor="#3E3526" />
           <stop offset="100%" stopColor="#1B1814" />
         </radialGradient>
-        <linearGradient id="catFurGrad" x1="0" y1="0" x2="0" y2="1">
+        <linearGradient id={furId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="#F5EFE6" />
           <stop offset="60%" stopColor="#E3D7C5" />
           <stop offset="100%" stopColor="#C4B39B" />
         </linearGradient>
-        <radialGradient id="catEyeGlow" cx="50%" cy="40%" r="55%">
+        <radialGradient id={eyeId} cx="50%" cy="40%" r="55%">
           <stop offset="0%" stopColor="#FFE169" />
           <stop offset="65%" stopColor="#E59A28" />
           <stop offset="100%" stopColor="#8C510A" />
@@ -50,7 +55,7 @@ function CatGrandmasterAvatar({ className = 'w-full h-full' }: { className?: str
       </defs>
 
       {/* Dark Grandmaster Arena Backdrop */}
-      <rect width="120" height="120" rx="14" fill="url(#catBgGrad)" />
+      <rect width="120" height="120" rx="14" fill={`url(#${bgId}) #26221C`} />
 
       {/* Subtle Golden Aura Ring */}
       <circle cx="60" cy="64" r="46" fill="#F7C045" opacity="0.08" />
@@ -64,7 +69,7 @@ function CatGrandmasterAvatar({ className = 'w-full h-full' }: { className?: str
       {/* Fluffy Cheeks & Head */}
       <path
         d="M18 68 C14 42 34 26 60 26 C86 26 106 42 102 68 C105 86 88 104 60 104 C32 104 15 86 18 68 Z"
-        fill="url(#catFurGrad)"
+        fill={`url(#${furId}) #E3D7C5`}
       />
 
       {/* Tabby Forehead Patches & Stripes */}
@@ -89,13 +94,13 @@ function CatGrandmasterAvatar({ className = 'w-full h-full' }: { className?: str
 
       {/* Big Expressive Golden-Amber Cat Eyes */}
       <ellipse cx="42" cy="61" rx="12.5" ry="13.5" fill="#181614" />
-      <ellipse cx="42" cy="61" rx="10.5" ry="11.5" fill="url(#catEyeGlow)" />
+      <ellipse cx="42" cy="61" rx="10.5" ry="11.5" fill={`url(#${eyeId}) #E59A28`} />
       <ellipse cx="42" cy="61" rx="4.2" ry="9.5" fill="#141210" />
       <circle cx="38.5" cy="56" r="3.2" fill="#FFFFFF" />
       <circle cx="45.5" cy="65" r="1.4" fill="#FFFFFF" opacity="0.85" />
 
       <ellipse cx="78" cy="61" rx="12.5" ry="13.5" fill="#181614" />
-      <ellipse cx="78" cy="61" rx="10.5" ry="11.5" fill="url(#catEyeGlow)" />
+      <ellipse cx="78" cy="61" rx="10.5" ry="11.5" fill={`url(#${eyeId}) #E59A28`} />
       <ellipse cx="78" cy="61" rx="4.2" ry="9.5" fill="#141210" />
       <circle cx="74.5" cy="56" r="3.2" fill="#FFFFFF" />
       <circle cx="81.5" cy="65" r="1.4" fill="#FFFFFF" opacity="0.85" />

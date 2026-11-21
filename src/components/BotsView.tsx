@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { Color } from 'chess.js';
 import { ArrowLeft, ChevronDown, Crown, FlipVertical2, Settings } from 'lucide-react';
 import {
@@ -103,6 +103,50 @@ function PickerKingIcon({ variant }: { variant: 'w' | 'b' }) {
         strokeWidth="2"
         strokeLinecap="round"
       />
+    </svg>
+  );
+}
+
+/** Split dark/light question mark icon with per-instance unique clipPath IDs for Firefox compatibility */
+function RandomSideQuestionIcon() {
+  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
+  const leftId = `${uid}-rand-left`;
+  const rightId = `${uid}-rand-right`;
+
+  return (
+    <svg viewBox="0 0 28 28" className="relative z-10 w-6 h-6" aria-hidden="true">
+      <defs>
+        <clipPath id={leftId}>
+          <rect x="0" y="0" width="14" height="28" />
+        </clipPath>
+        <clipPath id={rightId}>
+          <rect x="14" y="0" width="14" height="28" />
+        </clipPath>
+      </defs>
+      <text
+        x="14"
+        y="21"
+        textAnchor="middle"
+        fontSize="21"
+        fontWeight="900"
+        fontFamily="system-ui, sans-serif"
+        fill="#2E2C29"
+        clipPath={`url(#${leftId})`}
+      >
+        ?
+      </text>
+      <text
+        x="14"
+        y="21"
+        textAnchor="middle"
+        fontSize="21"
+        fontWeight="900"
+        fontFamily="system-ui, sans-serif"
+        fill="#E5E3DD"
+        clipPath={`url(#${rightId})`}
+      >
+        ?
+      </text>
     </svg>
   );
 }
@@ -284,40 +328,7 @@ export function BotsView({
           >
             <span className="absolute inset-y-0 left-0 w-1/2 bg-[#E5E3DD]" aria-hidden="true" />
             <span className="absolute inset-y-0 right-0 w-1/2 bg-[#383633]" aria-hidden="true" />
-            <svg viewBox="0 0 28 28" className="relative z-10 w-6 h-6" aria-hidden="true">
-              <defs>
-                <clipPath id="oc-rand-left">
-                  <rect x="0" y="0" width="14" height="28" />
-                </clipPath>
-                <clipPath id="oc-rand-right">
-                  <rect x="14" y="0" width="14" height="28" />
-                </clipPath>
-              </defs>
-              <text
-                x="14"
-                y="21"
-                textAnchor="middle"
-                fontSize="21"
-                fontWeight="900"
-                fontFamily="system-ui, sans-serif"
-                fill="#2E2C29"
-                clipPath="url(#oc-rand-left)"
-              >
-                ?
-              </text>
-              <text
-                x="14"
-                y="21"
-                textAnchor="middle"
-                fontSize="21"
-                fontWeight="900"
-                fontFamily="system-ui, sans-serif"
-                fill="#E5E3DD"
-                clipPath="url(#oc-rand-right)"
-              >
-                ?
-              </text>
-            </svg>
+            <RandomSideQuestionIcon />
           </button>
 
           <button
@@ -348,7 +359,7 @@ export function BotsView({
             coachGuard,
           })
         }
-        className="w-full h-[54px] rounded-[10px] cc-btn-primary text-white font-extrabold font-display text-[21px] cursor-pointer"
+        className="w-full h-[54px] rounded-[10px] bg-[#81B64C] border-b-[4px] border-[#457524] cc-btn-primary text-white font-extrabold font-display text-[21px] cursor-pointer"
       >
         Play
       </button>

@@ -418,6 +418,10 @@ test('formatLastSeenAgo, formatJoinedDate, mergeSyncedAccountStats, and leave gu
   assert.equal(formatLastSeenAgo(now - 60_000, now), 'Online now');
   assert.equal(formatLastSeenAgo(now - 25 * 60_000, now), 'Online 25 mins ago');
   assert.equal(formatLastSeenAgo(now - 16 * 3600_000, now), 'Online 16 hours ago');
+  assert.equal(formatLastSeenAgo(now - 90 * 86_400_000, now), 'Online 3 mos ago');
+  assert.equal(formatLastSeenAgo(now - 400 * 86_400_000, now), 'Online 1 yr ago');
+  assert.equal(formatLastSeenAgo(now - 4500 * 86_400_000, now), 'Offline');
+  assert.equal(formatLastSeenAgo(Math.floor((now - 10 * 60_000) / 1000), now), 'Online 10 mins ago');
   assert.equal(formatLastSeenAgo(undefined, now), 'Active player');
   assert.ok(formatJoinedDate(1_765_411_200_000).includes('2025'));
 

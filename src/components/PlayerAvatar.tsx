@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Camera, Check, ImagePlus, Upload, X } from 'lucide-react';
 import {
   AVATAR_PRESETS,
@@ -26,9 +26,15 @@ export interface PlayerAvatarProps {
 
 /**
  * Authentic default player pawn avatar (smooth 3D-shaded classic gray Staunton pawn on light #E6E6E6 square).
- * Displayed whenever a human player has not set their own custom photo.
+ * Uses React useId() per SVG instance + solid paint fallback so Gecko/Firefox never fails to paint
+ * when another hidden responsive instance exists earlier in DOM order.
  */
 function DefaultPawnAvatar({ title }: { title?: string }) {
+  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
+  const bodyId = `${uid}-pawn-body`;
+  const headId = `${uid}-pawn-head`;
+  const baseId = `${uid}-pawn-base`;
+
   return (
     <svg
       viewBox="0 0 100 100"
@@ -37,51 +43,51 @@ function DefaultPawnAvatar({ title }: { title?: string }) {
       aria-label={title || 'Default player avatar'}
     >
       <defs>
-        <linearGradient id="oc-default-pawn-body" x1="20%" y1="12%" x2="82%" y2="92%">
-          <stop offset="0%" stopColor="#C8C8C8" />
-          <stop offset="46%" stopColor="#A6A6A6" />
-          <stop offset="100%" stopColor="#7F7F7F" />
+        <linearGradient id={bodyId} x1="18%" y1="10%" x2="84%" y2="92%">
+          <stop offset="0%" stopColor="#C4C4C4" />
+          <stop offset="48%" stopColor="#9E9E9E" />
+          <stop offset="100%" stopColor="#777777" />
         </linearGradient>
-        <radialGradient id="oc-default-pawn-head" cx="38%" cy="32%" r="65%">
-          <stop offset="0%" stopColor="#D6D6D6" />
-          <stop offset="52%" stopColor="#A8A8A8" />
-          <stop offset="100%" stopColor="#828282" />
+        <radialGradient id={headId} cx="36%" cy="30%" r="68%">
+          <stop offset="0%" stopColor="#D4D4D4" />
+          <stop offset="52%" stopColor="#A2A2A2" />
+          <stop offset="100%" stopColor="#7A7A7A" />
         </radialGradient>
-        <linearGradient id="oc-default-pawn-base" x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="#B8B8B8" />
-          <stop offset="50%" stopColor="#9A9A9A" />
-          <stop offset="100%" stopColor="#7B7B7B" />
+        <linearGradient id={baseId} x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor="#B2B2B2" />
+          <stop offset="50%" stopColor="#929292" />
+          <stop offset="100%" stopColor="#737373" />
         </linearGradient>
       </defs>
       <rect width="100" height="100" fill="#E6E6E6" />
       {/* Subtle contact shadow under base */}
-      <ellipse cx="50" cy="83.5" rx="26.5" ry="3.2" fill="#CECECE" />
+      <ellipse cx="50" cy="86.2" rx="28" ry="3.2" fill="#CECECE" />
       {/* Smooth flared Staunton pawn body & curved dome base */}
       <path
-        d="M50 38.5
-           C43.2 38.5 39.2 40.6 39.2 43.4
-           C39.2 45.4 40.8 46.8 42.6 47.4
-           C41.8 54.4 39.1 61.8 33.4 67.2
-           C28.2 71.8 24.5 75.4 24.5 79.6
-           C24.5 81.6 26.2 82.8 29.2 82.8
-           L70.8 82.8
-           C73.8 82.8 75.5 81.6 75.5 79.6
-           C75.5 75.4 71.8 71.8 66.6 67.2
-           C60.9 61.8 58.2 54.4 57.4 47.4
-           C59.2 46.8 60.8 45.4 60.8 43.4
-           C60.8 40.6 56.8 38.5 50 38.5 Z"
-        fill="url(#oc-default-pawn-body)"
+        d="M50 37.5
+           C42.5 37.5 38.2 39.8 38.2 42.8
+           C38.2 45 39.9 46.5 41.8 47.2
+           C40.9 54.8 37.9 62.8 31.8 68.5
+           C26.2 73.4 22.4 77.2 22.4 81.8
+           C22.4 84 24.3 85.4 27.6 85.4
+           L72.4 85.4
+           C75.7 85.4 77.6 84 77.6 81.8
+           C77.6 77.2 73.8 73.4 68.2 68.5
+           C62.1 62.8 59.1 54.8 58.2 47.2
+           C60.1 46.5 61.8 45 61.8 42.8
+           C61.8 39.8 57.5 37.5 50 37.5 Z"
+        fill={`url(#${bodyId}) #9A9A9A`}
       />
-      {/* Gentle curved bottom rim highlight */}
+      {/* Gentle curved bottom rim shading */}
       <path
-        d="M26.2 80.2 C34 78.6 66 78.6 73.8 80.2 C74.4 81.8 73.2 82.8 70.8 82.8 L29.2 82.8 C26.8 82.8 25.6 81.8 26.2 80.2 Z"
-        fill="url(#oc-default-pawn-base)"
+        d="M24.2 82.4 C32.8 80.7 67.2 80.7 75.8 82.4 C76.4 84.2 75 85.4 72.4 85.4 L27.6 85.4 C25 85.4 23.6 84.2 24.2 82.4 Z"
+        fill={`url(#${baseId}) #8C8C8C`}
         opacity="0.55"
       />
       {/* Smooth spherical pawn head */}
-      <circle cx="50" cy="27.2" r="12.6" fill="url(#oc-default-pawn-head)" />
+      <circle cx="50" cy="25.8" r="13.4" fill={`url(#${headId}) #9E9E9E`} />
       {/* Soft top-left specular gleam on head */}
-      <ellipse cx="45.8" cy="22.8" rx="4.2" ry="2.8" transform="rotate(-24 45.8 22.8)" fill="#FFFFFF" opacity="0.22" />
+      <ellipse cx="45.4" cy="21" rx="4.5" ry="3" transform="rotate(-24 45.4 21)" fill="#FFFFFF" opacity="0.22" />
     </svg>
   );
 }

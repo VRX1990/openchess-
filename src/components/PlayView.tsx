@@ -3889,7 +3889,7 @@ export function PlayView({
 
             <div
               ref={mobileStepperScrollRef}
-              className={`flex-1 flex items-center gap-2 overflow-x-auto font-mono text-xs tabular-nums min-h-[28px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
+              className={`flex-1 flex items-center gap-2 overflow-x-auto font-mono text-xs tabular-nums min-h-[28px] no-scrollbar ${
                 movePairs.length === 0
                   ? 'justify-center'
                   : 'justify-start px-3 [mask-image:linear-gradient(to_right,transparent,black_14px,black_calc(100%-14px),transparent)]'

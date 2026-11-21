@@ -12510,10 +12510,31 @@ async function startServer() {
       },
       appType: 'spa',
     });
+    app.use((req, res, next) => {
+      if (!req.path.startsWith('/node_modules/.vite/deps/')) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        res.setHeader('CDN-Cache-Control', 'no-store');
+      }
+      next();
+    });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(distDir));
+    app.use(
+      '/assets',
+      express.static(path.join(distDir, 'assets'), {
+        maxAge: '1y',
+        immutable: true,
+      }),
+    );
+    app.use(
+      express.static(distDir, {
+        index: false,
+        maxAge: '1h',
+      }),
+    );
     app.get('/{*splat}', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.setHeader('CDN-Cache-Control', 'no-store');
       res.sendFile(distIndexPath);
     });
   }

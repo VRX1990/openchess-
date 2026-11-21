@@ -404,7 +404,7 @@ export function HomeView({
                 type="button"
                 data-start="true"
                 onClick={() => openNewGameWithTime(quickTimeId)}
-                className="w-full h-[50px] rounded-[10px] cc-btn-primary text-white font-extrabold font-display text-[18px] cursor-pointer"
+                className="w-full h-[50px] rounded-[10px] bg-[#81B64C] border-b-[4px] border-[#457524] cc-btn-primary text-white font-extrabold font-display text-[18px] cursor-pointer"
               >
                 Start Game
               </button>
@@ -1126,8 +1126,8 @@ export function HomeView({
         )}
       </section>
 
-      {/* Chess.com-style Recent Games List */}
-      <section className="space-y-2 pb-16">
+      {/* Recent Games List */}
+      <section className="space-y-2 pb-28 lg:pb-4">
         <div className="flex items-center justify-between px-0.5">
           <h2 className="text-base font-extrabold text-white font-display">
             Recent Games
@@ -1277,12 +1277,12 @@ export function HomeView({
       </section>
 
       {/* Primary Play Button */}
-      <div className="fixed lg:static bottom-14 left-0 right-0 z-30 px-2.5 pb-2 pt-2 bg-[#302E2B]/95 backdrop-blur-sm lg:p-0 lg:bg-transparent">
+      <div className="fixed lg:static bottom-14 left-0 right-0 z-30 px-2.5 pb-2.5 pt-2 bg-[#302E2B]/95 backdrop-blur-sm lg:p-0 lg:bg-transparent">
         <button
           type="button"
           data-start="true"
           onClick={() => openNewGameWithTime('10+0')}
-          className="w-full min-h-[52px] rounded-[10px] cc-btn-primary text-white font-extrabold font-display text-xl cursor-pointer"
+          className="w-full min-h-[52px] rounded-[10px] bg-[#81B64C] border-b-[4px] border-[#457524] cc-btn-primary text-white font-extrabold font-display text-xl cursor-pointer"
         >
           Play
         </button>
