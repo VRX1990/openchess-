@@ -1,5 +1,5 @@
 import { Chess, type PieceSymbol } from 'chess.js';
-import type { LeagueStatus, RatingHistoryMap } from './onlineHelpers';
+import type { LeagueStatus, RatingHistoryMap } from './onlineHelpers.ts';
 
 export interface LichessRawPuzzle {
   game?: {

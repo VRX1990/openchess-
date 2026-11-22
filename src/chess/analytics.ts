@@ -1,6 +1,6 @@
 import { Chess, type Color, type PieceSymbol, type Square } from 'chess.js';
-import { computeCalibratedSideAccuracy, type EvaluatedMove } from './engine';
-import type { LichessUserGame } from './lichess';
+import { computeCalibratedSideAccuracy, type EvaluatedMove } from './engine.ts';
+import type { LichessUserGame } from './lichess.ts';
 
 export interface ReviewedGameRecord {
   id: string;
