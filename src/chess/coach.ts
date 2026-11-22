@@ -1,6 +1,7 @@
 import { Chess, type Color, type Move, type PieceSymbol, type Square } from 'chess.js';
 import {
   checkBlunderFast,
+  computeCalibratedSideAccuracy,
   evaluateSinglePly,
   isBookPosition,
   type EvaluatedMove,
@@ -312,7 +313,7 @@ export function evaluateCoachStudentMove(
       coach.id === 'dante'
         ? 'Sharp calculation! That forcing resource creates immediate tactical pressure.'
         : 'Excellent find! You spotted the strongest dynamic idea in the position.';
-  } else if (quality === 'Best' || quality === 'Good') {
+  } else if (quality === 'Best' || quality === 'Excellent' || quality === 'Good') {
     if (played.flags.includes('k') || played.flags.includes('q')) {
       explanation =
         coach.id === 'elena'
@@ -338,6 +339,12 @@ export function evaluateCoachStudentMove(
       bestSan !== played.san
         ? `${played.san} lets slip a bit of momentum (-${(cpLoss / 100).toFixed(2)}). ${bestSan} kept stronger pressure.`
         : `${played.san} loses slight accuracy (-${(cpLoss / 100).toFixed(2)}). Look for more active piece play.`;
+  } else if (quality === 'Miss') {
+    headline = `${played.san} is a Miss`;
+    explanation =
+      bestSan !== played.san
+        ? `You missed a winning tactical chance — ${bestSan} kept a decisive advantage.`
+        : `You missed a sharper continuation here.`;
   } else {
     headline =
       quality === 'Blunder'
@@ -690,6 +697,17 @@ export function buildSmartMoveAnalysis(
     } else {
       why = `Exact engine preference — ${move.san} improves your ${PIECE_NAMES[movedPiece]} without creating targets.`;
     }
+  } else if (move.quality === 'Excellent') {
+    headline = `${movePrefix} is Excellent`;
+    if (isCastle) {
+      why = 'Strong, practical castling that keeps your king safe and your pieces active.';
+    } else if (isCapture && capturedPiece) {
+      why = `Clean capture removing the ${PIECE_NAMES[capturedPiece]} on ${move.to} while keeping nearly full accuracy.`;
+    } else {
+      why = hasDistinctBest
+        ? `${move.san} is very strong (${moverWinAfter}% win chance), almost matching ${move.bestMoveSan}.`
+        : `${move.san} keeps tight piece coordination and control.`;
+    }
   } else if (move.quality === 'Good') {
     headline = `${movePrefix} is Good`;
     if (isCastle) {
@@ -712,6 +730,14 @@ export function buildSmartMoveAnalysis(
         : `${move.san} lets some pressure slip (-${evalDropPawns}, ${winChanceDelta >= 0 ? '+' : ''}${winChanceDelta}% win chance).`;
     if (hasDistinctBest) {
       betterPlan = `${coach.name} suggests ${move.bestMoveSan} (${move.bestMoveFrom}→${move.bestMoveTo}) to stay more active.`;
+    }
+  } else if (move.quality === 'Miss') {
+    headline = `${movePrefix} is a Miss (×)`;
+    why = hasDistinctBest
+      ? `${move.san} misses a decisive tactical opportunity (-${evalDropPawns}). ${move.bestMoveSan} was winning cleanly.`
+      : `${move.san} lets a decisive tactical opportunity slip away.`;
+    if (hasDistinctBest) {
+      betterPlan = `Winning move: ${move.bestMoveSan} (${move.bestMoveFrom}→${move.bestMoveTo}) keeps a decisive advantage.`;
     }
   } else if (move.quality === 'Mistake') {
     headline = `${movePrefix} is a Mistake (?)`;
@@ -764,10 +790,8 @@ export function buildSmartMoveAnalysis(
 
 function computeSubsetAccuracy(subset: EvaluatedMove[]): number | null {
   if (subset.length === 0) return null;
-  if (subset.every((m) => typeof m.accuracyPercent === 'number')) {
-    const avg =
-      subset.reduce((s, m) => s + (m.accuracyPercent ?? 0), 0) / subset.length;
-    return Math.max(0, Math.min(100, Math.round(avg * 10) / 10));
+  if (subset.some((m) => typeof m.accuracyPercent === 'number')) {
+    return computeCalibratedSideAccuracy(subset);
   }
   const avgLoss = subset.reduce((s, m) => s + Math.min(m.cpLoss, 500), 0) / subset.length;
   return Math.max(15, Math.min(99, Math.round(100 * Math.exp(-0.0038 * avgLoss))));
@@ -830,11 +854,16 @@ export function buildSmartGameInsights(
     : null;
 
   const blunders = mine.filter((m) => m.quality === 'Blunder');
-  const mistakes = mine.filter((m) => m.quality === 'Mistake');
+  const mistakes = mine.filter((m) => m.quality === 'Mistake' || m.quality === 'Miss');
   const inaccuracies = mine.filter((m) => m.quality === 'Inaccuracy');
-  const missedWins = mine.filter((m) => m.isMissedWin);
+  const missedWins = mine.filter((m) => m.isMissedWin || m.quality === 'Miss');
   const topMoves = mine.filter(
-    (m) => m.quality === 'Best' || m.quality === 'Great' || m.quality === 'Brilliant' || m.quality === 'Book',
+    (m) =>
+      m.quality === 'Best' ||
+      m.quality === 'Excellent' ||
+      m.quality === 'Great' ||
+      m.quality === 'Brilliant' ||
+      m.quality === 'Book',
   );
   const brilliantOrGreat = mine.filter((m) => m.quality === 'Brilliant' || m.quality === 'Great');
 

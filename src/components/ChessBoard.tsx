@@ -18,7 +18,16 @@ import {
 } from '../chess/theme';
 import { ChessPiece } from './ChessPiece';
 import { MOVE_QUALITY_META, MoveBadge } from './MoveBadge';
-import { computeBoardTransitions } from '../chess/boardMotion';
+import {
+  computeBoardTransitions,
+  computeDragTiltDeg,
+  computeMotionTrailPolygon,
+  computeOverlaySlideGeometry,
+  getDragActivationThreshold,
+  getPieceAnimationTiming,
+  type MotionTrailPolygon,
+  type OverlaySlideGeometry,
+} from '../chess/boardMotion';
 
 export type { BoardTheme };
 
@@ -60,6 +69,7 @@ interface ChessBoardProps {
   lastMoveCapture?: boolean;
   hintSquares?: { from?: string; to?: string } | null;
   moveBadge?: { square: string; quality: MoveQuality } | null;
+  puzzleBadge?: { square: string; status: 'correct' | 'wrong' } | null;
   bestMoveArrow?: { from: string; to: string } | null;
   premove?: { from: string; to: string; promotion?: PieceSymbol } | null;
   premoves?: QueuedPremove[];
@@ -75,6 +85,7 @@ interface ChessBoardProps {
   animationSpeed?: AnimationSpeed;
   coordinateStyle?: CoordinateStyle;
   highlightMoves?: boolean;
+  initialAnimateFromFen?: string | null;
   onMove: (from: string, to: string, promotion?: PieceSymbol) => boolean;
 }
 
@@ -103,6 +114,7 @@ export function ChessBoard({
   lastMoveCapture = false,
   hintSquares = null,
   moveBadge = null,
+  puzzleBadge = null,
   bestMoveArrow = null,
   premove = null,
   premoves,
@@ -118,6 +130,7 @@ export function ChessBoard({
   animationSpeed,
   coordinateStyle,
   highlightMoves,
+  initialAnimateFromFen = null,
   onMove,
 }: ChessBoardProps) {
   const { prefs } = useChessTheme();
@@ -155,10 +168,22 @@ export function ChessBoard({
   const dragLiveRef = useRef<{
     curX: number;
     curY: number;
+    lastX: number;
+    vx: number;
     tiltDeg: number;
     squareSize: number;
+    isTouch: boolean;
     rafId: number | null;
-  }>({ curX: 0, curY: 0, tiltDeg: 0, squareSize: 48, rafId: null });
+  }>({
+    curX: 0,
+    curY: 0,
+    lastX: 0,
+    vx: 0,
+    tiltDeg: 0,
+    squareSize: 48,
+    isTouch: false,
+    rafId: null,
+  });
   const suppressSlideRef = useRef<string | null>(null);
   const skipNextClickRef = useRef(false);
 
@@ -173,13 +198,65 @@ export function ChessBoard({
   const [markedSquares, setMarkedSquares] = useState<string[]>([]);
   const [userArrows, setUserArrows] = useState<UserArrow[]>([]);
   const [rightDragFrom, setRightDragFrom] = useState<Square | null>(null);
-  const prevFenRef = useRef<string>(fen);
+  const prevFenRef = useRef<string>(initialAnimateFromFen ?? fen);
+  const lastMoveRef = useRef(lastMove);
+  lastMoveRef.current = lastMove;
   const animSeqRef = useRef<number>(0);
-  const [activeTransition, setActiveTransition] = useState<{
+  const [activeSlides, setActiveSlides] = useState<{
     seq: number;
-    slides: Map<string, { from: Square; to: Square; isKnight: boolean }>;
-    captured: { square: Square; type: PieceSymbol; color: Color } | null;
-  }>({ seq: 0, slides: new Map(), captured: null });
+    durationMs: number;
+    items: Array<{
+      id: string;
+      to: Square;
+      type: PieceSymbol;
+      color: Color;
+      isKnight: boolean;
+      geom: OverlaySlideGeometry;
+    }>;
+  } | null>(null);
+  const [activeSnapback, setActiveSnapback] = useState<{
+    seq: number;
+    square: Square;
+    type: PieceSymbol;
+    color: Color;
+    leftPct: number;
+    topPct: number;
+    snapX: number;
+    snapY: number;
+  } | null>(null);
+  const [dragSettle, setDragSettle] = useState<{
+    seq: number;
+    square: Square;
+  } | null>(null);
+  const [capturedGhost, setCapturedGhost] = useState<{
+    seq: number;
+    square: Square;
+    type: PieceSymbol;
+    color: Color;
+    delayMs: number;
+    fadeMs: number;
+  } | null>(null);
+  const [motionTrails, setMotionTrails] = useState<{
+    seq: number;
+    durationMs: number;
+    items: Array<MotionTrailPolygon & { id: string }>;
+  } | null>(null);
+  const [captureBurst, setCaptureBurst] = useState<{
+    seq: number;
+    square: Square;
+    delayMs: number;
+  } | null>(null);
+  const [illegalFlash, setIllegalFlash] = useState<{
+    seq: number;
+    square: Square;
+  } | null>(null);
+  const slideTimerRef = useRef<number | null>(null);
+  const snapbackTimerRef = useRef<number | null>(null);
+  const settleTimerRef = useRef<number | null>(null);
+  const ghostTimerRef = useRef<number | null>(null);
+  const trailTimerRef = useRef<number | null>(null);
+  const captureBurstTimerRef = useRef<number | null>(null);
+  const illegalFlashTimerRef = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     const prevFen = prevFenRef.current;
@@ -188,39 +265,186 @@ export function ChessBoard({
       return;
     }
 
-    const moveKey = lastMove?.from && lastMove?.to ? `${lastMove.from}-${lastMove.to}-${fen}` : null;
-    if (moveKey && suppressSlideRef.current === moveKey) {
+    const lm = lastMoveRef.current;
+    const moveKey = lm?.from && lm?.to ? `${lm.from}-${lm.to}-${fen}` : null;
+    const wasDragDrop = Boolean(moveKey && suppressSlideRef.current === moveKey);
+    if (wasDragDrop) {
       suppressSlideRef.current = null;
-      return;
     }
 
-    const result = computeBoardTransitions(prevFen, fen, lastMove);
+    const result = computeBoardTransitions(prevFen, fen, lm);
     if (result.slides.length === 0 && !result.captured) {
+      setActiveSlides(null);
       return;
     }
 
+    const timing = getPieceAnimationTiming(activeAnimationSpeed);
     const seq = ++animSeqRef.current;
-    const slidesMap = new Map<string, { from: Square; to: Square; isKnight: boolean }>();
-    for (const s of result.slides) {
-      slidesMap.set(s.to, { from: s.from, to: s.to, isKnight: s.isKnight });
-    }
-    setActiveTransition({
-      seq,
-      slides: slidesMap,
-      captured: result.captured,
-    });
 
-    const clearMs = activeAnimationSpeed === 'fast' ? 145 : 215;
-    const timer = window.setTimeout(() => {
-      setActiveTransition((cur) => (cur.seq === seq ? { seq, slides: new Map(), captured: null } : cur));
-    }, clearMs);
-    return () => window.clearTimeout(timer);
-  }, [fen, lastMove, activeAnimationSpeed]);
+    if (wasDragDrop) {
+      setActiveSlides(null);
+      setActiveSnapback(null);
+      if (lm?.to && timing.durationMs > 0) {
+        setDragSettle({ seq, square: lm.to as Square });
+        if (settleTimerRef.current !== null) {
+          window.clearTimeout(settleTimerRef.current);
+        }
+        settleTimerRef.current = window.setTimeout(() => {
+          setDragSettle((cur) => (cur?.seq === seq ? null : cur));
+        }, 145);
+      }
+      if (result.captured) {
+        setCaptureBurst({ seq, square: result.captured.square, delayMs: 0 });
+        if (captureBurstTimerRef.current !== null) {
+          window.clearTimeout(captureBurstTimerRef.current);
+        }
+        captureBurstTimerRef.current = window.setTimeout(() => {
+          setCaptureBurst((cur) => (cur?.seq === seq ? null : cur));
+        }, 300);
+      }
+      setCapturedGhost(null);
+      setMotionTrails(null);
+      return;
+    }
+
+    const nextSlides: Array<{
+      id: string;
+      to: Square;
+      type: PieceSymbol;
+      color: Color;
+      isKnight: boolean;
+      geom: OverlaySlideGeometry;
+    }> = [];
+    const nextTrails: Array<MotionTrailPolygon & { id: string }> = [];
+
+    if (timing.durationMs > 0) {
+      for (let i = 0; i < result.slides.length; i++) {
+        const s = result.slides[i];
+        const fromVis = squareToVisual(s.from, orientation);
+        const toVis = squareToVisual(s.to, orientation);
+        if (!fromVis || !toVis) continue;
+
+        const geom = computeOverlaySlideGeometry(
+          fromVis.col,
+          fromVis.row,
+          toVis.col,
+          toVis.row,
+        );
+        if (!geom) continue;
+
+        nextSlides.push({
+          id: `${seq}-${i}-${s.from}-${s.to}`,
+          to: s.to,
+          type: s.type,
+          color: s.color,
+          isKnight: s.isKnight,
+          geom,
+        });
+
+        const trail = computeMotionTrailPolygon(
+          fromVis.col,
+          fromVis.row,
+          toVis.col,
+          toVis.row,
+        );
+        if (trail) {
+          nextTrails.push({ ...trail, id: `${seq}-${i}-${s.from}-${s.to}` });
+        }
+      }
+    }
+
+    setActiveSnapback(null);
+    setDragSettle(null);
+
+    if (nextSlides.length > 0 && timing.durationMs > 0) {
+      setActiveSlides({
+        seq,
+        durationMs: timing.durationMs,
+        items: nextSlides,
+      });
+      if (slideTimerRef.current !== null) {
+        window.clearTimeout(slideTimerRef.current);
+      }
+      // Safety fallback for background tabs; normal completion fires cleanly via onAnimationEnd
+      slideTimerRef.current = window.setTimeout(() => {
+        setActiveSlides((cur) => (cur?.seq === seq ? null : cur));
+      }, timing.durationMs + 140);
+    } else {
+      setActiveSlides(null);
+    }
+
+    if (nextTrails.length > 0 && timing.trailDurationMs > 0) {
+      setMotionTrails({
+        seq,
+        durationMs: timing.trailDurationMs,
+        items: nextTrails,
+      });
+      if (trailTimerRef.current !== null) {
+        window.clearTimeout(trailTimerRef.current);
+      }
+      trailTimerRef.current = window.setTimeout(() => {
+        setMotionTrails((cur) => (cur?.seq === seq ? null : cur));
+      }, timing.trailDurationMs + 40);
+    } else {
+      setMotionTrails(null);
+    }
+
+    if (result.captured && timing.durationMs > 0) {
+      setCapturedGhost({
+        seq,
+        square: result.captured.square,
+        type: result.captured.type,
+        color: result.captured.color,
+        delayMs: timing.captureDelayMs,
+        fadeMs: timing.captureFadeMs,
+      });
+      setCaptureBurst({
+        seq,
+        square: result.captured.square,
+        delayMs: Math.max(0, timing.captureDelayMs - 15),
+      });
+      if (captureBurstTimerRef.current !== null) {
+        window.clearTimeout(captureBurstTimerRef.current);
+      }
+      captureBurstTimerRef.current = window.setTimeout(() => {
+        setCaptureBurst((cur) => (cur?.seq === seq ? null : cur));
+      }, timing.durationMs + 140);
+      if (ghostTimerRef.current !== null) {
+        window.clearTimeout(ghostTimerRef.current);
+      }
+      ghostTimerRef.current = window.setTimeout(() => {
+        setCapturedGhost((cur) => (cur?.seq === seq ? null : cur));
+      }, timing.durationMs + 40);
+    } else {
+      setCapturedGhost(null);
+    }
+  }, [fen, orientation, activeAnimationSpeed]);
 
   useEffect(() => {
     return () => {
       if (dragLiveRef.current.rafId !== null) {
         window.cancelAnimationFrame(dragLiveRef.current.rafId);
+      }
+      if (slideTimerRef.current !== null) {
+        window.clearTimeout(slideTimerRef.current);
+      }
+      if (snapbackTimerRef.current !== null) {
+        window.clearTimeout(snapbackTimerRef.current);
+      }
+      if (settleTimerRef.current !== null) {
+        window.clearTimeout(settleTimerRef.current);
+      }
+      if (ghostTimerRef.current !== null) {
+        window.clearTimeout(ghostTimerRef.current);
+      }
+      if (trailTimerRef.current !== null) {
+        window.clearTimeout(trailTimerRef.current);
+      }
+      if (captureBurstTimerRef.current !== null) {
+        window.clearTimeout(captureBurstTimerRef.current);
+      }
+      if (illegalFlashTimerRef.current !== null) {
+        window.clearTimeout(illegalFlashTimerRef.current);
       }
     };
   }, []);
@@ -334,85 +558,6 @@ export function ChessBoard({
 
   const displayRanks = orientation === 'w' ? RANKS : [...RANKS].reverse();
   const displayFiles = orientation === 'w' ? FILES : [...FILES].reverse();
-
-  const slideOffsets = useMemo(() => {
-    const map = new Map<
-      string,
-      { dx: number; dy: number; tiltDeg: number; isKnight: boolean; seq: number }
-    >();
-    if (activeAnimationSpeed === 'none' || activeTransition.slides.size === 0) return map;
-
-    for (const [toSq, s] of activeTransition.slides.entries()) {
-      const fromVis = squareToVisual(s.from, orientation);
-      const toVis = squareToVisual(s.to, orientation);
-      if (!fromVis || !toVis) continue;
-      const colDelta = toVis.col - fromVis.col;
-      const rowDelta = toVis.row - fromVis.row;
-      const tiltDeg =
-        colDelta > 0
-          ? Math.min(13, 6 + colDelta * 2.5)
-          : colDelta < 0
-            ? Math.max(-13, -6 + colDelta * 2.5)
-            : rowDelta < 0
-              ? 3
-              : -3;
-      map.set(toSq, {
-        dx: (fromVis.col - toVis.col) * 100,
-        dy: (fromVis.row - toVis.row) * 100,
-        tiltDeg,
-        isKnight: s.isKnight,
-        seq: activeTransition.seq,
-      });
-    }
-    return map;
-  }, [activeTransition, orientation, activeAnimationSpeed]);
-
-  const motionTrailPolygons = useMemo(() => {
-    if (activeAnimationSpeed === 'none' || activeTransition.slides.size === 0) return [];
-    const trails: Array<{
-      id: string;
-      x1: number;
-      y1: number;
-      x2: number;
-      y2: number;
-      points: string;
-    }> = [];
-    for (const [toSq, s] of activeTransition.slides.entries()) {
-      const fromVis = squareToVisual(s.from, orientation);
-      const toVis = squareToVisual(s.to, orientation);
-      if (!fromVis || !toVis) continue;
-      const x1 = fromVis.col * 100 + 50;
-      const y1 = fromVis.row * 100 + 50;
-      const x2 = toVis.col * 100 + 50;
-      const y2 = toVis.row * 100 + 50;
-      const vx = x2 - x1;
-      const vy = y2 - y1;
-      const len = Math.hypot(vx, vy);
-      if (len < 12) continue;
-      const nx = -vy / len;
-      const ny = vx / len;
-      // Tapered luminous comet ribbon from origin square to landing square
-      const startHalfW = 14;
-      const endHalfW = Math.min(40, 28 + len * 0.035);
-      const p1x = x1 + nx * startHalfW;
-      const p1y = y1 + ny * startHalfW;
-      const p2x = x1 - nx * startHalfW;
-      const p2y = y1 - ny * startHalfW;
-      const p3x = x2 - nx * endHalfW;
-      const p3y = y2 - ny * endHalfW;
-      const p4x = x2 + nx * endHalfW;
-      const p4y = y2 + ny * endHalfW;
-      trails.push({
-        id: `trail-${activeTransition.seq}-${toSq}`,
-        x1,
-        y1,
-        x2,
-        y2,
-        points: `${p1x.toFixed(1)},${p1y.toFixed(1)} ${p2x.toFixed(1)},${p2y.toFixed(1)} ${p3x.toFixed(1)},${p3y.toFixed(1)} ${p4x.toFixed(1)},${p4y.toFixed(1)}`,
-      });
-    }
-    return trails;
-  }, [activeTransition, orientation, activeAnimationSpeed]);
 
   const buildArrowSegment = (fromSq: string, toSq: string) => {
     if (!fromSq || !toSq || fromSq === toSq) return null;
@@ -637,8 +782,11 @@ export function ChessBoard({
 
     dragLiveRef.current.curX = e.clientX;
     dragLiveRef.current.curY = e.clientY;
+    dragLiveRef.current.lastX = e.clientX;
+    dragLiveRef.current.vx = 0;
     dragLiveRef.current.tiltDeg = 0;
     dragLiveRef.current.squareSize = squareSize;
+    dragLiveRef.current.isTouch = e.pointerType === 'touch';
 
     setDragState({
       from: sq,
@@ -654,23 +802,32 @@ export function ChessBoard({
 
   const syncFloatingDragTransform = () => {
     const el = floatingDragRef.current;
-    if (!el) return;
     const live = dragLiveRef.current;
-    const piecePx = live.squareSize * 1.56;
+    if (!el) return;
+    live.tiltDeg = computeDragTiltDeg(live.vx, live.tiltDeg);
+    live.vx *= 0.45;
+    const piecePx = live.squareSize * 1.38;
+    const liftY = live.isTouch ? live.squareSize * 0.48 : live.squareSize * 0.1;
     const tx = live.curX - piecePx / 2;
-    const ty = live.curY - piecePx / 2 - live.squareSize * 0.32;
-    el.style.transform = `translate3d(${tx.toFixed(1)}px, ${ty.toFixed(1)}px, 0) rotate(${live.tiltDeg.toFixed(1)}deg)`;
+    const ty = live.curY - piecePx / 2 - liftY;
+    el.style.transform = `translate3d(${tx.toFixed(1)}px, ${ty.toFixed(1)}px, 0) rotate(${live.tiltDeg.toFixed(2)}deg)`;
+
+    // Keep decaying tilt smoothly back to 0° while holding piece still
+    if (Math.abs(live.tiltDeg) > 0.12) {
+      live.rafId = window.requestAnimationFrame(() => {
+        dragLiveRef.current.rafId = null;
+        syncFloatingDragTransform();
+      });
+    }
   };
 
   const handlePointerMoveSquare = (e: React.PointerEvent<HTMLButtonElement>) => {
     if (!dragState) return;
     const live = dragLiveRef.current;
-    const deltaX = e.clientX - live.curX;
-    const targetTilt = Math.max(-15, Math.min(15, deltaX * 1.05));
-    const smoothedTilt = live.tiltDeg * 0.62 + targetTilt * 0.38;
+    live.vx = e.clientX - live.lastX;
+    live.lastX = e.clientX;
     live.curX = e.clientX;
     live.curY = e.clientY;
-    live.tiltDeg = Math.abs(smoothedTilt) < 0.2 ? 0 : smoothedTilt;
 
     if (live.rafId === null) {
       live.rafId = window.requestAnimationFrame(() => {
@@ -680,7 +837,8 @@ export function ChessBoard({
     }
 
     const dist = Math.hypot(e.clientX - dragState.startX, e.clientY - dragState.startY);
-    const nextActive = dragState.active || dist > 5;
+    const dragThreshold = getDragActivationThreshold(e.pointerType);
+    const nextActive = dragState.active || dist > dragThreshold;
     const hover = getSquareFromPoint(e.clientX, e.clientY);
 
     // Only trigger React state update when drag activates or hovered square actually changes
@@ -725,6 +883,8 @@ export function ChessBoard({
       dragLiveRef.current.rafId = null;
     }
     const currentDrag = dragState;
+    const releaseX = e.clientX;
+    const releaseY = e.clientY;
     setDragState(null);
 
     if (currentDrag.active) {
@@ -732,9 +892,48 @@ export function ChessBoard({
       window.setTimeout(() => {
         skipNextClickRef.current = false;
       }, 0);
-      const dropSquare = getSquareFromPoint(e.clientX, e.clientY);
+      const dropSquare = getSquareFromPoint(releaseX, releaseY);
       if (dropSquare && dropSquare !== currentDrag.from) {
-        attemptMove(currentDrag.from, dropSquare, true);
+        const moved = attemptMove(currentDrag.from, dropSquare, true);
+        if (!moved) {
+          // Illegal drop: brief crimson flash on target square + smooth snapback to origin
+          const flashSeq = ++animSeqRef.current;
+          setIllegalFlash({ seq: flashSeq, square: dropSquare });
+          if (illegalFlashTimerRef.current !== null) {
+            window.clearTimeout(illegalFlashTimerRef.current);
+          }
+          illegalFlashTimerRef.current = window.setTimeout(() => {
+            setIllegalFlash((cur) => (cur?.seq === flashSeq ? null : cur));
+          }, 320);
+
+          if (activeAnimationSpeed !== 'none') {
+            const originVis = squareToVisual(currentDrag.from, orientation);
+            const boardEl = boardRef.current;
+            if (originVis && boardEl) {
+              const boardRect = boardEl.getBoundingClientRect();
+              const sqPx = boardRect.width / 8;
+              const originCenterX = boardRect.left + (originVis.col + 0.5) * sqPx;
+              const originCenterY = boardRect.top + (originVis.row + 0.5) * sqPx;
+              const snapSeq = ++animSeqRef.current;
+              setActiveSnapback({
+                seq: snapSeq,
+                square: currentDrag.from,
+                type: currentDrag.pieceType,
+                color: currentDrag.pieceColor,
+                leftPct: originVis.col * 12.5,
+                topPct: originVis.row * 12.5,
+                snapX: Number((releaseX - originCenterX).toFixed(1)),
+                snapY: Number((releaseY - originCenterY).toFixed(1)),
+              });
+              if (snapbackTimerRef.current !== null) {
+                window.clearTimeout(snapbackTimerRef.current);
+              }
+              snapbackTimerRef.current = window.setTimeout(() => {
+                setActiveSnapback((cur) => (cur?.seq === snapSeq ? null : cur));
+              }, 185);
+            }
+          }
+        }
       } else {
         setSelectedSquare(currentDrag.from);
       }
@@ -748,19 +947,13 @@ export function ChessBoard({
         ? '0ms'
         : activeAnimationSpeed === 'fast'
           ? '95ms'
-          : '145ms',
+          : '150ms',
     '--knight-anim-ms':
       activeAnimationSpeed === 'none'
         ? '0ms'
         : activeAnimationSpeed === 'fast'
-          ? '115ms'
-          : '165ms',
-    '--trail-anim-ms':
-      activeAnimationSpeed === 'none'
-        ? '0ms'
-        : activeAnimationSpeed === 'fast'
-          ? '135ms'
-          : '195ms',
+          ? '105ms'
+          : '160ms',
   } as CSSProperties;
 
   const isOutsideCoords = activeCoordStyle === 'outside';
@@ -805,8 +998,6 @@ export function ChessBoard({
                 inCheck && piece?.type === 'k' && piece.color === activeTurn;
               const isHint = hintSquares?.from === sq || hintSquares?.to === sq;
               const targetInfo = legalMovesFromSelected.get(sq);
-              const slide = slideOffsets.get(sq);
-              const isMovingPiece = Boolean(slide && piece);
               const isBeingDragged = Boolean(dragState?.active && dragState.from === sq);
               const showBadge = Boolean(moveBadge && moveBadge.square === sq);
 
@@ -824,13 +1015,7 @@ export function ChessBoard({
                 ? `${piece.color === 'w' ? 'White' : 'Black'} ${PIECE_NAMES[piece.type]}`
                 : 'empty square';
 
-              const slideStyle = slide
-                ? ({
-                    '--from-x': `${slide.dx}%`,
-                    '--from-y': `${slide.dy}%`,
-                    '--slide-tilt': `${slide.tiltDeg.toFixed(1)}deg`,
-                  } as CSSProperties)
-                : undefined;
+              const showPuzzleBadge = Boolean(puzzleBadge && puzzleBadge.square === sq);
 
               const customHighlight = highlightSquares.find((h) => h.square === sq);
               const customHighlightBg =
@@ -858,7 +1043,7 @@ export function ChessBoard({
                   onPointerCancel={() => setDragState(null)}
                   style={{ backgroundColor: bg }}
                   className={`relative flex items-center justify-center p-0 border-0 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#81B64C] transition-colors duration-75 ${
-                    isMovingPiece ? 'z-30' : showBadge ? 'z-20' : 'z-0'
+                    showBadge || (dragState?.active && dragState.hoverSquare === sq) ? 'z-20' : 'z-0'
                   } ${interactive || onSquareClick ? 'cursor-pointer' : 'cursor-default'}`}
                 >
                   {/* Queued Premove Highlight */}
@@ -887,7 +1072,38 @@ export function ChessBoard({
                     />
                   )}
 
-                  {/* Pure circular target halo handles drag hover targeting cleanly */}
+                  {/* Chess.com Arcade soft circular hover halo + crisp inset ring when dragging over a square */}
+                  {dragState?.active && dragState.hoverSquare === sq && (
+                    <>
+                      <span
+                        data-testid="drag-hover-halo"
+                        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[215%] h-[215%] rounded-full pointer-events-none z-15"
+                        style={{
+                          backgroundColor: isDragHover
+                            ? 'rgba(0, 0, 0, 0.23)'
+                            : 'rgba(0, 0, 0, 0.18)',
+                        }}
+                      />
+                      <span
+                        className="absolute inset-0 pointer-events-none z-15"
+                        style={{
+                          boxShadow: isDragHover
+                            ? 'inset 0 0 0 3px rgba(255, 255, 255, 0.72)'
+                            : 'inset 0 0 0 2.5px rgba(255, 255, 255, 0.42)',
+                        }}
+                      />
+                    </>
+                  )}
+
+                  {/* Illegal drop crimson square flash (matches Chess.com mobile invalid drop feedback) */}
+                  {illegalFlash && illegalFlash.square === sq && (
+                    <span
+                      key={`illegal-${illegalFlash.seq}-${sq}`}
+                      data-testid="illegal-drop-flash"
+                      className="animate-illegal-flash absolute inset-0 pointer-events-none z-25"
+                      style={{ backgroundColor: 'rgba(235, 97, 80, 0.76)' }}
+                    />
+                  )}
 
                   {/* Custom study/coordinate square highlight */}
                   {customHighlight && (
@@ -955,55 +1171,73 @@ export function ChessBoard({
                   )}
 
                   {/* Subtle fading captured piece beneath the landing piece */}
-                  {activeTransition.captured && activeTransition.captured.square === sq && (
+                  {capturedGhost && capturedGhost.square === sq && (
                     <div
-                      key={`ghost-${activeTransition.seq}-${activeTransition.captured.square}`}
+                      key={`ghost-${capturedGhost.seq}-${capturedGhost.square}`}
+                      style={{
+                        animationDelay: `${capturedGhost.delayMs}ms`,
+                        animationDuration: `${capturedGhost.fadeMs}ms`,
+                      }}
                       className="animate-captured-fade absolute inset-0 flex items-center justify-center pointer-events-none z-10"
                     >
                       <div className="w-[93%] h-[93%]">
                         <ChessPiece
-                          type={activeTransition.captured.type}
-                          color={activeTransition.captured.color}
+                          type={capturedGhost.type}
+                          color={capturedGhost.color}
                           pieceTheme={activePieceTheme}
                         />
                       </div>
                     </div>
                   )}
 
-                  {/* Origin square stays clean yellow while piece is lifted in Arcade drag */}
-
-                  {/* Real Piece with smooth square-to-square glide / knight parabolic hop */}
-                  {piece && !isBeingDragged && !ghostPremovePiece && (
+                  {/* Chess.com Arcade capture white shockwave ring & impact flash */}
+                  {captureBurst && captureBurst.square === sq && (
                     <div
-                      key={
-                        isMovingPiece && slide
-                          ? `${sq}-move-${slide.seq}`
-                          : `${sq}-${piece.color}-${piece.type}`
-                      }
-                      style={slideStyle}
-                      className={`w-full h-full flex items-center justify-center z-20 ${
-                        isVacatedByPremove ? 'opacity-35 scale-90 transition-all duration-100' : ''
-                      } ${
-                        isMovingPiece
-                          ? slide?.isKnight || piece.type === 'n'
-                            ? 'animate-knight-hop'
-                            : 'animate-piece-slide'
-                          : ''
-                      }`}
+                      key={`burst-${captureBurst.seq}-${captureBurst.square}`}
+                      data-testid="capture-impact-burst"
+                      className="absolute inset-0 flex items-center justify-center pointer-events-none z-30"
                     >
+                      <span
+                        style={{ animationDelay: `${captureBurst.delayMs}ms` }}
+                        className="animate-capture-flash absolute w-[68%] h-[68%] rounded-full bg-white/55 blur-[1px]"
+                      />
+                      <span
+                        style={{ animationDelay: `${captureBurst.delayMs}ms` }}
+                        className="animate-capture-ring absolute w-[94%] h-[94%] rounded-full border-[4px] border-white/85"
+                      />
+                    </div>
+                  )}
+
+                  {/* Real Piece (temporarily hidden while gliding smoothly in the board-level overlay) */}
+                  {piece && !isBeingDragged && !ghostPremovePiece && (() => {
+                    const isGlidingInOverlay = Boolean(
+                      activeSlides?.items.some((sl) => sl.to === sq) ||
+                        activeSnapback?.square === sq,
+                    );
+                    const isSettling = dragSettle?.square === sq;
+                    return (
                       <div
-                        className={`w-[93%] h-[93%] transition-transform duration-100 ${
-                          isSelected ? 'scale-[1.03]' : ''
+                        key={isSettling ? `settle-${dragSettle.seq}-${sq}` : undefined}
+                        className={`w-full h-full flex items-center justify-center z-20 ${
+                          isGlidingInOverlay ? 'opacity-0 pointer-events-none' : ''
+                        } ${isSettling ? 'animate-drag-settle' : ''} ${
+                          isVacatedByPremove ? 'opacity-35 scale-90 transition-all duration-100' : ''
                         }`}
                       >
-                        <ChessPiece
-                          type={piece.type}
-                          color={piece.color}
-                          pieceTheme={activePieceTheme}
-                        />
+                        <div
+                          className={`w-[93%] h-[93%] transition-transform duration-100 ${
+                            isSelected ? 'scale-[1.03]' : ''
+                          }`}
+                        >
+                          <ChessPiece
+                            type={piece.type}
+                            color={piece.color}
+                            pieceTheme={activePieceTheme}
+                          />
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
 
                   {/* Ghost Premove Destination Preview Piece + Queue Order Badge */}
                   {ghostPremovePiece && !isBeingDragged && (
@@ -1035,81 +1269,179 @@ export function ChessBoard({
                       className="animate-badge-pop absolute top-[2.5%] right-[2.5%] z-40 pointer-events-none"
                     />
                   )}
+
+                  {/* Exact Chess.com Puzzle Solved ✓ / Wrong ✕ Corner Badge */}
+                  {showPuzzleBadge && puzzleBadge && (
+                    <span
+                      key={`pbadge-${sq}-${puzzleBadge.status}`}
+                      aria-label={puzzleBadge.status === 'correct' ? 'Correct puzzle move' : 'Incorrect puzzle move'}
+                      className={`animate-badge-pop absolute top-[2%] right-[2%] w-[34%] h-[34%] rounded-full flex items-center justify-center z-40 pointer-events-none shadow-[0_2px_6px_rgba(0,0,0,0.45)] ring-2 ring-white/95 ${
+                        puzzleBadge.status === 'correct'
+                          ? 'bg-[#81B64C]'
+                          : 'bg-[#FA412D]'
+                      }`}
+                    >
+                      {puzzleBadge.status === 'correct' ? (
+                        <svg viewBox="0 0 20 20" className="w-[68%] h-[68%] text-white" fill="none" aria-hidden="true">
+                          <path
+                            d="M4.2 10.4L8.1 14.3L15.8 6.2"
+                            stroke="currentColor"
+                            strokeWidth="3"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      ) : (
+                        <svg viewBox="0 0 20 20" className="w-[64%] h-[64%] text-white" fill="none" aria-hidden="true">
+                          <path
+                            d="M5.5 5.5L14.5 14.5M14.5 5.5L5.5 14.5"
+                            stroke="currentColor"
+                            strokeWidth="3"
+                            strokeLinecap="round"
+                          />
+                        </svg>
+                      )}
+                    </span>
+                  )}
                 </button>
               );
             }),
           )}
         </div>
 
-        {/* Luminous White Comet Motion Trail Overlay (beneath sliding pieces) */}
-        {motionTrailPolygons.length > 0 && (
+        {/* Board-Level Clip-Free Floating Piece Glide Overlay (silky 60fps on mobile & desktop) */}
+        {((activeSlides && activeSlides.items.length > 0) || activeSnapback) && (
+          <div
+            data-testid="piece-slide-overlay"
+            aria-hidden="true"
+            className="absolute inset-0 pointer-events-none z-40"
+          >
+            {activeSlides?.items.map((slide, idx) => (
+              <div
+                key={slide.id}
+                data-testid="gliding-piece"
+                data-to-square={slide.to}
+                onAnimationEnd={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  if (idx === 0) {
+                    const finishedSeq = activeSlides.seq;
+                    setActiveSlides((cur) => (cur?.seq === finishedSeq ? null : cur));
+                  }
+                }}
+                style={
+                  {
+                    left: `${slide.geom.leftPct}%`,
+                    top: `${slide.geom.topPct}%`,
+                    width: '12.5%',
+                    height: '12.5%',
+                    animationDuration: `${activeSlides.durationMs}ms`,
+                    '--from-x': `${slide.geom.fromXPercent}%`,
+                    '--from-y': `${slide.geom.fromYPercent}%`,
+                  } as CSSProperties
+                }
+                className="absolute flex items-center justify-center animate-overlay-glide"
+              >
+                <div
+                  style={
+                    slide.isKnight
+                      ? { animationDuration: `${activeSlides.durationMs}ms` }
+                      : undefined
+                  }
+                  className={`w-[93%] h-[93%] ${slide.isKnight ? 'animate-knight-arc-scale' : ''}`}
+                >
+                  <ChessPiece
+                    type={slide.type}
+                    color={slide.color}
+                    pieceTheme={activePieceTheme}
+                  />
+                </div>
+              </div>
+            ))}
+
+            {activeSnapback && (
+              <div
+                key={`snap-${activeSnapback.seq}-${activeSnapback.square}`}
+                data-testid="snapback-piece"
+                style={
+                  {
+                    left: `${activeSnapback.leftPct}%`,
+                    top: `${activeSnapback.topPct}%`,
+                    width: '12.5%',
+                    height: '12.5%',
+                    '--snap-x': `${activeSnapback.snapX}px`,
+                    '--snap-y': `${activeSnapback.snapY}px`,
+                  } as CSSProperties
+                }
+                className="absolute flex items-center justify-center animate-overlay-snapback"
+              >
+                <div className="w-[93%] h-[93%] drop-shadow-[0_6px_12px_rgba(0,0,0,0.38)]">
+                  <ChessPiece
+                    type={activeSnapback.type}
+                    color={activeSnapback.color}
+                    pieceTheme={activePieceTheme}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Chess.com Arcade White Tapered Comet Motion Streak Layer (behind sliding pieces) */}
+        {motionTrails && motionTrails.items.length > 0 && (
           <svg
-            key={`trails-${activeTransition.seq}`}
+            key={`trails-${motionTrails.seq}`}
+            data-testid="piece-motion-trail"
             viewBox="0 0 800 800"
-            className="animate-move-trail absolute inset-0 w-full h-full pointer-events-none z-20"
+            className="absolute inset-0 w-full h-full pointer-events-none z-15"
             aria-hidden="true"
           >
             <defs>
-              {motionTrailPolygons.map((t) => (
+              {motionTrails.items.map((trail) => (
                 <linearGradient
-                  key={`grad-${t.id}`}
-                  id={`grad-${t.id}`}
+                  key={`grad-${trail.id}`}
+                  id={`oc-trail-grad-${trail.id}`}
                   gradientUnits="userSpaceOnUse"
-                  x1={t.x1}
-                  y1={t.y1}
-                  x2={t.x2}
-                  y2={t.y2}
+                  x1={trail.x1}
+                  y1={trail.y1}
+                  x2={trail.x2}
+                  y2={trail.y2}
                 >
                   <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0" />
-                  <stop offset="45%" stopColor="#FFFFFF" stopOpacity="0.34" />
-                  <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.68" />
+                  <stop offset="35%" stopColor="#FFFFFF" stopOpacity="0.22" />
+                  <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.62" />
                 </linearGradient>
               ))}
             </defs>
-            {motionTrailPolygons.map((t) => (
-              <polygon key={t.id} points={t.points} fill={`url(#grad-${t.id})`} />
+            {motionTrails.items.map((trail) => (
+              <polygon
+                key={trail.id}
+                points={trail.points}
+                fill={`url(#oc-trail-grad-${trail.id})`}
+                className="animate-move-trail"
+                style={{ animationDuration: `${motionTrails.durationMs}ms` }}
+              />
             ))}
           </svg>
         )}
 
-        {/* Large Soft Circular Target Halo Centered Under Hovered Drag Square */}
-        {dragState?.active && dragState.hoverSquare && (() => {
-          const vis = squareToVisual(dragState.hoverSquare, orientation);
-          if (!vis) return null;
-          return (
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute z-25 rounded-full"
-              style={{
-                width: '28%',
-                height: '28%',
-                left: `${(vis.col + 0.5) * 12.5}%`,
-                top: `${(vis.row + 0.5) * 12.5}%`,
-                transform: 'translate(-50%, -50%)',
-                background:
-                  'radial-gradient(circle, rgba(0,0,0,0.24) 0%, rgba(0,0,0,0.18) 68%, rgba(0,0,0,0) 72%)',
-              }}
-            />
-          );
-        })()}
-
-        {/* Floating Lifted & Dynamically Tilted Dragged Piece (GPU translate3d, zero per-pixel React re-render) */}
+        {/* Floating Arcade 1.36x Velocity-Tilted Dragged Piece */}
         {dragState?.active && boardRef.current && (() => {
-          const piecePx = dragState.squareSize * 1.56;
+          const piecePx = dragState.squareSize * 1.38;
           const live = dragLiveRef.current;
+          const liftY = live.isTouch ? dragState.squareSize * 0.48 : dragState.squareSize * 0.1;
           const initX = live.curX - piecePx / 2;
-          const initY = live.curY - piecePx / 2 - dragState.squareSize * 0.32;
+          const initY = live.curY - piecePx / 2 - liftY;
           return (
             <div
               ref={floatingDragRef}
+              data-testid="floating-drag-piece"
               aria-hidden="true"
               className="pointer-events-none fixed left-0 top-0 z-50 will-change-transform"
               style={{
                 width: piecePx,
                 height: piecePx,
-                transform: `translate3d(${initX.toFixed(1)}px, ${initY.toFixed(1)}px, 0) rotate(${live.tiltDeg.toFixed(1)}deg)`,
-                transformOrigin: '50% 65%',
-                filter: 'drop-shadow(0 12px 14px rgba(0,0,0,0.42))',
+                transform: `translate3d(${initX.toFixed(1)}px, ${initY.toFixed(1)}px, 0) rotate(${live.tiltDeg.toFixed(2)}deg)`,
+                filter: 'drop-shadow(0 12px 16px rgba(0,0,0,0.42))',
               }}
             >
               <ChessPiece

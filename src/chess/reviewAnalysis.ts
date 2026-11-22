@@ -15,23 +15,23 @@ export const REVIEW_SPEED_PRESETS: Record<ReviewSpeedPreset, ReviewSpeedOption> 
   fast: {
     id: 'fast',
     label: 'Fast',
-    depth: 11,
-    movetimeMs: 95,
-    shortDesc: 'Depth 11 · Instant',
+    depth: 12,
+    movetimeMs: 220,
+    shortDesc: 'Depth 12 · Fast',
   },
   standard: {
     id: 'standard',
     label: 'Standard',
     depth: 14,
-    movetimeMs: 185,
+    movetimeMs: 360,
     shortDesc: 'Depth 14 · Balanced',
   },
   deep: {
     id: 'deep',
     label: 'Deep',
     depth: 17,
-    movetimeMs: 420,
-    shortDesc: 'Depth 17 · Tournament',
+    movetimeMs: 700,
+    shortDesc: 'Depth 17 · Deep',
   },
 };
 
@@ -307,8 +307,261 @@ export function buildTerminalSnapshot(fen: string): PositionAnalysisSnapshot | n
 }
 
 
+export interface ParsedPgnMetadata {
+  whiteName?: string;
+  blackName?: string;
+  whiteRating?: number;
+  blackRating?: number;
+  opening?: string;
+  eco?: string;
+  speed: string;
+  timeControl?: string;
+  termination?: string;
+  result?: string;
+}
+
+const OPENING_PREFIX_BOOK: Array<{ moves: string[]; name: string }> = [
+  { moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bc4', 'Bc5', 'c3'], name: 'Italian Game: Giuoco Piano' },
+  { moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bc4', 'Bc5', 'b4'], name: 'Italian Game: Evans Gambit' },
+  { moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bc4', 'Bc5'], name: 'Italian Game: Giuoco Piano' },
+  { moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bc4', 'Nf6', 'Ng5'], name: 'Italian Game: Knight Attack' },
+  { moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bc4', 'Nf6'], name: 'Italian Game: Two Knights Defense' },
+  { moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bc4'], name: 'Italian Game' },
+  { moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6', 'Ba4', 'Nf6'], name: 'Ruy Lopez: Morphy Defense' },
+  { moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'Nf6'], name: 'Ruy Lopez: Berlin Defense' },
+  { moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5'], name: 'Ruy Lopez' },
+  { moves: ['e4', 'e5', 'Nf3', 'Nc6', 'd4'], name: 'Scotch Game' },
+  { moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Nc3', 'Nf6'], name: 'Four Knights Game' },
+  { moves: ['e4', 'e5', 'Nf3', 'Nf6'], name: "Petrov's Defense" },
+  { moves: ['e4', 'e5', 'Nf3', 'd6'], name: 'Philidor Defense' },
+  { moves: ['e4', 'e5', 'Nc3'], name: 'Vienna Game' },
+  { moves: ['e4', 'e5', 'f4'], name: "King's Gambit" },
+  { moves: ['e4', 'e5', 'Qh5'], name: "Wayward Queen Attack" },
+  { moves: ['e4', 'e5', 'Bc4'], name: "Bishop's Opening" },
+  { moves: ['e4', 'c5', 'Nf3', 'd6', 'd4', 'cxd4', 'Nxd4', 'Nf6', 'Nc3', 'a6'], name: 'Sicilian Defense: Najdorf Variation' },
+  { moves: ['e4', 'c5', 'Nf3', 'd6', 'd4', 'cxd4', 'Nxd4', 'Nf6', 'Nc3', 'g6'], name: 'Sicilian Defense: Dragon Variation' },
+  { moves: ['e4', 'c5', 'c3'], name: 'Sicilian Defense: Alapin Variation' },
+  { moves: ['e4', 'c5', 'Nc3'], name: 'Sicilian Defense: Closed' },
+  { moves: ['e4', 'c5', 'Nf3', 'Nc6', 'Bb5'], name: 'Sicilian Defense: Rossolimo Attack' },
+  { moves: ['e4', 'c5'], name: 'Sicilian Defense' },
+  { moves: ['e4', 'e6', 'd4', 'd5', 'Nc3'], name: 'French Defense: Classical' },
+  { moves: ['e4', 'e6', 'd4', 'd5', 'e5'], name: 'French Defense: Advance Variation' },
+  { moves: ['e4', 'e6', 'd4', 'd5', 'exd5'], name: 'French Defense: Exchange Variation' },
+  { moves: ['e4', 'e6'], name: 'French Defense' },
+  { moves: ['e4', 'c6', 'd4', 'd5', 'e5'], name: 'Caro-Kann Defense: Advance Variation' },
+  { moves: ['e4', 'c6', 'd4', 'd5', 'Nc3'], name: 'Caro-Kann Defense: Classical' },
+  { moves: ['e4', 'c6'], name: 'Caro-Kann Defense' },
+  { moves: ['e4', 'd5'], name: 'Scandinavian Defense' },
+  { moves: ['e4', 'd6', 'd4', 'Nf6'], name: 'Pirc Defense' },
+  { moves: ['e4', 'g6'], name: 'Modern Defense' },
+  { moves: ['e4', 'Nf6'], name: "Alekhine's Defense" },
+  { moves: ['d4', 'd5', 'c4', 'e6'], name: "Queen's Gambit Declined" },
+  { moves: ['d4', 'd5', 'c4', 'dxc4'], name: "Queen's Gambit Accepted" },
+  { moves: ['d4', 'd5', 'c4', 'c6'], name: 'Slav Defense' },
+  { moves: ['d4', 'd5', 'c4'], name: "Queen's Gambit" },
+  { moves: ['d4', 'd5', 'Bf4'], name: 'London System' },
+  { moves: ['d4', 'Nf6', 'Bf4'], name: 'London System' },
+  { moves: ['d4', 'Nf6', 'c4', 'g6', 'Nc3', 'Bg7'], name: "King's Indian Defense" },
+  { moves: ['d4', 'Nf6', 'c4', 'g6', 'Nc3', 'd5'], name: 'Grünfeld Defense' },
+  { moves: ['d4', 'Nf6', 'c4', 'e6', 'Nc3', 'Bb4'], name: 'Nimzo-Indian Defense' },
+  { moves: ['d4', 'Nf6', 'c4', 'e6', 'Nf3', 'b6'], name: "Queen's Indian Defense" },
+  { moves: ['d4', 'Nf6', 'c4', 'c5'], name: 'Benoni Defense' },
+  { moves: ['d4', 'f5'], name: 'Dutch Defense' },
+  { moves: ['c4', 'e5'], name: 'English Opening: Reversed Sicilian' },
+  { moves: ['c4', 'c5'], name: 'English Opening: Symmetrical' },
+  { moves: ['c4'], name: 'English Opening' },
+  { moves: ['Nf3', 'd5'], name: 'Réti Opening' },
+  { moves: ['f4'], name: "Bird's Opening" },
+  { moves: ['e4', 'e5'], name: "King's Pawn Game" },
+  { moves: ['d4', 'd5'], name: "Queen's Pawn Game" },
+];
+
+export function detectOpeningFromMoves(sans: string[]): string | undefined {
+  if (!sans.length) return undefined;
+  let bestMatch: { name: string; len: number } | null = null;
+  for (const entry of OPENING_PREFIX_BOOK) {
+    if (entry.moves.length > sans.length) continue;
+    let matches = true;
+    for (let i = 0; i < entry.moves.length; i++) {
+      if (sans[i] !== entry.moves[i]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches && (!bestMatch || entry.moves.length > bestMatch.len)) {
+      bestMatch = { name: entry.name, len: entry.moves.length };
+    }
+  }
+  return bestMatch?.name;
+}
+
+function parseOpeningFromEcoUrl(ecoUrl?: string): string | undefined {
+  if (!ecoUrl) return undefined;
+  const trimmed = ecoUrl.trim().replace(/\/+$/, '');
+  const lastSlash = trimmed.lastIndexOf('/');
+  const slug = lastSlash >= 0 ? trimmed.slice(lastSlash + 1) : trimmed;
+  if (!slug) return undefined;
+
+  // Strip trailing move sequence suffixes like "-3.Bc4-Bc5-4.c3-Nf6" or "-3...Nf6"
+  const moveStart = slug.search(/-\d+\.+/);
+  const cleanSlug = (moveStart > 0 ? slug.slice(0, moveStart) : slug)
+    .replace(/_/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  if (!cleanSlug) return undefined;
+
+  const words = cleanSlug.split('-').filter(Boolean);
+  if (words.length === 0) return undefined;
+
+  const raw = words.join(' ');
+  // Insert colon cleanly after common opening families when followed by variation name
+  const familyPatterns = [
+    'Italian Game',
+    'Ruy Lopez',
+    'Sicilian Defense',
+    'French Defense',
+    'Caro Kann Defense',
+    'Scandinavian Defense',
+    'Queens Gambit Declined',
+    'Queens Gambit Accepted',
+    'Queens Gambit',
+    'Kings Indian Defense',
+    'Nimzo Indian Defense',
+    'Slav Defense',
+    'Scotch Game',
+    'Vienna Game',
+    'Four Knights Game',
+    'London System',
+    'English Opening',
+    'Petrovs Defense',
+    'Philidor Defense',
+    'Pirc Defense',
+    'Modern Defense',
+    'Alekhines Defense',
+    'Dutch Defense',
+    'Bishops Opening',
+    'Kings Gambit',
+  ];
+
+  const normalized = raw
+    .replace(/\bCaro Kann\b/i, 'Caro-Kann')
+    .replace(/\bQueens\b/i, "Queen's")
+    .replace(/\bKings\b/i, "King's")
+    .replace(/\bPetrovs\b/i, "Petrov's")
+    .replace(/\bBishops\b/i, "Bishop's")
+    .replace(/\bAlekhines\b/i, "Alekhine's")
+    .replace(/\bNimzo Indian\b/i, 'Nimzo-Indian');
+
+  for (const fam of familyPatterns) {
+    const famNorm = fam
+      .replace(/\bCaro Kann\b/i, 'Caro-Kann')
+      .replace(/\bQueens\b/i, "Queen's")
+      .replace(/\bKings\b/i, "King's")
+      .replace(/\bPetrovs\b/i, "Petrov's")
+      .replace(/\bBishops\b/i, "Bishop's")
+      .replace(/\bAlekhines\b/i, "Alekhine's")
+      .replace(/\bNimzo Indian\b/i, 'Nimzo-Indian');
+    if (
+      normalized.toLowerCase().startsWith(famNorm.toLowerCase() + ' ') &&
+      normalized.length > famNorm.length + 1
+    ) {
+      const rest = normalized.slice(famNorm.length + 1).trim();
+      return `${famNorm}: ${rest}`;
+    }
+  }
+  return normalized;
+}
+
+function inferSpeedFromTimeControl(tc?: string, event?: string): string {
+  if (tc) {
+    const clean = tc.trim();
+    if (clean.includes('/')) return 'daily';
+    const match = clean.match(/^(\d+)(?:\+(\d+))?$/);
+    if (match) {
+      const baseSec = Number.parseInt(match[1], 10);
+      const incSec = match[2] ? Number.parseInt(match[2], 10) : 0;
+      const estimatedSec = baseSec + incSec * 40;
+      if (estimatedSec < 180) return 'bullet';
+      if (estimatedSec < 600) return 'blitz';
+      if (estimatedSec < 1500) return 'rapid';
+      return 'classical';
+    }
+  }
+  if (event) {
+    const low = event.toLowerCase();
+    if (low.includes('bullet')) return 'bullet';
+    if (low.includes('blitz')) return 'blitz';
+    if (low.includes('rapid')) return 'rapid';
+    if (low.includes('classical') || low.includes('standard')) return 'classical';
+    if (low.includes('daily') || low.includes('correspondence')) return 'daily';
+  }
+  return 'rapid';
+}
+
+export function parsePgnMetadata(pgnText: string, fallbackSans?: string[]): ParsedPgnMetadata {
+  const getTag = (tag: string): string | undefined => {
+    const match = pgnText.match(new RegExp(`\\[${tag}\\s+"([^"]*)"\\]`, 'i'));
+    const val = match?.[1]?.trim();
+    return val && val !== '?' && val !== '-' ? val : undefined;
+  };
+
+  const whiteRatingRaw = Number(getTag('WhiteElo'));
+  const blackRatingRaw = Number(getTag('BlackElo'));
+  const timeControl = getTag('TimeControl');
+  const event = getTag('Event');
+  const speedTag = getTag('Speed');
+  const eco = getTag('ECO');
+  const termination = getTag('Termination');
+
+  let result = getTag('Result');
+  let sans = fallbackSans;
+  if (!sans || !result || result === '*') {
+    try {
+      const replay = new Chess();
+      replay.loadPgn(pgnText);
+      const hist = replay.history();
+      if (!sans && hist.length > 0) sans = hist;
+      if (!result || result === '*') {
+        if (replay.isCheckmate()) {
+          result = replay.turn() === 'w' ? '0-1' : '1-0';
+        } else if (
+          replay.isStalemate() ||
+          replay.isThreefoldRepetition() ||
+          replay.isInsufficientMaterial()
+        ) {
+          result = '1/2-1/2';
+        }
+      }
+    } catch {
+      // ignore fallback replay failure
+    }
+  }
+
+  const opening =
+    getTag('Opening') ||
+    parseOpeningFromEcoUrl(getTag('ECOUrl')) ||
+    (sans ? detectOpeningFromMoves(sans) : undefined);
+
+  return {
+    whiteName: getTag('White'),
+    blackName: getTag('Black'),
+    whiteRating:
+      Number.isFinite(whiteRatingRaw) && whiteRatingRaw > 0 ? whiteRatingRaw : undefined,
+    blackRating:
+      Number.isFinite(blackRatingRaw) && blackRatingRaw > 0 ? blackRatingRaw : undefined,
+    opening,
+    eco,
+    speed: speedTag ? speedTag.toLowerCase() : inferSpeedFromTimeControl(timeControl, event),
+    timeControl,
+    termination,
+    result: result && result !== '*' ? result : undefined,
+  };
+}
+
 /**
- * Classifies a move using Chess.com / Lichess Win%-Loss Expected Points & Stockfish 19 evaluations.
+ * Classifies a move using Chess.com / Lichess Win%-Loss Expected Points & Stockfish 19 evaluations,
+ * with dampened centipawn-loss awareness in already-decided positions so hanging pieces and missed
+ * mates are never mislabeled as Best or Good.
  */
 export function classifyMoveFromAnalysis(params: {
   move: EvaluatedMove;
@@ -327,20 +580,78 @@ export function classifyMoveFromAnalysis(params: {
   const winAfterMover = evalToMoverWinPercent(evalAfter, color, after.mateIn);
   const winLoss = Math.max(0, Math.round((winBeforeMover - winAfterMover) * 10) / 10);
 
-  const rawCpDelta = (evalBefore - evalAfter) * moverSign;
-  // Cap extreme mate-score distortion when winning position shifts from +20 to +14
-  const cpLoss = Math.max(
-    0,
-    Math.abs(evalBefore) >= 90000 && Math.abs(evalAfter) >= 90000 && (evalBefore * evalAfter > 0)
-      ? 0
-      : Math.min(2500, Math.round(rawCpDelta)),
-  );
-
   const bestSan = before.bestMoveSan || move.bestMoveSan || move.san;
   const bestFrom = before.bestMoveFrom || move.bestMoveFrom || move.from;
   const bestTo = before.bestMoveTo || move.bestMoveTo || move.to;
   const playedIsBest =
     move.san === bestSan || (move.from === bestFrom && move.to === bestTo);
+
+  const moverHadForcedMate =
+    before.mateIn !== null && (color === 'w' ? before.mateIn > 0 : before.mateIn < 0);
+  const moverStillHasForcedMate =
+    after.mateIn !== null && (color === 'w' ? after.mateIn > 0 : after.mateIn < 0);
+  const oppNowHasForcedMate =
+    after.mateIn !== null && (color === 'w' ? after.mateIn < 0 : after.mateIn > 0);
+  const oppAlreadyHadForcedMate =
+    before.mateIn !== null && (color === 'w' ? before.mateIn < 0 : before.mateIn > 0);
+
+  const missedForcedMate = !playedIsBest && moverHadForcedMate && !moverStillHasForcedMate;
+  const delayedShortMate =
+    !playedIsBest &&
+    moverHadForcedMate &&
+    moverStillHasForcedMate &&
+    Math.abs(after.mateIn ?? 1) > Math.abs(before.mateIn ?? 1) + 2;
+  const allowedFasterMate =
+    !playedIsBest &&
+    oppAlreadyHadForcedMate &&
+    oppNowHasForcedMate &&
+    Math.abs(after.mateIn ?? 1) + 2 < Math.abs(before.mateIn ?? 1);
+
+  // Calibrated centipawn loss across normal, decided, and forced-mate positions
+  let cpLoss = 0;
+  if (!playedIsBest) {
+    if (moverHadForcedMate && moverStillHasForcedMate) {
+      cpLoss = delayedShortMate
+        ? Math.min(350, (Math.abs(after.mateIn ?? 1) - Math.abs(before.mateIn ?? 1)) * 65)
+        : 0;
+    } else if (oppAlreadyHadForcedMate && oppNowHasForcedMate) {
+      cpLoss = allowedFasterMate
+        ? Math.min(300, (Math.abs(before.mateIn ?? 1) - Math.abs(after.mateIn ?? 1)) * 55)
+        : 0;
+    } else if (missedForcedMate) {
+      cpLoss = Math.max(
+        260,
+        Math.min(2500, Math.round(1200 - Math.max(-500, evalAfter * moverSign))),
+      );
+    } else if (oppNowHasForcedMate && !oppAlreadyHadForcedMate) {
+      cpLoss = Math.max(
+        400,
+        Math.min(2500, Math.round(1200 + Math.max(-500, evalBefore * moverSign))),
+      );
+    } else {
+      const rawCpDelta = (evalBefore - evalAfter) * moverSign;
+      cpLoss = Math.max(0, Math.min(2500, Math.round(rawCpDelta)));
+    }
+  }
+
+  // Dampened centipawn-equivalent Win% loss prevents logistic saturation at |eval| > 600
+  // from hiding hung pieces or blunders as "Best" moves.
+  const absEvalBefore = Math.abs(evalBefore) >= 90000 ? 1400 : Math.abs(evalBefore);
+  const decidedDampening = 1 / (1 + Math.max(0, absEvalBefore - 300) / 600);
+  const dampenedCpLoss = cpLoss * decidedDampening;
+  const cpEquivalentWinLoss =
+    !playedIsBest && dampenedCpLoss > 0
+      ? 50 * (2 / (1 + Math.exp(-0.00368208 * dampenedCpLoss)) - 1)
+      : 0;
+
+  let effectiveWinLoss = Math.round(Math.max(winLoss, cpEquivalentWinLoss) * 10) / 10;
+  if (missedForcedMate) {
+    effectiveWinLoss = Math.max(effectiveWinLoss, 14.5);
+  } else if (oppNowHasForcedMate && !oppAlreadyHadForcedMate && !playedIsBest) {
+    effectiveWinLoss = Math.max(effectiveWinLoss, 16.5);
+  } else if (delayedShortMate) {
+    effectiveWinLoss = Math.max(effectiveWinLoss, 11.0);
+  }
 
   let legalCount = 2;
   try {
@@ -404,26 +715,16 @@ export function classifyMoveFromAnalysis(params: {
     seeOnToCp <= -190 &&
     winBeforeMover < 93 &&
     winAfterMover >= 50 &&
-    (playedIsBest || winLoss <= 1.8);
-
-  const moverHadForcedMate =
-    before.mateIn !== null && (color === 'w' ? before.mateIn > 0 : before.mateIn < 0);
-  const moverStillHasForcedMate =
-    after.mateIn !== null && (color === 'w' ? after.mateIn > 0 : after.mateIn < 0);
-  const oppNowHasForcedMate =
-    after.mateIn !== null && (color === 'w' ? after.mateIn < 0 : after.mateIn > 0);
-  const oppAlreadyHadForcedMate =
-    before.mateIn !== null && (color === 'w' ? before.mateIn < 0 : before.mateIn > 0);
+    (playedIsBest || effectiveWinLoss <= 1.8);
 
   const isMissedWin =
     !playedIsBest &&
-    ((moverHadForcedMate && !moverStillHasForcedMate && winAfterMover < 92) ||
-      (winBeforeMover >= 82 && winAfterMover <= 62));
+    (missedForcedMate || (winBeforeMover >= 80 && winAfterMover <= 62 && winAfterMover >= 32));
 
   let quality: MoveQuality = 'Good';
   let classificationNote: string | undefined;
 
-  if (wasBook && winLoss <= 4.5) {
+  if (wasBook && effectiveWinLoss <= 4.5 && cpLoss <= 80) {
     quality = 'Book';
     classificationNote = 'Standard opening theory';
   } else if (isSoundSacrifice) {
@@ -439,35 +740,59 @@ export function classifyMoveFromAnalysis(params: {
   ) {
     quality = 'Great';
     classificationNote = 'Only move! Finds the critical continuation.';
-  } else if (playedIsBest || winLoss <= 1.2 || (cpLoss <= 10 && Math.abs(evalBefore) < 5000)) {
-    quality = 'Best';
-  } else if (winLoss <= 5.0 && cpLoss <= 85) {
-    quality = 'Good';
-  } else if (winLoss <= 10.5 && cpLoss <= 165) {
-    quality = 'Inaccuracy';
   } else if (
-    (oppNowHasForcedMate && !oppAlreadyHadForcedMate && winBeforeMover >= 15) ||
-    winLoss > 20.5
+    playedIsBest ||
+    (effectiveWinLoss <= 0.6 &&
+      cpLoss <= 12 &&
+      !missedForcedMate &&
+      !delayedShortMate &&
+      !(oppNowHasForcedMate && !oppAlreadyHadForcedMate))
+  ) {
+    quality = 'Best';
+  } else if (
+    (oppNowHasForcedMate && !oppAlreadyHadForcedMate && (winBeforeMover >= 12 || cpLoss >= 350)) ||
+    (winBeforeMover >= 70 && winAfterMover < 32)
   ) {
     quality = 'Blunder';
     if (oppNowHasForcedMate && !oppAlreadyHadForcedMate) {
       classificationNote = `Allows checkmate in ${Math.abs(after.mateIn ?? 1)}`;
-    } else if (isMissedWin) {
-      classificationNote = `Missed win — ${bestSan} was winning`;
+    } else {
+      classificationNote = `Threw away a winning game — ${bestSan} kept full control`;
     }
-  } else if (winLoss > 10.5 || isMissedWin) {
+  } else if (isMissedWin && !oppNowHasForcedMate) {
+    quality = 'Miss';
+    classificationNote = missedForcedMate
+      ? `Missed forced checkmate — ${bestSan} wins on the spot`
+      : `Missed winning chance — ${bestSan} kept a decisive edge`;
+  } else if (
+    effectiveWinLoss > 20.5 ||
+    (cpLoss >= 450 && effectiveWinLoss >= 14.5)
+  ) {
+    quality = 'Blunder';
+    if (cpLoss >= 280) {
+      classificationNote = `Drops decisive material — ${bestSan} was much stronger`;
+    }
+  } else if (
+    effectiveWinLoss > 10.5 ||
+    (cpLoss >= 220 && effectiveWinLoss >= 8.0) ||
+    delayedShortMate
+  ) {
     quality = 'Mistake';
-    if (isMissedWin) {
-      classificationNote = moverHadForcedMate
-        ? `Missed forced mate — ${bestSan} wins`
-        : `Missed winning advantage — ${bestSan} kept control`;
+    if (delayedShortMate) {
+      classificationNote = `Delayed forced mate — ${bestSan} finished much faster`;
     }
+  } else if (effectiveWinLoss > 5.0 || cpLoss > 110) {
+    quality = 'Inaccuracy';
+  } else if (effectiveWinLoss > 2.0 || cpLoss > 45) {
+    quality = 'Good';
+  } else {
+    quality = 'Excellent';
   }
 
   const accuracyPercent =
     quality === 'Book' || quality === 'Brilliant' || quality === 'Great' || quality === 'Best'
-      ? computeMoveAccuracyPercent(playedIsBest ? 0 : Math.min(winLoss, 1.0))
-      : computeMoveAccuracyPercent(winLoss);
+      ? computeMoveAccuracyPercent(playedIsBest ? 0 : Math.min(effectiveWinLoss, 0.8))
+      : computeMoveAccuracyPercent(effectiveWinLoss);
 
   return {
     ...move,
@@ -477,7 +802,7 @@ export function classifyMoveFromAnalysis(params: {
     bestMoveFrom: bestFrom,
     bestMoveTo: bestTo,
     bestLineSan: before.lines[0]?.lineSan ?? [bestSan],
-    cpLoss: playedIsBest ? 0 : cpLoss,
+    cpLoss,
     quality,
     winChanceBefore: winBeforeMover,
     winChanceAfter: winAfterMover,

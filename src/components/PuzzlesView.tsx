@@ -18,8 +18,13 @@ import {
   Trophy,
   X,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Search,
+  SearchCheck,
+  Volume2,
+  VolumeX,
+  Heart,
 } from 'lucide-react';
 import { PUZZLES, type ChessPuzzle } from '../chess/content';
 import type { LichessAccount, NormalizedLichessPuzzle } from '../chess/lichess';
@@ -37,13 +42,12 @@ import {
   type PuzzleHistoryEntry,
   type PuzzlePlayerStats,
 } from '../chess/analytics';
-import { playErrorSound, playGameOverSound, playMoveSound, playSuccessSound } from '../chess/sound';
+import { playErrorSound, playGameOverSound, playMoveSound, playSuccessSound, setSoundMuted } from '../chess/sound';
 import { ChessBoard, type BoardTheme } from './ChessBoard';
-import { EvaluationBar } from './EvaluationBar';
 import { CoachWorkspace } from './CoachWorkspace';
 import { BottomSheet } from './BottomSheet';
 import { BotAvatar } from './BotAvatar';
-import { NavPuzzlesIcon } from './ChessIcons';
+import { DailyPuzzleIcon, NavPuzzlesIcon } from './ChessIcons';
 
 interface PuzzlesViewProps {
   boardTheme: BoardTheme;
@@ -734,6 +738,12 @@ export function PuzzlesView({
   const [fen, setFen] = useState(activePuzzle.fen);
   const [solutionStep, setSolutionStep] = useState(0);
   const [status, setStatus] = useState<'solving' | 'wrong' | 'solved'>('solving');
+  const [puzzleBadge, setPuzzleBadge] = useState<{
+    square: string;
+    status: 'correct' | 'wrong';
+  } | null>(null);
+  const [dailyLives, setDailyLives] = useState(5);
+  const [soundOff, setSoundOff] = useState(false);
   const [hintSquares, setHintSquares] = useState<{ from?: string; to?: string } | null>(null);
   const [hintArrow, setHintArrow] = useState<{ from: string; to: string } | null>(null);
   const [lastMove, setLastMove] = useState<{
@@ -853,6 +863,8 @@ export function PuzzlesView({
     setFen(target.fen);
     setSolutionStep(0);
     setStatus('solving');
+    setPuzzleBadge(null);
+    setDailyLives(5);
     setHintSquares(null);
     setHintArrow(null);
     setLastMove(target.lastMove ?? null);
@@ -890,9 +902,12 @@ export function PuzzlesView({
         for (const p of fetched) {
           if (p?.id) seenPuzzleIdsRef.current.add(p.id);
         }
-        setPuzzleQueue(fetched);
-        setPuzzleIdx(0);
-        setPuzzleTheme(theme);
+        const shouldSyncBoard = openSolver || !userInteractedRef.current;
+        if (shouldSyncBoard) {
+          setPuzzleQueue(fetched);
+          setPuzzleIdx(0);
+          setPuzzleTheme(theme);
+        }
         if (theme === 'daily' && fetched[0]) {
           setDailyPuzzle({
             ...fetched[0],
@@ -904,7 +919,7 @@ export function PuzzlesView({
         } else if (fetched[0]) {
           setHealthyMixPreview(fetched[0]);
         }
-        if (openSolver) {
+        if (shouldSyncBoard && fetched[0]) {
           resetBoardToPuzzle(fetched[0]);
         }
       } catch (err: unknown) {
@@ -1094,6 +1109,16 @@ export function PuzzlesView({
     }
   }, [fen]);
 
+  const todayLabel = useMemo(
+    () =>
+      new Intl.DateTimeFormat('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      }).format(new Date()),
+    [],
+  );
+
   const handleMove = (from: string, to: string, promotion?: PieceSymbol): boolean => {
     if (status === 'solved') return false;
     if (viewMode === 'storm' && stormPhase !== 'active') return false;
@@ -1112,6 +1137,10 @@ export function PuzzlesView({
     const expectedSan = activePuzzle.solution[solutionStep];
     if (move.san !== expectedSan) {
       playErrorSound();
+      setPuzzleBadge({ square: move.to, status: 'wrong' });
+      if (puzzleTheme === 'daily') {
+        setDailyLives((prev) => Math.max(0, prev - 1));
+      }
 
       // Puzzle Storm mode: 3 strikes or timer
       if (viewMode === 'storm') {
@@ -1205,6 +1234,7 @@ export function PuzzlesView({
     setHintSquares(null);
     setHintArrow(null);
     setStatus('solving');
+    setPuzzleBadge({ square: move.to, status: 'correct' });
     playMoveSound({
       capture: Boolean(move.captured),
       check: chess.inCheck(),
@@ -1213,6 +1243,7 @@ export function PuzzlesView({
     const nextStep = solutionStep + 1;
     if (nextStep >= activePuzzle.solution.length) {
       setStatus('solved');
+      setPuzzleBadge({ square: move.to, status: 'correct' });
       playSuccessSound();
       onPuzzleSolved();
 
@@ -1326,6 +1357,7 @@ export function PuzzlesView({
           to: reply.to,
           captured: Boolean(reply.captured) || reply.flags.includes('e'),
         });
+        setPuzzleBadge(null);
         setSolutionStep(nextStep + 1);
         playMoveSound({
           capture: Boolean(reply.captured),
@@ -1340,11 +1372,16 @@ export function PuzzlesView({
   const showHint = () => {
     const expectedSan = activePuzzle.solution[solutionStep];
     if (!expectedSan) return;
+    userInteractedRef.current = true;
     const c = new Chess(fen);
     const legal = c.moves({ verbose: true });
-    const match = legal.find((m) => m.san === expectedSan);
+    const cleanExpected = expectedSan.replace(/[+#!?]+$/g, '');
+    const match =
+      legal.find((m) => m.san === expectedSan) ??
+      legal.find((m) => m.san.replace(/[+#!?]+$/g, '') === cleanExpected) ??
+      legal.find((m) => `${m.from}${m.to}` === expectedSan.slice(0, 4));
     if (match) {
-      setHintSquares({ from: match.from });
+      setHintSquares({ from: match.from, to: match.to });
       setHintArrow({ from: match.from, to: match.to });
     }
   };
@@ -1423,7 +1460,51 @@ export function PuzzlesView({
               </div>
             </div>
 
-            <div className="p-4 space-y-2.5 flex-1 overflow-y-auto">
+            <div className="p-3.5 sm:p-4 space-y-2.5 flex-1 overflow-y-auto">
+              {/* Mobile Compact Daily Puzzle Preview Board */}
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  setPuzzleTheme('daily');
+                  resetBoardToPuzzle(dailyPuzzle);
+                  setViewMode('solve');
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setPuzzleTheme('daily');
+                    resetBoardToPuzzle(dailyPuzzle);
+                    setViewMode('solve');
+                  }
+                }}
+                className="lg:hidden rounded-[10px] bg-[#1F1E1B] hover:bg-[#2B2926] border border-white/[0.06] p-2.5 flex items-center gap-3 transition-colors cursor-pointer"
+              >
+                <div className="w-[74px] h-[74px] rounded-[6px] overflow-hidden shrink-0 pointer-events-none shadow">
+                  <ChessBoard
+                    fen={dailyPuzzle.fen}
+                    orientation={dailySide}
+                    interactive={false}
+                    hideCoordinates
+                    lastMove={dailyPuzzle.lastMove ?? null}
+                    theme={boardTheme}
+                    onMove={() => false}
+                  />
+                </div>
+                <div className="min-w-0 flex-1 space-y-0.5">
+                  <div className="text-[11px] font-extrabold uppercase tracking-wider text-[#81B64C]">
+                    Today&apos;s Tactic
+                  </div>
+                  <div className="text-[14px] font-extrabold text-white truncate font-display">
+                    {dailySide === 'w' ? 'White to move' : 'Black to move'}
+                  </div>
+                  <div className="text-[11.5px] text-[#9B9A97] tabular-nums">
+                    Rating {dailyPuzzle.rating} · Tap to solve
+                  </div>
+                </div>
+                <ChevronRight className="w-5 h-5 text-[#9B9A97] shrink-0" />
+              </div>
+
               {/* Primary Rated Puzzles CTA */}
               <button
                 type="button"
@@ -1443,7 +1524,7 @@ export function PuzzlesView({
                 }}
                 className="w-full px-4 py-3 rounded-[7px] cc-btn-secondary flex items-center gap-3.5 text-left cursor-pointer"
               >
-                <Calendar className="w-6 h-6 text-[#F28C28] shrink-0" />
+                <DailyPuzzleIcon className="w-7 h-7 shrink-0" />
                 <div className="min-w-0 flex-1">
                   <div className="text-[14px] font-extrabold text-white">Daily Puzzle</div>
                   <div className="text-[12px] text-[#9B9A97] leading-snug">
@@ -1993,54 +2074,116 @@ export function PuzzlesView({
     </div>
   );
 
+  const isDailyMode = viewMode === 'solve' && puzzleTheme === 'daily';
+
   const renderPuzzleDetails = () => (
-    <div className="p-4 flex-1 flex flex-col justify-between gap-4 overflow-y-auto">
-      <div className="space-y-4">
-        {/* Chess.com Signature Coach Portrait + Crisp Solid White Speech Bubble */}
-        <div className="flex items-start gap-3">
-          <div className="w-[58px] h-[58px] rounded-[6px] overflow-hidden bg-[#1F1E1B] shrink-0">
-            <BotAvatar id="coach" />
-          </div>
-          <div className="relative flex-1 cc-speech-bubble rounded-[10px] px-3.5 py-3">
-            <svg
-              viewBox="0 0 10 14"
-              className="w-2.5 h-3.5 absolute -left-2 top-5 text-white fill-current"
-              aria-hidden="true"
+    <div className="flex-1 flex flex-col justify-between overflow-hidden">
+      <div className="p-4 space-y-4 overflow-y-auto flex-1">
+        {/* Daily Puzzle Date Strip matching Chess.com 05-puzzles-daily.png */}
+        {isDailyMode && (
+          <div className="flex items-center justify-center gap-3 text-[13px] font-bold text-[#DEDAD2]">
+            <button
+              type="button"
+              onClick={() => {
+                const prevIdx = (puzzleIdx - 1 + puzzleQueue.length) % Math.max(1, puzzleQueue.length);
+                setPuzzleIdx(prevIdx);
+                if (puzzleQueue[prevIdx]) resetBoardToPuzzle(puzzleQueue[prevIdx]);
+              }}
+              aria-label="Previous daily puzzle"
+              className="w-6 h-6 rounded hover:bg-white/10 flex items-center justify-center text-[#9B9A97] hover:text-white cursor-pointer"
             >
-              <path d="M10 0 L0 7 L10 14 Z" />
-            </svg>
-            <div className="flex items-center gap-2 mb-1">
-              <span
-                className={`w-4 h-4 rounded-[3px] border shrink-0 ${
-                  playerSide === 'w'
-                    ? 'bg-white border-[#8E8C88]'
-                    : 'bg-[#262421] border-[#262421]'
-                }`}
-              />
-              <span className="text-[14px] font-extrabold text-[#262421]">
-                {status === 'solved'
-                  ? solvedDelta && solvedDelta > 0
-                    ? `Solved! (+${solvedDelta})`
-                    : 'Puzzle Solved!'
-                  : status === 'wrong'
-                    ? 'Try Again'
-                    : playerSide === 'w'
-                      ? 'White to move'
-                      : 'Black to move'}
-              </span>
-            </div>
-            <p className="text-[13px] font-medium leading-snug text-[#3B3936]">
-              {status === 'solved'
-                ? activePuzzle.explanation
-                : status === 'wrong'
-                  ? 'Not the best move — look for a forcing check, capture, or tactical threat!'
-                  : hintSquares
-                    ? `Hint: ${activePuzzle.hint}`
-                    : `Find the strongest forcing move for ${
-                        playerSide === 'w' ? 'White' : 'Black'
-                      } (${activePuzzle.motif} · ${activePuzzle.rating}).`}
-            </p>
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span>{todayLabel}</span>
+            <button
+              type="button"
+              onClick={handleNextPuzzle}
+              aria-label="Next daily puzzle"
+              className="w-6 h-6 rounded hover:bg-white/10 flex items-center justify-center text-[#9B9A97] hover:text-white cursor-pointer"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
           </div>
+        )}
+
+        {/* Exact Chess.com 2026 Coach Portrait + Crisp White Speech Bubble */}
+        <div className="space-y-3">
+          <div className="flex items-start gap-3">
+            <div className="w-[58px] h-[58px] rounded-[6px] overflow-hidden bg-[#1F1E1B] shrink-0">
+              <BotAvatar id="coach" />
+            </div>
+            <div className="relative flex-1 cc-speech-bubble rounded-[12px] px-3.5 py-3">
+              <svg
+                viewBox="0 0 10 14"
+                className="w-2.5 h-3.5 absolute -left-2 top-5 text-white fill-current"
+                aria-hidden="true"
+              >
+                <path d="M10 0 L0 7 L10 14 Z" />
+              </svg>
+              <div className="flex items-center gap-2 mb-1">
+                {status === 'solved' ? (
+                  <span className="w-5 h-5 rounded-full bg-[#81B64C] text-white flex items-center justify-center shrink-0">
+                    <CheckCircle2 className="w-3.5 h-3.5 stroke-[2.8]" />
+                  </span>
+                ) : status === 'wrong' ? (
+                  <span className="w-5 h-5 rounded-full bg-[#FA412D] text-white flex items-center justify-center shrink-0">
+                    <X className="w-3.5 h-3.5 stroke-[3]" />
+                  </span>
+                ) : (
+                  <span
+                    className={`w-4 h-4 rounded-[3px] border shrink-0 ${
+                      playerSide === 'w'
+                        ? 'bg-white border-[#8E8C88]'
+                        : 'bg-[#262421] border-[#262421]'
+                    }`}
+                  />
+                )}
+                <span className="text-[14.5px] font-extrabold text-[#262421]">
+                  {status === 'solved'
+                    ? 'Solved'
+                    : status === 'wrong'
+                      ? 'Incorrect'
+                      : playerSide === 'w'
+                        ? 'White to move'
+                        : 'Black to move'}
+                </span>
+                {status === 'solved' && solvedDelta && solvedDelta > 0 && (
+                  <span className="ml-auto text-[12px] font-mono font-extrabold text-[#5D9231] tabular-nums">
+                    +{solvedDelta}
+                  </span>
+                )}
+              </div>
+              <p className="text-[13px] font-medium leading-snug text-[#3B3936]">
+                {status === 'solved'
+                  ? activePuzzle.explanation || 'Fantastic!'
+                  : status === 'wrong'
+                    ? 'Try again! Look for a forcing check, capture, or tactical threat.'
+                    : hintSquares
+                      ? `Hint: ${activePuzzle.hint}`
+                      : isDailyMode
+                        ? "Lock in! You've got this!"
+                        : `It's your turn as ${
+                            playerSide === 'w' ? 'White' : 'Black'
+                          }. Can you find the winning move?`}
+              </p>
+            </div>
+          </div>
+
+          {/* Exact Chess.com Daily Puzzle 5 Green Hearts */}
+          {isDailyMode && (
+            <div className="flex items-center gap-1.5 pl-1" aria-label={`${dailyLives} of 5 lives remaining`}>
+              {[0, 1, 2, 3, 4].map((idx) => (
+                <Heart
+                  key={idx}
+                  className={`w-6 h-6 transition-all ${
+                    idx < dailyLives
+                      ? 'text-[#81B64C] fill-[#81B64C]'
+                      : 'text-[#4A4845] fill-[#383633]'
+                  }`}
+                />
+              ))}
+            </div>
+          )}
         </div>
 
         {renderPlayerStatsStrip()}
@@ -2173,48 +2316,95 @@ export function PuzzlesView({
         )}
       </div>
 
-      <div className="pt-3 border-t border-white/[0.06] space-y-2 shrink-0">
+      {/* Exact Chess.com 2026 Puzzles Bottom Controls (08-puzzles-rated-clean & 09-puzzles-solved) */}
+      <div className="px-4 py-3 bg-[#1F1E1B] border-t border-white/[0.06] space-y-2.5 shrink-0">
         {status === 'solved' ? (
-          <button
-            type="button"
-            onClick={handleNextPuzzle}
-            disabled={puzzleLoading}
-            className="w-full h-[50px] px-4 rounded-[9px] cc-btn-primary text-white font-extrabold font-display text-[17px] flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-          >
-            <span>Next Puzzle</span>
-            <ArrowRight className="w-5 h-5" />
-          </button>
-        ) : (
-          <div className="space-y-2">
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={showHint}
-              className="w-full h-[46px] px-4 rounded-[8px] cc-btn-secondary text-[15px] font-extrabold text-white flex items-center justify-center gap-2 cursor-pointer"
+              onClick={() => resetBoardToPuzzle(activePuzzle)}
+              aria-label="Retry puzzle"
+              title="Retry"
+              className="w-[50px] h-[46px] rounded-[8px] bg-[#363431] hover:bg-[#43403C] text-[#DEDAD2] hover:text-white flex items-center justify-center shrink-0 cursor-pointer transition-colors"
             >
-              <Lightbulb className="w-4 h-4 text-[#F7C045]" />
-              <span>Hint</span>
+              <RotateCcw className="w-5 h-5" />
             </button>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => resetBoardToPuzzle(activePuzzle)}
-                className="h-[38px] px-2 rounded-[6px] bg-[#1F1E1B] hover:bg-[#312E2B] text-xs font-bold text-[#C8C6C2] hover:text-white flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Reset</span>
-              </button>
-              <button
-                type="button"
-                onClick={handleNextPuzzle}
-                disabled={puzzleLoading}
-                className="h-[38px] px-2 rounded-[6px] bg-[#1F1E1B] hover:bg-[#312E2B] text-xs font-bold text-[#C8C6C2] hover:text-white flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50"
-              >
-                <span>Skip</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setRightTab('tutor')}
+              aria-label="Analyze puzzle with Coach"
+              title="Analyze"
+              className="w-[50px] h-[46px] rounded-[8px] bg-[#363431] hover:bg-[#43403C] text-[#DEDAD2] hover:text-white flex items-center justify-center shrink-0 cursor-pointer transition-colors"
+            >
+              <SearchCheck className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={handleNextPuzzle}
+              disabled={puzzleLoading}
+              aria-label="Next Puzzle"
+              className="flex-1 h-[46px] px-4 rounded-[8px] cc-btn-primary text-white font-extrabold font-display text-[17px] flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              <span>Next</span>
+              <ChevronRight className="w-5 h-5 stroke-[3]" />
+            </button>
           </div>
+        ) : (
+          <button
+            type="button"
+            onClick={showHint}
+            className="w-full h-[46px] px-4 rounded-[8px] bg-[#363431] hover:bg-[#43403C] text-[15px] font-extrabold text-white flex items-center justify-center gap-2 cursor-pointer transition-colors"
+          >
+            <Lightbulb className="w-4 h-4 text-[#F2F0EC]" />
+            <span>Hint</span>
+          </button>
         )}
+
+        {/* Chess.com Bottom Utility Icon Strip: Coach / Reset on left, < > arrows on right */}
+        <div className="flex items-center justify-between pt-0.5 text-[#9B9A97]">
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setRightTab('tutor')}
+              aria-label="Coach explanation"
+              title="Coach"
+              className="w-7 h-7 rounded hover:bg-white/10 hover:text-white flex items-center justify-center cursor-pointer"
+            >
+              <MessageSquare className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => resetBoardToPuzzle(activePuzzle)}
+              aria-label="Reset puzzle"
+              title="Reset"
+              className="w-7 h-7 rounded hover:bg-white/10 hover:text-white flex items-center justify-center cursor-pointer"
+            >
+              <RotateCcw className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => resetBoardToPuzzle(activePuzzle)}
+              aria-label="Previous step"
+              title="Step back"
+              className="w-7 h-7 rounded hover:bg-white/10 hover:text-white flex items-center justify-center cursor-pointer"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={handleNextPuzzle}
+              disabled={puzzleLoading}
+              aria-label="Skip to next puzzle"
+              title="Next puzzle"
+              className="w-7 h-7 rounded hover:bg-white/10 hover:text-white flex items-center justify-center cursor-pointer disabled:opacity-40"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -2292,30 +2482,30 @@ export function PuzzlesView({
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_370px] xl:grid-cols-[minmax(0,1fr)_410px] gap-4 lg:gap-5 items-start">
         <div className="flex justify-center">
-          <div className="w-full max-w-[min(560px,max(240px,calc(100dvh-295px)))] lg:max-w-[min(calc(100dvh-112px),740px)]">
-            {/* Header strip with Back to Puzzles Hub button */}
-            <div className="flex items-center justify-between py-1.5 px-1 gap-2">
-              <div className="flex items-center gap-2 min-w-0">
+          <div className="w-full max-w-[min(560px,100vw)] lg:max-w-[min(calc(100dvh-84px),780px)]">
+            {/* Compact mobile-only header strip (desktop shows header in right dock like Chess.com) */}
+            <div className="flex lg:hidden items-center justify-between py-2 px-0.5 gap-2">
+              <div className="flex items-center gap-2.5 min-w-0">
                 {!isLegacyUi && (
                   <button
                     type="button"
                     onClick={() => setViewMode('hub')}
                     aria-label="Back to Puzzles"
-                    className="w-8 h-8 rounded-lg bg-[#393734] hover:bg-[#43403C] flex items-center justify-center text-white shrink-0 cursor-pointer"
+                    className="w-9 h-9 rounded-[8px] bg-[#262421] hover:bg-[#383633] flex items-center justify-center text-white shrink-0 cursor-pointer"
                   >
                     <ArrowLeft className="w-4 h-4" />
                   </button>
                 )}
                 <div className="min-w-0">
                   <div className="text-sm font-bold text-[#F2F0EC] truncate">
-                    {playerSide === 'w' ? 'White to play' : 'Black to play'} · Puzzle {activePuzzle.rating}
+                    {playerSide === 'w' ? 'White to play' : 'Black to play'} · {activePuzzle.title}
                   </div>
                   <div className="text-xs text-[#9E998F] truncate">
                     {viewMode === 'storm'
                       ? `Puzzle Storm · ${formatTimer(stormSeconds)} · Score ${stormScore}`
                       : viewMode === 'streak'
                         ? `Puzzle Streak · ${streakRunCount} in a row`
-                        : `${activePuzzle.motif} · ELO ${displayRating}`}
+                        : `${activePuzzle.motif} · Puzzle ELO ${activePuzzle.rating}`}
                   </div>
                 </div>
               </div>
@@ -2335,27 +2525,25 @@ export function PuzzlesView({
               </div>
             </div>
 
-          <div className="-mx-2.5 sm:mx-0 flex items-stretch gap-1 sm:gap-2.5">
-            <EvaluationBar evalCp={evalCp} orientation={playerSide} />
-            <div className="flex-1 min-w-0">
-              <ChessBoard
-                fen={fen}
-                orientation={playerSide}
-                interactive={
-                  status !== 'solved' &&
-                  !puzzleLoading &&
-                  (viewMode !== 'storm' || stormPhase === 'active') &&
-                  (viewMode !== 'streak' || streakPhase === 'active')
-                }
-                allowedColor={playerSide}
-                lastMove={lastMove}
-                lastMoveCapture={Boolean(lastMove?.captured)}
-                hintSquares={hintSquares}
-                bestMoveArrow={hintArrow}
-                theme={boardTheme}
-                onMove={handleMove}
-              />
-            </div>
+          <div className="-mx-2.5 sm:mx-0">
+            <ChessBoard
+              fen={fen}
+              orientation={playerSide}
+              interactive={
+                status !== 'solved' &&
+                !puzzleLoading &&
+                (viewMode !== 'storm' || stormPhase === 'active') &&
+                (viewMode !== 'streak' || streakPhase === 'active')
+              }
+              allowedColor={playerSide}
+              lastMove={lastMove}
+              lastMoveCapture={Boolean(lastMove?.captured)}
+              puzzleBadge={puzzleBadge}
+              hintSquares={hintSquares}
+              bestMoveArrow={hintArrow}
+              theme={boardTheme}
+              onMove={handleMove}
+            />
           </div>
 
           {/* Mobile inline feedback strip */}
@@ -2446,21 +2634,38 @@ export function PuzzlesView({
 
       {/* Desktop Right Dock — Flush #262421 Puzzles Panel */}
       <aside className="hidden lg:flex bg-[#262421] rounded-[5px] shadow-[0_6px_22px_rgba(0,0,0,0.28)] overflow-hidden flex-col lg:h-[min(calc(100dvh-2rem),836px)]">
-        {/* Chess.com Puzzles Top Bar */}
-        <div className="h-[48px] bg-[#1F1E1B] px-3 flex items-center justify-between shrink-0">
+        {/* Exact Chess.com 2026 Puzzles / Daily Puzzle Top Bar */}
+        <div className="h-[50px] bg-[#1F1E1B] px-3 flex items-center justify-between shrink-0">
           <button
             type="button"
             onClick={() => setViewMode('hub')}
             aria-label="Back to Puzzles Hub"
             className="w-8 h-8 rounded-[5px] hover:bg-white/[0.06] flex items-center justify-center text-[#9B9A97] hover:text-white cursor-pointer"
           >
-            <ArrowLeft className="w-4 h-4" />
+            <ArrowLeft className="w-5 h-5" />
           </button>
           <div className="flex items-center gap-2">
-            <NavPuzzlesIcon className="w-6 h-6 shrink-0" />
-            <span className="text-[18px] font-extrabold text-white font-display">Puzzles</span>
+            {isDailyMode ? (
+              <DailyPuzzleIcon className="w-6 h-6 shrink-0" />
+            ) : (
+              <NavPuzzlesIcon className="w-7 h-7 shrink-0" />
+            )}
+            <span className="text-[19px] font-extrabold text-white font-display tracking-tight">
+              {isDailyMode ? 'Daily Puzzle' : 'Puzzles'}
+            </span>
           </div>
-          <div className="w-8" />
+          <button
+            type="button"
+            onClick={() => {
+              const next = !soundOff;
+              setSoundOff(next);
+              setSoundMuted(next);
+            }}
+            aria-label={soundOff ? 'Unmute puzzle sounds' : 'Mute puzzle sounds'}
+            className="w-8 h-8 rounded-[5px] hover:bg-white/[0.06] flex items-center justify-center text-[#9B9A97] hover:text-white cursor-pointer"
+          >
+            {soundOff ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+          </button>
         </div>
 
         <div

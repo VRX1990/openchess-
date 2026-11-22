@@ -1,5 +1,5 @@
 import { useId, useState } from 'react';
-import type { Color } from 'chess.js';
+import type { Color, PieceSymbol } from 'chess.js';
 import { ArrowLeft, ChevronDown, Crown, FlipVertical2, Settings } from 'lucide-react';
 import {
   BOT_PROFILES,
@@ -10,6 +10,7 @@ import {
   type BotId,
   type BotProfile,
 } from '../chess/engine';
+import { BOT_FLAGS, BOT_GREETINGS } from '../chess/botSpeech';
 import { loadBeatenBots } from '../chess/analytics';
 import type { BoardTheme } from '../chess/theme';
 import { TIME_CONTROLS } from './PlayView';
@@ -30,6 +31,7 @@ interface BotsViewProps {
     timeId: string;
     color: Color | 'random';
     coachGuard: boolean;
+    initialMove?: { from: string; to: string; promotion?: PieceSymbol };
   }) => void;
 }
 
@@ -41,27 +43,6 @@ const BOT_TIERS: { label: string; tier: BotProfile['tier'] }[] = [
   { label: 'Master', tier: 'Master' },
   { label: 'Grandmaster', tier: 'Grandmaster' },
 ];
-
-const BOT_GREETINGS: Partial<Record<BotId, string>> = {
-  pip: "Hi, I'm Pip! I just learned how the pieces move. Let's have fun!",
-  noah: "Hey! I'm Noah. Ready for a friendly warm-up game?",
-  mia: "Let's play! I love trying creative opening moves.",
-  milo: "Hi, I'm Milo! Let's see what kind of trouble we can make.",
-  leo: "Ready to battle? I'll keep an eye out for forks and pins!",
-  hana: "Let's play a clean game—watch your center pawns!",
-  clara: "I like solid openings and sharp middlegames. Your move!",
-  omar: "Let's test our tactics—don't leave any piece undefended.",
-  sofia: "Active pieces win games. Let's see your best opening!",
-  viktor: "Precision and strategy from move one. Ready when you are.",
-  dante: "Bring your sharpest attack—I won't back down easily.",
-  elena: "Every pawn structure tells a story. Let's play!",
-  aurelius: "Master-level calculation ahead. Show me your best plan.",
-  vera: "Endgames, tactics, positional pressure—nothing gets past me.",
-  koren: "Let's play a serious theoretical fight!",
-  nova: "Grandmaster strength engaged. Every tempo counts.",
-  chronos: "Deep lines and relentless pressure. Ready?",
-  apex: "Meow. Maximum strength. Good luck.",
-};
 
 /** Checkered mini-board + clock icon for the Options button */
 function OptionsBoardClockIcon({ className = 'w-5 h-5' }: { className?: string }) {
@@ -205,6 +186,7 @@ export function BotsView({
         type="button"
         onClick={() => handleSelectBot(bot)}
         aria-label={`${bot.name} (${bot.rating})`}
+        title={`${bot.name} (${bot.rating})`}
         aria-pressed={selected}
         className="flex flex-col items-center gap-1 text-center cursor-pointer group focus-visible:outline-none"
       >
@@ -379,25 +361,41 @@ export function BotsView({
               <div className="w-[38px] h-[38px] rounded-[4px] overflow-hidden bg-[#262421] shrink-0">
                 <BotAvatar id={activeBot.id} />
               </div>
-              <div className="flex items-baseline gap-1.5 min-w-0">
+              <div className="flex items-center gap-1.5 min-w-0">
                 <span className="text-[14px] font-bold text-white truncate">
                   {activeBot.name}
                 </span>
                 <span className="text-[13px] font-normal text-[#9B9A97] tabular-nums">
                   ({targetElo})
                 </span>
+                {BOT_FLAGS[activeBot.id] && (
+                  <span className="text-[14px] leading-none" aria-hidden="true">
+                    {BOT_FLAGS[activeBot.id]}
+                  </span>
+                )}
               </div>
             </div>
           </div>
 
           <div className="flex items-start gap-2">
-            <div className="flex-1 aspect-square pointer-events-none select-none">
+            <div className="flex-1 aspect-square select-none">
               <ChessBoard
                 fen="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
                 orientation={previewOrientation}
                 theme={boardTheme}
-                interactive={false}
-                onMove={() => false}
+                interactive={previewOrientation === 'w'}
+                allowedColor="w"
+                onMove={(from, to, promotion) => {
+                  onStartMatch({
+                    botId: selectedBotId,
+                    botElo: targetElo,
+                    timeId,
+                    color: 'w',
+                    coachGuard,
+                    initialMove: { from, to, promotion },
+                  });
+                  return true;
+                }}
               />
             </div>
 
@@ -540,61 +538,45 @@ export function BotsView({
             </div>
           </div>
 
-          {/* DESKTOP ONLY: Speech Bubble Spotlight + Collapsible Tier Accordion matching Chess.com /play/computer */}
+          {/* DESKTOP ONLY: Exact Blind Copy of Chess.com /play/computer */}
           <div className="hidden lg:flex lg:flex-col flex-1 min-h-0">
-            {/* Selected Bot Spotlight + Solid White Speech Bubble */}
-            <div className="px-4 pt-4 pb-3 space-y-3 border-b border-white/[0.06] shrink-0">
-              <div className="flex items-center gap-3">
+            {/* Selected Bot Portrait + Crisp White Speech Bubble + Name/Rating/Flag */}
+            <div className="px-4 pt-4 pb-3 space-y-2.5 shrink-0">
+              <div className="flex items-start gap-3">
                 <div className="w-[68px] h-[68px] rounded-[6px] overflow-hidden bg-[#1F1E1B] shrink-0">
                   <BotAvatar id={activeBot.id} />
                 </div>
-                <div className="relative flex-1 cc-speech-bubble rounded-[10px] px-3.5 py-2.5 min-h-[64px] flex items-center">
+                <div className="relative flex-1 cc-speech-bubble rounded-[12px] px-3.5 py-2.5 min-h-[66px] flex items-center">
                   <svg
                     viewBox="0 0 10 14"
-                    className="w-2.5 h-3.5 absolute -left-2 top-1/2 -translate-y-1/2 text-white fill-current"
+                    className="w-2.5 h-3.5 absolute -left-2 top-5 text-white fill-current"
                     aria-hidden="true"
                   >
                     <path d="M10 0 L0 7 L10 14 Z" />
                   </svg>
-                  <p className="text-[13px] font-semibold leading-snug text-[#262421]">
+                  <p className="text-[13.5px] font-semibold leading-snug text-[#262421]">
                     {botGreeting}
                   </p>
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <div className="flex items-baseline justify-between">
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-[16px] font-extrabold text-white font-display">
-                      {activeBot.name}
-                    </span>
-                    <span className="text-[14px] font-semibold text-[#9B9A97] tabular-nums">
-                      {targetElo}
-                    </span>
-                  </div>
-                  <span className="text-[11px] font-bold text-[#81B64C]">
-                    {tierMeta.title}
+              <div className="flex items-center gap-2 pl-0.5">
+                <span className="text-[16px] font-extrabold text-white font-display">
+                  {activeBot.name}
+                </span>
+                <span className="text-[15px] font-medium text-[#9B9A97] tabular-nums">
+                  {targetElo}
+                </span>
+                {BOT_FLAGS[activeBot.id] && (
+                  <span className="text-[16px] leading-none" aria-hidden="true">
+                    {BOT_FLAGS[activeBot.id]}
                   </span>
-                </div>
-
-                <input
-                  type="range"
-                  aria-label="Desktop bot rating level"
-                  min={MIN_BOT_ELO}
-                  max={MAX_BOT_ELO}
-                  step={25}
-                  value={targetElo}
-                  onChange={(e) => handleSliderChange(Number(e.target.value))}
-                  style={{
-                    background: `linear-gradient(to right, #81B64C 0%, #81B64C ${sliderPct}%, #3D3B38 ${sliderPct}%, #3D3B38 100%)`,
-                  }}
-                  className="cc-bot-slider w-full cursor-pointer"
-                />
+                )}
               </div>
             </div>
 
-            {/* Scrollable Tiered Accordion matching live Chess.com /play/computer */}
-            <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
+            {/* Scrollable Tiered Accordion — Exact 4-Column Portrait Grid Matching Chess.com /play/computer */}
+            <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-2">
               {BOT_TIERS.map(({ label, tier }) => {
                 const botsInTier = BOT_PROFILES.filter((b) => b.tier === tier);
                 const isOpen = expandedTier === tier;
@@ -611,7 +593,7 @@ export function BotsView({
                       onClick={() =>
                         setExpandedTier((prev) => (prev === tier ? null : tier))
                       }
-                      className={`w-full px-3 flex items-center justify-between gap-2.5 hover:bg-white/[0.04] transition-colors cursor-pointer ${
+                      className={`w-full px-3.5 flex items-center justify-between gap-2.5 hover:bg-white/[0.04] transition-colors cursor-pointer ${
                         isOpen ? 'py-2.5' : 'h-[54px]'
                       }`}
                     >
@@ -621,11 +603,11 @@ export function BotsView({
                             <BotAvatar id={leadBot.id} />
                           </div>
                         )}
-                        <span className="text-[14.5px] font-extrabold text-white truncate font-display">
+                        <span className="text-[15px] font-extrabold text-white truncate font-display">
                           {label}
                         </span>
                       </div>
-                      <span className="text-[12.5px] font-semibold text-[#9B9A97] tabular-nums shrink-0">
+                      <span className="text-[13px] font-semibold text-[#9B9A97] tabular-nums shrink-0">
                         {beatenInTier > 0
                           ? `${beatenInTier}/${botsInTier.length}`
                           : `${botsInTier.length} bots`}
@@ -633,8 +615,8 @@ export function BotsView({
                     </button>
 
                     {isOpen && (
-                      <div className="px-3 pb-3 pt-1 grid grid-cols-3 gap-2.5">
-                        {botsInTier.map((bot) => renderBotTile(bot, false))}
+                      <div className="px-3.5 pb-3.5 pt-1 grid grid-cols-4 gap-2.5">
+                        {botsInTier.map((bot) => renderBotTile(bot, true))}
                       </div>
                     )}
                   </section>

@@ -129,6 +129,7 @@ class StockfishUciWorker {
   private queue: Promise<void> = Promise.resolve();
   private activeCancel: (() => void) | null = null;
   private listener: ((line: string) => void) | null = null;
+  private needsStopFlush = false;
 
   private ensureReady(): Promise<void> {
     if (this.initFailed) {
@@ -202,6 +203,46 @@ class StockfishUciWorker {
     return this.readyPromise;
   }
 
+  private async flushStaleSearch(): Promise<void> {
+    if (!this.needsStopFlush || !this.worker) return;
+    const w = this.worker;
+    const flushed = await new Promise<boolean>((resolve) => {
+      let done = false;
+      const timer = window.setTimeout(() => {
+        if (!done) {
+          done = true;
+          this.listener = null;
+          resolve(false);
+        }
+      }, 1500);
+      this.listener = (line: string) => {
+        if (line === 'readyok' && !done) {
+          done = true;
+          window.clearTimeout(timer);
+          this.listener = null;
+          resolve(true);
+        }
+      };
+      try {
+        w.postMessage('stop');
+        w.postMessage('isready');
+      } catch {
+        done = true;
+        window.clearTimeout(timer);
+        this.listener = null;
+        resolve(false);
+      }
+    });
+
+    this.needsStopFlush = false;
+    if (!flushed) {
+      // Worker wedged after abort; spin up a fresh instance cleanly
+      this.terminate();
+      this.initFailed = false;
+      await this.ensureReady();
+    }
+  }
+
   public cancelCurrent() {
     this.activeCancel?.();
   }
@@ -216,6 +257,9 @@ class StockfishUciWorker {
         throw createAbortError();
       }
       await this.ensureReady();
+      if (this.needsStopFlush) {
+        await this.flushStaleSearch();
+      }
       if (opts.signal?.aborted) {
         throw createAbortError();
       }
@@ -272,14 +316,14 @@ class StockfishUciWorker {
           } catch {
             // ignore
           }
-          // Let bestmove finish quickly, otherwise force resolve/reject
           window.setTimeout(() => {
             if (!finished) {
               finished = true;
+              this.needsStopFlush = true;
               cleanup();
               reject(createAbortError());
             }
-          }, 120);
+          }, 160);
         };
 
         const hardTimeout = window.setTimeout(() => {
@@ -292,6 +336,7 @@ class StockfishUciWorker {
           window.setTimeout(() => {
             if (!finished) {
               finished = true;
+              this.needsStopFlush = true;
               cleanup();
               const snap = buildSnapshot();
               if (snap.lines.length > 0) {
@@ -300,8 +345,8 @@ class StockfishUciWorker {
                 reject(new Error('Stockfish search timed out'));
               }
             }
-          }, 180);
-        }, Math.max(1200, opts.movetimeMs * 4 + 1800));
+          }, 220);
+        }, Math.max(1800, opts.movetimeMs * 4 + 2200));
 
         this.activeCancel = handleAbort;
         opts.signal?.addEventListener('abort', handleAbort);
@@ -375,6 +420,7 @@ class StockfishUciWorker {
       this.worker = null;
     }
     this.readyPromise = null;
+    this.needsStopFlush = false;
   }
 }
 

@@ -5,15 +5,21 @@ import {
   classifyMoveFromAnalysis,
   computeMoveAccuracyPercent,
   decodeMateDistance,
+  detectOpeningFromMoves,
   encodeMateEvalCp,
   evalToMoverWinPercent,
   evalToWhiteWinPercent,
   formatEvalDisplay,
+  parsePgnMetadata,
   parseUciInfoLine,
   uciLineToPvLine,
   type PositionAnalysisSnapshot,
 } from './reviewAnalysis';
-import { summarizeGameReview, type EvaluatedMove } from './engine';
+import {
+  buildPostGameReviewSummary,
+  summarizeGameReview,
+  type EvaluatedMove,
+} from './engine';
 
 test('parseUciInfoLine and uciLineToPvLine normalize White/Black perspectives and mate scores cleanly', () => {
   // White to move: score cp +38 -> +38 from White perspective
@@ -247,4 +253,249 @@ test('classifyMoveFromAnalysis accurately detects Book, Best, Great, Brilliant, 
   // 5. Missed win detection + summarizeGameReview uses accuracyPercent cleanly
   const summary = summarizeGameReview([greatClassified, brilliantClassified, blunderClassified]);
   assert.ok(summary.whiteAccuracy < 80 && summary.whiteAccuracy > 50);
+});
+
+test('classifyMoveFromAnalysis never masks hanging pieces in decided positions as Best/Good and detects Miss & Excellent', () => {
+  const mkSnap = (
+    fen: string,
+    evalCp: number,
+    bestMoveSan: string,
+    bestFrom: string,
+    bestTo: string,
+    mateIn: number | null = null,
+  ): PositionAnalysisSnapshot => ({
+    fen,
+    depth: 14,
+    evalCp,
+    mateIn,
+    bestMoveSan,
+    bestMoveFrom: bestFrom,
+    bestMoveTo: bestTo,
+    source: 'stockfish-19-wasm',
+    lines: [
+      {
+        multipv: 1,
+        depth: 14,
+        evalCp,
+        mateIn,
+        evalText: formatEvalDisplay(evalCp, mateIn),
+        firstMoveUci: `${bestFrom}${bestTo}`,
+        firstMoveFrom: bestFrom,
+        firstMoveTo: bestTo,
+        firstMoveSan: bestMoveSan,
+        lineUci: [],
+        lineSan: [bestMoveSan],
+      },
+    ],
+  });
+
+  // 1. Hanging a full Bishop when already down -9.0 (-900 -> -1350, cpLoss = 450) must be Mistake/Blunder, NOT Best/Good!
+  const decidedFenBefore = '4k3/8/8/8/8/2B5/8/4K2q w - - 0 25';
+  const decidedFenAfter = '4k3/8/8/8/3B4/8/8/4K2q b - - 1 25';
+  const hangInDecided = classifyMoveFromAnalysis({
+    move: {
+      ply: 49,
+      moveNumber: 25,
+      color: 'w',
+      san: 'Bd4',
+      from: 'c3',
+      to: 'd4',
+      fenBefore: decidedFenBefore,
+      fenAfter: decidedFenAfter,
+      evalCp: 0,
+      bestMoveSan: 'Kd2',
+      cpLoss: 0,
+      quality: 'Good',
+    },
+    before: mkSnap(decidedFenBefore, -900, 'Kd2', 'e1', 'd2'),
+    after: mkSnap(decidedFenAfter, -1350, 'Qxd4', 'h1', 'd4'),
+    plyIndex: 48,
+    wasBook: false,
+  });
+  assert.ok(
+    hangInDecided.quality === 'Mistake' || hangInDecided.quality === 'Blunder',
+    `Expected Mistake/Blunder when hanging piece at -9.0, got ${hangInDecided.quality}`,
+  );
+  assert.ok((hangInDecided.accuracyPercent ?? 100) < 60);
+
+  // 2. Missing a forced mate-in-2 while staying +6.0 must be classified as Miss (not Best)
+  const missMateBefore = '6k1/5ppp/8/8/8/8/5PPP/3QR1K1 w - - 0 30';
+  const missMateAfter = '6k1/5ppp/8/8/8/7P/5PP1/3QR1K1 b - - 0 30';
+  const missedMate = classifyMoveFromAnalysis({
+    move: {
+      ply: 59,
+      moveNumber: 30,
+      color: 'w',
+      san: 'h3',
+      from: 'h2',
+      to: 'h3',
+      fenBefore: missMateBefore,
+      fenAfter: missMateAfter,
+      evalCp: 0,
+      bestMoveSan: 'Re8#',
+      cpLoss: 0,
+      quality: 'Good',
+    },
+    before: mkSnap(missMateBefore, encodeMateEvalCp(2), 'Re8#', 'e1', 'e8', 2),
+    after: mkSnap(missMateAfter, 600, 'h6', 'h7', 'h6', null),
+    plyIndex: 58,
+    wasBook: false,
+  });
+  assert.equal(missedMate.quality, 'Miss');
+  assert.ok(missedMate.isMissedWin);
+  assert.ok((missedMate.accuracyPercent ?? 100) < 60);
+
+  // 3. Strong non-#1 move (cpLoss = 18 in equal position) classifies as Excellent
+  const eqBefore = 'r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4';
+  const eqAfter = 'r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R b KQkq - 0 4';
+  const excellentMove = classifyMoveFromAnalysis({
+    move: {
+      ply: 7,
+      moveNumber: 4,
+      color: 'w',
+      san: 'd3',
+      from: 'd2',
+      to: 'd3',
+      fenBefore: eqBefore,
+      fenAfter: eqAfter,
+      evalCp: 0,
+      bestMoveSan: 'c3',
+      cpLoss: 0,
+      quality: 'Good',
+    },
+    before: mkSnap(eqBefore, 35, 'c3', 'c2', 'c3'),
+    after: mkSnap(eqAfter, 17, 'Bc5', 'f8', 'c5'),
+    plyIndex: 6,
+    wasBook: false,
+  });
+  assert.equal(excellentMove.quality, 'Excellent');
+  assert.ok((excellentMove.accuracyPercent ?? 0) >= 88);
+});
+
+test('buildPostGameReviewSummary calibrates 750-Elo blunderfest vs GM game accuracy and Game Rating realistically', () => {
+  const mkEvalMove = (
+    ply: number,
+    color: 'w' | 'b',
+    quality: EvaluatedMove['quality'],
+    accuracyPercent: number,
+    cpLoss: number,
+  ): EvaluatedMove => ({
+    ply,
+    moveNumber: Math.ceil(ply / 2),
+    color,
+    san: 'Nf3',
+    from: 'g1',
+    to: 'f3',
+    fenBefore: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+    fenAfter: 'rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1',
+    evalCp: 0,
+    bestMoveSan: 'Nf3',
+    cpLoss,
+    quality,
+    accuracyPercent,
+  });
+
+  // 750-Elo style 30-move game: White makes 4 blunders & 4 mistakes, loses 0-1
+  const lowEloMoves: EvaluatedMove[] = [];
+  for (let i = 0; i < 60; i++) {
+    const color: 'w' | 'b' = i % 2 === 0 ? 'w' : 'b';
+    if (color === 'w') {
+      if (i < 6) lowEloMoves.push(mkEvalMove(i + 1, 'w', 'Book', 100, 0));
+      else if (i === 10 || i === 22 || i === 34 || i === 46)
+        lowEloMoves.push(mkEvalMove(i + 1, 'w', 'Blunder', 14, 480));
+      else if (i === 14 || i === 26 || i === 38 || i === 50)
+        lowEloMoves.push(mkEvalMove(i + 1, 'w', 'Mistake', 42, 180));
+      else if (i % 4 === 0) lowEloMoves.push(mkEvalMove(i + 1, 'w', 'Inaccuracy', 62, 95));
+      else lowEloMoves.push(mkEvalMove(i + 1, 'w', 'Good', 78, 45));
+    } else {
+      if (i < 6) lowEloMoves.push(mkEvalMove(i + 1, 'b', 'Book', 100, 0));
+      else if (i === 19) lowEloMoves.push(mkEvalMove(i + 1, 'b', 'Blunder', 18, 420));
+      else if (i === 29 || i === 41) lowEloMoves.push(mkEvalMove(i + 1, 'b', 'Mistake', 45, 160));
+      else if (i % 6 === 1) lowEloMoves.push(mkEvalMove(i + 1, 'b', 'Excellent', 92, 18));
+      else lowEloMoves.push(mkEvalMove(i + 1, 'b', 'Good', 80, 35));
+    }
+  }
+
+  const lowSummary = buildPostGameReviewSummary({
+    evaluated: lowEloMoves,
+    resultLabel: '0-1',
+    whiteBaseRating: 750,
+    blackBaseRating: 750,
+  });
+
+  assert.ok(
+    lowSummary.whiteAccuracyExact >= 45 && lowSummary.whiteAccuracyExact <= 68,
+    `Expected realistic 750-Elo White accuracy (45..68%), got ${lowSummary.whiteAccuracyExact}%`,
+  );
+  assert.ok(
+    lowSummary.whiteGameRating >= 450 && lowSummary.whiteGameRating <= 850,
+    `Expected realistic 750-Elo White Game Rating (450..850), got ${lowSummary.whiteGameRating}`,
+  );
+  assert.ok(
+    lowSummary.blackGameRating > lowSummary.whiteGameRating &&
+      lowSummary.blackGameRating <= 1350,
+    `Expected winning 750-Elo Black Game Rating > White and <= 1350, got ${lowSummary.blackGameRating}`,
+  );
+
+  // Clean GM game: >95% accuracy, 0 blunders -> Game Rating >= 2400
+  const gmMoves: EvaluatedMove[] = [];
+  for (let i = 0; i < 60; i++) {
+    const color: 'w' | 'b' = i % 2 === 0 ? 'w' : 'b';
+    gmMoves.push(
+      mkEvalMove(
+        i + 1,
+        color,
+        i < 10 ? 'Book' : i % 3 === 0 ? 'Excellent' : 'Best',
+        i < 10 ? 100 : i % 3 === 0 ? 94 : 100,
+        i % 3 === 0 ? 12 : 0,
+      ),
+    );
+  }
+  const gmSummary = buildPostGameReviewSummary({
+    evaluated: gmMoves,
+    resultLabel: '1-0',
+    whiteBaseRating: 2650,
+    blackBaseRating: 2650,
+  });
+  assert.ok(gmSummary.whiteAccuracyExact >= 95);
+  assert.ok(gmSummary.whiteGameRating >= 2450);
+});
+
+test('parsePgnMetadata extracts Chess.com ECOUrl opening, TimeControl speed, ratings, and inferred checkmate result', () => {
+  const chessComPgn = `[Event "Live Chess"]
+[Site "Chess.com"]
+[White "PlayerOne"]
+[Black "PlayerTwo"]
+[Result "0-1"]
+[ECO "C50"]
+[ECOUrl "https://www.chess.com/openings/Italian-Game-Giuoco-Piano-4.c3-Nf6"]
+[WhiteElo "750"]
+[BlackElo "762"]
+[TimeControl "600"]
+[Termination "PlayerTwo won by checkmate"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. c3 Nf6 0-1`;
+
+  const parsed = parsePgnMetadata(chessComPgn);
+  assert.equal(parsed.whiteName, 'PlayerOne');
+  assert.equal(parsed.blackName, 'PlayerTwo');
+  assert.equal(parsed.whiteRating, 750);
+  assert.equal(parsed.blackRating, 762);
+  assert.equal(parsed.opening, 'Italian Game: Giuoco Piano');
+  assert.equal(parsed.speed, 'rapid');
+  assert.equal(parsed.result, '0-1');
+
+  // Bullet / blitz inference
+  assert.equal(parsePgnMetadata('[TimeControl "60"]\n\n1. e4 e5').speed, 'bullet');
+  assert.equal(parsePgnMetadata('[TimeControl "180+2"]\n\n1. e4 e5').speed, 'blitz');
+
+  // Bare moves without headers: detect opening & infer checkmate result
+  const scholarsPgn = '1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7#';
+  const bareParsed = parsePgnMetadata(scholarsPgn);
+  assert.equal(bareParsed.result, '1-0');
+  assert.equal(bareParsed.opening, "Bishop's Opening");
+  assert.equal(
+    detectOpeningFromMoves(['e4', 'e5', 'Nf3', 'Nc6', 'Bc4', 'Bc5']),
+    'Italian Game: Giuoco Piano',
+  );
 });

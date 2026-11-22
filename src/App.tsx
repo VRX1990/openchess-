@@ -504,16 +504,56 @@ function AppContent() {
     (item) => item.id !== 'home' && item.id === activeTab,
   );
 
-  // Exact Chess.com Bottom 5-Tab Bar: Home | Puzzles | Learn | Watch | More
+  // Exact Chess.com Mobile Bottom 5-Tab Bar: Home | Puzzles | Learn | Watch | More
   const mobilePrimaryTabs: {
     id: 'home' | 'puzzles' | 'learn' | 'watch';
     label: string;
-    icon: typeof Swords;
+    renderIcon: (active: boolean) => ReactNode;
   }[] = [
-    { id: 'home', label: 'Home', icon: Home },
-    { id: 'puzzles', label: 'Puzzles', icon: Puzzle },
-    { id: 'learn', label: 'Learn', icon: BookOpen },
-    { id: 'watch', label: 'Watch', icon: Binoculars },
+    {
+      id: 'home',
+      label: 'Home',
+      renderIcon: (active) => (
+        <BrandPawnIcon
+          className={`w-[22px] h-[22px] transition-opacity ${
+            active ? 'opacity-100' : 'opacity-60 grayscale-[35%]'
+          }`}
+        />
+      ),
+    },
+    {
+      id: 'puzzles',
+      label: 'Puzzles',
+      renderIcon: (active) => (
+        <NavPuzzlesIcon
+          className={`w-[22px] h-[22px] transition-opacity ${
+            active ? 'opacity-100' : 'opacity-60 grayscale-[35%]'
+          }`}
+        />
+      ),
+    },
+    {
+      id: 'learn',
+      label: 'Learn',
+      renderIcon: (active) => (
+        <NavLearnIcon
+          className={`w-[22px] h-[22px] transition-opacity ${
+            active ? 'opacity-100' : 'opacity-60 grayscale-[35%]'
+          }`}
+        />
+      ),
+    },
+    {
+      id: 'watch',
+      label: 'Watch',
+      renderIcon: (active) => (
+        <NavWatchIcon
+          className={`w-[22px] h-[22px] transition-opacity ${
+            active ? 'opacity-100' : 'opacity-60 grayscale-[35%]'
+          }`}
+        />
+      ),
+    },
   ];
 
   const isFocusedGameScreen =
@@ -534,8 +574,8 @@ function AppContent() {
 
   return (
     <div className="min-h-dvh bg-[#302E2B] text-white flex flex-col lg:flex-row">
-      {/* Desktop Left Sidebar Rail — Authentic Flush #262421 Rail */}
-      <aside className="hidden lg:flex lg:w-[160px] lg:sticky lg:top-0 lg:h-dvh lg:overflow-y-auto bg-[#262421] flex-col justify-between shrink-0 py-2">
+      {/* Desktop Left Sidebar Rail — Exact Chess.com Flush #262421 Rail */}
+      <aside className="hidden lg:flex lg:w-[148px] lg:sticky lg:top-0 lg:h-dvh lg:overflow-y-auto bg-[#262421] flex-col justify-between shrink-0 py-2">
         <div>
           <a
             href="#home"
@@ -546,7 +586,7 @@ function AppContent() {
             className="flex items-center gap-1.5 px-3 py-2 mb-1 hover:opacity-95 whitespace-nowrap"
           >
             <OpenChessLogo sizeClass="w-6 h-6 shrink-0" />
-            <span className="text-[17.5px] font-black tracking-tight font-display text-white leading-none">
+            <span className="text-[17px] font-black tracking-tight font-display text-white leading-none">
               Open<span className="font-bold text-[#E6E5E2]">Chess</span>
             </span>
           </a>
@@ -563,7 +603,7 @@ function AppContent() {
                   onClick={() =>
                     navigateTo(item.id === 'play' && !playIsActive ? 'new-game' : item.id)
                   }
-                  className={`w-full h-[42px] flex items-center gap-2.5 px-3.5 text-[14px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
+                  className={`w-full h-[44px] flex items-center gap-3 px-3.5 text-[15px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
                     active
                       ? 'bg-[#1F1E1B] text-white'
                       : 'text-[#E7E6E4] hover:text-white hover:bg-black/20'
@@ -757,64 +797,87 @@ function AppContent() {
         </div>
       </aside>
 
-      {/* Mobile Hub Header */}
+      {/* Chess.com Mobile Native Top Header */}
       {!isFocusedGameScreen && (
-        <header className="lg:hidden sticky top-0 z-30 h-12 bg-[#262421] border-b border-white/[0.06] px-3 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
+        <header className="lg:hidden sticky top-0 z-30 h-[52px] bg-[#21201D] border-b border-white/[0.07] px-3 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <button
               type="button"
               onClick={() => navigateTo('profile')}
               aria-label="Open Profile"
-              className="relative w-8 h-8 rounded-lg flex items-center justify-center shrink-0 cursor-pointer"
+              className="relative w-8 h-8 rounded-[7px] flex items-center justify-center shrink-0 cursor-pointer ring-1 ring-white/10"
             >
               <PlayerAvatar
                 username={lichessSession?.account.username ?? 'You'}
                 avatarUrl={lichessSession?.account.profile?.avatarUrl}
                 isCurrentUser
                 size={32}
-                rounded="rounded-lg"
+                rounded="rounded-[7px]"
               />
               {lichessSession && (
-                <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#81B64C] border-2 border-[#262421]" />
+                <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#81B64C] border-2 border-[#21201D]" />
               )}
             </button>
+            <button
+              type="button"
+              onClick={() => navigateTo('home')}
+              className="flex items-center gap-1 min-w-0 cursor-pointer"
+            >
+              <BrandPawnIcon className="w-[22px] h-[22px] shrink-0" />
+              <span className="text-[16px] font-extrabold tracking-tight font-display text-white truncate">
+                OpenChess
+              </span>
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1 shrink-0">
             <button
               type="button"
               onClick={() => navigateTo('streak')}
               title={`Daily streak: ${dailyStreak.days} day${dailyStreak.days === 1 ? '' : 's'} opened (Best: ${dailyStreak.bestDays})`}
               aria-label={`Daily streak ${dailyStreak.days} days`}
-              className="flex items-center gap-1 px-2 py-0.5 rounded bg-[#393734] hover:bg-[#43403C] text-xs font-mono font-bold text-[#F7C045] tabular-nums cursor-pointer"
+              className="h-8 flex items-center gap-1 px-2 rounded-[7px] bg-[#2E2C29] hover:bg-[#3A3834] text-xs font-mono font-extrabold text-[#F7C045] tabular-nums cursor-pointer"
             >
               <Flame className="w-3.5 h-3.5 fill-[#F7C045]" />
               <span>{dailyStreak.days}</span>
             </button>
-          </div>
-
-          <div className="flex items-center gap-1">
             <button
               type="button"
               onClick={() => navigateTo('friends')}
               aria-label="Friends"
-              className="min-w-[38px] min-h-[38px] flex items-center justify-center rounded-lg text-[#6FB3E0] cursor-pointer"
+              className="relative min-w-[38px] min-h-[38px] flex items-center justify-center rounded-[7px] hover:bg-white/[0.06] cursor-pointer"
             >
-              <Users className="w-4 h-4" />
+              <NavFriendsIcon className="w-[21px] h-[21px]" />
+              {incomingFriendReqs.length > 0 && (
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#81B64C] ring-2 ring-[#21201D]" />
+              )}
             </button>
             <button
               type="button"
               onClick={() => navigateTo('review')}
               aria-label="Game Review"
-              className="min-w-[38px] min-h-[38px] flex items-center justify-center rounded-lg text-[#81B64C] cursor-pointer"
+              className="min-w-[38px] min-h-[38px] flex items-center justify-center rounded-[7px] hover:bg-white/[0.06] cursor-pointer"
             >
-              <SearchCheck className="w-4 h-4" />
+              <NavReviewIcon className="w-[21px] h-[21px]" />
             </button>
-            <button
-              type="button"
-              onClick={() => (lichessSession ? navigateTo('profile') : openAuthPage())}
-              aria-label={lichessSession ? 'Account Profile' : 'Sign In'}
-              className="min-w-[38px] min-h-[38px] flex items-center justify-center rounded-lg text-[#F7C045] cursor-pointer"
-            >
-              <User className="w-4 h-4" />
-            </button>
+            {!lichessSession ? (
+              <button
+                type="button"
+                onClick={openAuthPage}
+                className="ml-0.5 h-8 px-2.5 rounded-[7px] bg-[#81B64C] hover:bg-[#95BB4A] border-b-2 border-[#457524] text-[12px] font-extrabold text-white cursor-pointer whitespace-nowrap"
+              >
+                Log In
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={openThemeStudio}
+                aria-label="Board Themes"
+                className="min-w-[38px] min-h-[38px] flex items-center justify-center rounded-[7px] text-[#C8C6C2] hover:text-white hover:bg-white/[0.06] cursor-pointer"
+              >
+                <Palette className="w-[18px] h-[18px]" />
+              </button>
+            )}
           </div>
         </header>
       )}
@@ -823,12 +886,12 @@ function AppContent() {
       <main
         className={`flex-1 overflow-x-clip ${
           activeTab === 'review'
-            ? 'p-0 pb-[56px] lg:pb-0'
+            ? 'p-0 pb-[60px] lg:pb-0'
             : activeTab === 'bots' || activeTab === 'play'
               ? 'px-2.5 sm:p-4 lg:p-5 pt-0 pb-0 lg:pb-5'
               : isFocusedGameScreen
                 ? 'px-2.5 sm:p-4 lg:p-5 pt-1 pb-6 lg:pb-5'
-                : 'px-2.5 sm:p-4 lg:p-5 pt-1 pb-[70px] lg:pb-5'
+                : 'px-3 sm:p-4 lg:p-5 pt-2.5 pb-[76px] lg:pb-5'
         }`}
       >
         <div key={activeTab} className="animate-view-enter">
@@ -913,8 +976,8 @@ function AppContent() {
               playerUsername={lichessSession?.account.username ?? loadGuestPlayerName()}
               playerAvatarUrl={lichessSession?.account.profile?.avatarUrl}
               onBack={() => navigateTo('home')}
-              onStartMatch={({ botId, botElo, timeId, color, coachGuard }) =>
-                handleQuickPlay({ botId, botElo, timeId, mode: 'bot', color, coachGuard })
+              onStartMatch={({ botId, botElo, timeId, color, coachGuard, initialMove }) =>
+                handleQuickPlay({ botId, botElo, timeId, mode: 'bot', color, coachGuard, initialMove })
               }
             />
           )}
@@ -1073,26 +1136,35 @@ function AppContent() {
         </div>
       </main>
 
-      {/* Mobile Fixed 5-Tab Bottom Bar (Home / Puzzles / Learn / Watch / More) */}
+      {/* Chess.com Mobile Fixed 5-Tab Bottom Bar (Home / Puzzles / Learn / Watch / More) */}
       {!isFocusedGameScreen && (
         <nav
           aria-label="Mobile navigation"
-          className="lg:hidden fixed bottom-0 left-0 right-0 z-40 h-14 bg-[#262421] border-t border-white/10 grid grid-cols-5 items-center"
+          className="lg:hidden fixed bottom-0 left-0 right-0 z-40 h-[60px] pb-[env(safe-area-inset-bottom)] bg-[#21201D] border-t border-white/[0.08] grid grid-cols-5 items-center"
         >
           {mobilePrimaryTabs.map((item) => {
-            const Icon = item.icon;
             const active = !moreOpen && activeTab === item.id;
             return (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => navigateTo(item.id)}
-                className={`min-h-[44px] h-full flex flex-col items-center justify-center gap-0.5 cursor-pointer transition-colors ${
-                  active ? 'text-[#81B64C]' : 'text-[#9E998F] hover:text-white'
+                className={`relative min-h-[48px] h-full flex flex-col items-center justify-center gap-1 cursor-pointer transition-colors ${
+                  active ? 'text-white' : 'text-[#9B9A97] hover:text-white'
                 }`}
               >
-                <Icon className="w-[18px] h-[18px]" />
-                <span className="text-[10px] font-bold tracking-tight leading-none">
+                {active && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-[2.5px] rounded-b-full bg-[#81B64C]"
+                  />
+                )}
+                {item.renderIcon(active)}
+                <span
+                  className={`text-[10.5px] tracking-tight leading-none ${
+                    active ? 'font-extrabold text-white' : 'font-semibold text-[#9B9A97]'
+                  }`}
+                >
                   {item.label}
                 </span>
               </button>
@@ -1103,12 +1175,27 @@ function AppContent() {
             type="button"
             onClick={() => setMoreOpen((v) => !v)}
             aria-expanded={moreOpen}
-            className={`min-h-[44px] h-full flex flex-col items-center justify-center gap-0.5 cursor-pointer transition-colors ${
-              isMoreActive ? 'text-[#81B64C]' : 'text-[#9E998F] hover:text-white'
+            className={`relative min-h-[48px] h-full flex flex-col items-center justify-center gap-1 cursor-pointer transition-colors ${
+              isMoreActive ? 'text-white' : 'text-[#9B9A97] hover:text-white'
             }`}
           >
-            <Menu className="w-[18px] h-[18px]" />
-            <span className="text-[10px] font-bold tracking-tight leading-none">
+            {isMoreActive && (
+              <span
+                aria-hidden="true"
+                className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-[2.5px] rounded-b-full bg-[#81B64C]"
+              />
+            )}
+            <span className="relative flex items-center justify-center w-[22px] h-[22px]">
+              <Menu className="w-[20px] h-[20px]" />
+              {unreadDmCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-[#81B64C]" />
+              )}
+            </span>
+            <span
+              className={`text-[10.5px] tracking-tight leading-none ${
+                isMoreActive ? 'font-extrabold text-white' : 'font-semibold text-[#9B9A97]'
+              }`}
+            >
               More
             </span>
           </button>

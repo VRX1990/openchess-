@@ -1293,15 +1293,14 @@ export function NewGameView({
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_390px] gap-3 lg:gap-5 items-start">
         {/* Desktop-Only Left Column: Full Board + Opponent/Player Strips + Rectangular Clocks */}
         <div className="hidden lg:flex w-full max-w-[min(calc(100dvh-112px),760px)] mx-auto flex-col gap-2">
-          {/* Opponent Top Strip (Desktop) */}
+          {/* Opponent Top Strip (Desktop) — Exact Chess.com /play/online */}
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-[38px] h-[38px] rounded-[3px] bg-[#454340] flex items-center justify-center shrink-0 overflow-hidden">
-                <svg viewBox="0 0 36 36" className="w-7 h-7" aria-hidden="true">
-                  <circle cx="18" cy="13" r="6" fill="#2A2825" />
-                  <path d="M7 33c1.5-6.5 6-10 11-10s9.5 3.5 11 10H7z" fill="#2A2825" />
-                </svg>
-              </div>
+              <PlayerAvatar
+                username="Opponent"
+                size={38}
+                rounded="rounded-[3px]"
+              />
               <span className="text-[14px] font-bold text-white truncate">Opponent</span>
             </div>
             <div className="w-[122px] h-[40px] rounded-[4px] bg-[#262421] text-[#8B8985] font-mono font-bold text-[21px] tabular-nums flex items-center justify-end px-3 select-none">

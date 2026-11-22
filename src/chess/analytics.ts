@@ -1,5 +1,5 @@
 import { Chess, type Color, type PieceSymbol, type Square } from 'chess.js';
-import type { EvaluatedMove } from './engine';
+import { computeCalibratedSideAccuracy, type EvaluatedMove } from './engine';
 import type { LichessUserGame } from './lichess';
 
 export interface ReviewedGameRecord {
@@ -65,6 +65,7 @@ function lossToAccuracy(avgLoss: number): number {
   return Math.max(15, Math.min(99, Math.round(100 * Math.exp(-0.0038 * avgLoss))));
 }
 
+
 export function buildReviewedGameRecord(
   id: string,
   moves: EvaluatedMove[],
@@ -74,6 +75,9 @@ export function buildReviewedGameRecord(
   const mine = moves.filter((m) => m.color === playerColor);
   const avgFor = (subset: EvaluatedMove[]): number | null => {
     if (subset.length === 0) return null;
+    if (subset.some((m) => typeof m.accuracyPercent === 'number')) {
+      return Math.round(computeCalibratedSideAccuracy(subset));
+    }
     const sum = subset.reduce((acc, m) => acc + Math.min(m.cpLoss, 500), 0);
     return lossToAccuracy(sum / subset.length);
   };
@@ -91,11 +95,12 @@ export function buildReviewedGameRecord(
     middlegameAccuracy: avgFor(middleMoves),
     endgameAccuracy: avgFor(endgameMoves),
     blunders: mine.filter((m) => m.quality === 'Blunder').length,
-    mistakes: mine.filter((m) => m.quality === 'Mistake').length,
+    mistakes: mine.filter((m) => m.quality === 'Mistake' || m.quality === 'Miss').length,
     inaccuracies: mine.filter((m) => m.quality === 'Inaccuracy').length,
     bestMoves: mine.filter(
       (m) =>
         m.quality === 'Best' ||
+        m.quality === 'Excellent' ||
         m.quality === 'Brilliant' ||
         m.quality === 'Great' ||
         m.quality === 'Book',

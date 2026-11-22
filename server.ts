@@ -11468,6 +11468,100 @@ async function startServer() {
     res.json({ username, games: merged });
   });
 
+  const explorerCache = new Map<string, { data: unknown; expiresAt: number }>();
+  const EXPLORER_CACHE_TTL_MS = 15 * 60 * 1000;
+  const EXPLORER_CACHE_MAX = 400;
+
+  app.get('/api/explorer', async (req, res) => {
+    const fen = typeof req.query.fen === 'string' ? req.query.fen.trim() : '';
+    if (!fen) {
+      res.status(400).json({ error: 'FEN parameter is required.' });
+      return;
+    }
+
+    const database = req.query.database === 'community' ? 'community' : 'masters';
+    const rawSpeeds = typeof req.query.speeds === 'string' ? req.query.speeds.trim() : 'rapid,blitz';
+    const allowedSpeeds = rawSpeeds
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => ['bullet', 'blitz', 'rapid', 'classical'].includes(s));
+    const speedsParam = allowedSpeeds.length > 0 ? allowedSpeeds.join(',') : 'rapid,blitz';
+
+    const rawRatings = typeof req.query.ratings === 'string' ? req.query.ratings.trim() : '1800,2000,2200,2500';
+    const allowedRatings = rawRatings
+      .split(',')
+      .map((r) => r.trim())
+      .filter((r) => ['1000', '1200', '1400', '1600', '1800', '2000', '2200', '2500'].includes(r));
+    const ratingsParam = allowedRatings.length > 0 ? allowedRatings.join(',') : '1800,2000,2200,2500';
+
+    const since = typeof req.query.since === 'string' && /^\d{4}(-\d{2})?$/.test(req.query.since.trim())
+      ? req.query.since.trim()
+      : '';
+    const until = typeof req.query.until === 'string' && /^\d{4}(-\d{2})?$/.test(req.query.until.trim())
+      ? req.query.until.trim()
+      : '';
+
+    const upstreamUrl =
+      database === 'masters'
+        ? `https://explorer.lichess.ovh/masters?moves=12&topGames=8&fen=${encodeURIComponent(fen)}${
+            since ? `&since=${encodeURIComponent(since)}` : ''
+          }${until ? `&until=${encodeURIComponent(until)}` : ''}`
+        : `https://explorer.lichess.ovh/lichess?variant=standard&moves=12&topGames=6&recentGames=4&speeds=${encodeURIComponent(
+            speedsParam,
+          )}&ratings=${encodeURIComponent(ratingsParam)}&fen=${encodeURIComponent(fen)}${
+            since ? `&since=${encodeURIComponent(since)}` : ''
+          }${until ? `&until=${encodeURIComponent(until)}` : ''}`;
+
+    const cacheKey = `${database}|${speedsParam}|${ratingsParam}|${since}|${until}|${fen}`;
+    const cached = explorerCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      res.json(cached.data);
+      return;
+    }
+
+    try {
+      const fetchHeaders: Record<string, string> = {
+        Accept: 'application/json',
+        'User-Agent': 'OpenChess/1.0',
+      };
+      const auth = resolveOnlineToken(req);
+      const token = auth.openChessUser?.onlineToken ?? auth.onlineToken;
+      if (token) {
+        fetchHeaders.Authorization = `Bearer ${token}`;
+      }
+
+      let upstream = await fetch(upstreamUrl, {
+        headers: fetchHeaders,
+        signal: AbortSignal.timeout(4500),
+      });
+
+      // If community endpoint requires auth (401/403), transparently fall back to public masters DB
+      if (!upstream.ok && database === 'community' && (upstream.status === 401 || upstream.status === 403)) {
+        const mastersFallbackUrl = `https://explorer.lichess.ovh/masters?moves=12&topGames=8&fen=${encodeURIComponent(fen)}${
+          since ? `&since=${encodeURIComponent(since)}` : ''
+        }${until ? `&until=${encodeURIComponent(until)}` : ''}`;
+        upstream = await fetch(mastersFallbackUrl, {
+          headers: { Accept: 'application/json', 'User-Agent': 'OpenChess/1.0' },
+          signal: AbortSignal.timeout(4500),
+        });
+      }
+
+      if (!upstream.ok) {
+        res.status(200).json({ fallback: true, white: 0, draws: 0, black: 0, moves: [], topGames: [] });
+        return;
+      }
+      const data = await upstream.json();
+      if (explorerCache.size >= EXPLORER_CACHE_MAX) {
+        const oldestKey = explorerCache.keys().next().value;
+        if (oldestKey) explorerCache.delete(oldestKey);
+      }
+      explorerCache.set(cacheKey, { data, expiresAt: Date.now() + EXPLORER_CACHE_TTL_MS });
+      res.json(data);
+    } catch {
+      res.status(200).json({ fallback: true, white: 0, draws: 0, black: 0, moves: [], topGames: [] });
+    }
+  });
+
   app.get('/api/lichess/explorer', async (req, res) => {
     const fen = typeof req.query.fen === 'string' ? req.query.fen.trim() : '';
     if (!fen) {
@@ -12532,7 +12626,10 @@ async function startServer() {
         maxAge: '1h',
       }),
     );
-    app.get('/{*splat}', (_req, res) => {
+    app.use((req, res, next) => {
+      if (req.method !== 'GET' || req.path.startsWith('/api/')) {
+        return next();
+      }
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.setHeader('CDN-Cache-Control', 'no-store');
       res.sendFile(distIndexPath);

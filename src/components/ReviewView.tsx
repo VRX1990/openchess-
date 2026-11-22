@@ -40,6 +40,7 @@ import { GameReviewSummaryScreen } from './GameReviewSummaryScreen';
 import { MOVE_QUALITY_META, MoveBadge } from './MoveBadge';
 import { NavReviewIcon } from './ChessIcons';
 import {
+  buildPostGameReviewSummary,
   extractGameSkeleton,
   summarizeGameReview,
   type EvaluatedMove,
@@ -47,6 +48,7 @@ import {
 import {
   REVIEW_SPEED_PRESETS,
   formatEvalDisplay,
+  parsePgnMetadata,
   type ReviewSpeedPreset,
 } from '../chess/reviewAnalysis';
 import {
@@ -114,22 +116,16 @@ function getSpeedIcon(speed: string) {
   return <Clock className="w-3.5 h-3.5 text-[#81B64C] shrink-0" />;
 }
 
-function parsePgnHeaders(pgnText: string): Partial<LoadedGameMeta> {
-  const getTag = (tag: string): string | undefined => {
-    const match = pgnText.match(new RegExp(`\\[${tag}\\s+"([^"]*)"\\]`));
-    const val = match?.[1]?.trim();
-    return val && val !== '?' ? val : undefined;
-  };
-  const whiteRatingRaw = Number(getTag('WhiteElo'));
-  const blackRatingRaw = Number(getTag('BlackElo'));
+function parsePgnHeaders(pgnText: string, fallbackSans?: string[]): Partial<LoadedGameMeta> {
+  const parsed = parsePgnMetadata(pgnText, fallbackSans);
   return {
-    whiteName: getTag('White'),
-    blackName: getTag('Black'),
-    whiteRating: Number.isFinite(whiteRatingRaw) && whiteRatingRaw > 0 ? whiteRatingRaw : undefined,
-    blackRating: Number.isFinite(blackRatingRaw) && blackRatingRaw > 0 ? blackRatingRaw : undefined,
-    opening: getTag('Opening'),
-    speed: getTag('Speed') || 'rapid',
-    result: getTag('Result'),
+    whiteName: parsed.whiteName,
+    blackName: parsed.blackName,
+    whiteRating: parsed.whiteRating,
+    blackRating: parsed.blackRating,
+    opening: parsed.opening,
+    speed: parsed.speed,
+    result: parsed.result,
   };
 }
 
@@ -196,9 +192,9 @@ export function ReviewView({
         parsed.blackName ||
         (initialPlayerColor === 'b' ? lichessSession?.account.username || 'You' : 'Opponent'),
       blackRating: parsed.blackRating,
-      speed: 'rapid',
+      speed: parsed.speed || 'rapid',
       opening: parsed.opening,
-      result: initialResult || parsed.result || '*',
+      result: (initialResult && initialResult !== '*' ? initialResult : undefined) || parsed.result || '*',
     };
   });
 
@@ -446,6 +442,16 @@ export function ReviewView({
   }, [pgnInput, runProgressiveAnalysis, scanSpeed, viewStage]);
 
   const analysis = useMemo(() => summarizeGameReview(moves), [moves]);
+  const reviewSummary = useMemo(
+    () =>
+      buildPostGameReviewSummary({
+        evaluated: analysis.moves,
+        resultLabel: loadedMeta.result,
+        whiteBaseRating: loadedMeta.whiteRating,
+        blackBaseRating: loadedMeta.blackRating,
+      }),
+    [analysis.moves, loadedMeta.blackRating, loadedMeta.result, loadedMeta.whiteRating],
+  );
 
   useEffect(() => {
     if (viewStage === 'board' && moves.length > 0 && analyzedCount === moves.length) {
@@ -596,6 +602,7 @@ export function ReviewView({
       currentMove.bestMoveSan !== currentMove.san &&
       (currentMove.quality === 'Inaccuracy' ||
         currentMove.quality === 'Mistake' ||
+        currentMove.quality === 'Miss' ||
         currentMove.quality === 'Blunder' ||
         currentMove.cpLoss >= 30),
   );
@@ -609,6 +616,7 @@ export function ReviewView({
       retryState?.solved ||
       currentMove.quality === 'Inaccuracy' ||
       currentMove.quality === 'Mistake' ||
+      currentMove.quality === 'Miss' ||
       currentMove.quality === 'Blunder');
 
   const bestMoveArrow = useMemo(() => {
@@ -737,6 +745,7 @@ export function ReviewView({
           m.quality === 'Great' ||
           m.quality === 'Inaccuracy' ||
           m.quality === 'Mistake' ||
+          m.quality === 'Miss' ||
           m.quality === 'Blunder',
       ),
     [analysis.moves],
@@ -815,8 +824,9 @@ export function ReviewView({
   const handleLoadCustomPgn = () => {
     const trimmed = customPgnDraft.trim();
     if (!trimmed) return;
+    let skeleton: EvaluatedMove[] = [];
     try {
-      const skeleton = extractGameSkeleton(trimmed);
+      skeleton = extractGameSkeleton(trimmed);
       if (skeleton.length === 0) {
         setCustomPgnError('No valid chess moves found in that PGN.');
         return;
@@ -829,7 +839,10 @@ export function ReviewView({
     setCustomPgnError(null);
     setAutoPlaying(false);
     setPgnInput(trimmed);
-    const parsed = parsePgnHeaders(trimmed);
+    const parsed = parsePgnHeaders(
+      trimmed,
+      skeleton.map((m) => m.san),
+    );
     const detectedColor: Color =
       username && parsed.blackName?.toLowerCase() === username.toLowerCase() ? 'b' : 'w';
     setPlayerColor(detectedColor);
@@ -841,7 +854,7 @@ export function ReviewView({
       whiteRating: parsed.whiteRating,
       blackName: parsed.blackName || 'Black',
       blackRating: parsed.blackRating,
-      speed: 'rapid',
+      speed: parsed.speed || 'rapid',
       opening: parsed.opening || 'Custom PGN Game',
       result: parsed.result || '*',
     });
@@ -873,6 +886,7 @@ export function ReviewView({
         avatarUrl: loadedMeta.whiteAvatarUrl,
         color: 'w' as Color,
         accuracy: analysis.whiteAccuracy,
+        gameRating: reviewSummary.whiteGameRating,
       }
     : {
         name: loadedMeta.blackName,
@@ -880,6 +894,7 @@ export function ReviewView({
         avatarUrl: loadedMeta.blackAvatarUrl,
         color: 'b' as Color,
         accuracy: analysis.blackAccuracy,
+        gameRating: reviewSummary.blackGameRating,
       };
 
   const bottomPlayer = flipped
@@ -889,6 +904,7 @@ export function ReviewView({
         avatarUrl: loadedMeta.blackAvatarUrl,
         color: 'b' as Color,
         accuracy: analysis.blackAccuracy,
+        gameRating: reviewSummary.blackGameRating,
       }
     : {
         name: loadedMeta.whiteName,
@@ -896,6 +912,7 @@ export function ReviewView({
         avatarUrl: loadedMeta.whiteAvatarUrl,
         color: 'w' as Color,
         accuracy: analysis.whiteAccuracy,
+        gameRating: reviewSummary.whiteGameRating,
       };
 
   const isPlayerCurrentUser = (name: string) =>
@@ -1372,6 +1389,7 @@ export function ReviewView({
 
             <button
               type="button"
+              data-testid="review-open-report-btn"
               onClick={() => {
                 setAutoPlaying(false);
                 setSummaryOpen(true);
@@ -1380,7 +1398,7 @@ export function ReviewView({
               title="Open full match report card"
             >
               <BarChart3 className="w-3.5 h-3.5 text-[#81B64C]" />
-              <span>Report</span>
+              <span>Game Report</span>
             </button>
 
             <button
@@ -1482,6 +1500,11 @@ export function ReviewView({
                       ? {analysis.counts.Mistake}
                     </span>
                   )}
+                  {analysis.counts.Miss > 0 && (
+                    <span className="text-[#F07E6D] font-bold">
+                      × {analysis.counts.Miss}
+                    </span>
+                  )}
                   {analysis.counts.Blunder > 0 && (
                     <span className="text-[#E0524B] font-bold">
                       ?? {analysis.counts.Blunder}
@@ -1545,9 +1568,14 @@ export function ReviewView({
                   </span>
                 )}
               </div>
-              <span className="font-mono font-extrabold text-[#C8C4BC] tabular-nums shrink-0">
-                {topPlayer.accuracy}% Acc
-              </span>
+              <div className="flex items-center gap-2 shrink-0 font-mono tabular-nums">
+                <span className="font-extrabold text-[#C8C4BC]">
+                  {topPlayer.accuracy}%
+                </span>
+                <span className="px-1.5 py-0.5 rounded bg-[#1A1917] text-[10px] font-extrabold text-[#AEE076]">
+                  Est. {topPlayer.gameRating}
+                </span>
+              </div>
             </div>
 
             {/* Beginning-to-End Horizontal Move Ribbon (Move 1 -> End) */}
@@ -1705,9 +1733,14 @@ export function ReviewView({
                   </span>
                 )}
               </div>
-              <span className="font-mono font-extrabold text-[#81B64C] tabular-nums shrink-0">
-                {bottomPlayer.accuracy}% Acc
-              </span>
+              <div className="flex items-center gap-2 shrink-0 font-mono tabular-nums">
+                <span className="font-extrabold text-[#81B64C]">
+                  {bottomPlayer.accuracy}%
+                </span>
+                <span className="px-1.5 py-0.5 rounded bg-[#1A1917] text-[10px] font-extrabold text-[#AEE076]">
+                  Est. {bottomPlayer.gameRating}
+                </span>
+              </div>
             </div>
 
             {/* Interactive Evaluation Advantage Graph on Mobile/Tablet (Desktop displays it cleanly in right Coach dock) */}
@@ -2015,6 +2048,14 @@ export function ReviewView({
             isExploring={isExploring}
             defaultTab="report"
             coachId={activeCoachId}
+            whiteName={loadedMeta.whiteName}
+            blackName={loadedMeta.blackName}
+            whiteRating={loadedMeta.whiteRating}
+            blackRating={loadedMeta.blackRating}
+            onOpenFullReport={() => {
+              setAutoPlaying(false);
+              setSummaryOpen(true);
+            }}
           />
         </aside>
       </div>
@@ -2056,6 +2097,15 @@ export function ReviewView({
             defaultTab="report"
             onMoveStepCloseSheet={() => setMobileSheet('none')}
             coachId={activeCoachId}
+            whiteName={loadedMeta.whiteName}
+            blackName={loadedMeta.blackName}
+            whiteRating={loadedMeta.whiteRating}
+            blackRating={loadedMeta.blackRating}
+            onOpenFullReport={() => {
+              setMobileSheet('none');
+              setAutoPlaying(false);
+              setSummaryOpen(true);
+            }}
           />
         </div>
       </BottomSheet>

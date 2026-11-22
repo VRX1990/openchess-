@@ -22,6 +22,8 @@ import { evaluatePosition } from '../chess/engine';
 import { ChessBoard, type BoardTheme } from './ChessBoard';
 import { EvaluationBar } from './EvaluationBar';
 import { TutorPanel } from './TutorPanel';
+import { playMoveSound } from '../chess/sound';
+import { getStepNavigationSound } from '../chess/boardMotion';
 
 interface LearnStudyViewProps {
   boardTheme: BoardTheme;
@@ -356,7 +358,11 @@ export function LearnStudyView({
           <div className="grid grid-cols-5 gap-1.5">
             <button
               type="button"
-              onClick={() => setPlyIdx(0)}
+              onClick={() => {
+                const nav = getStepNavigationSound(chapter.moves, plyIdx, 0);
+                if (nav) playMoveSound(nav);
+                setPlyIdx(0);
+              }}
               disabled={plyIdx === 0}
               aria-label="First move"
               className="min-h-[42px] rounded-lg bg-[#2A2824] hover:bg-[#383530] flex items-center justify-center text-white cursor-pointer disabled:opacity-40"
@@ -365,7 +371,12 @@ export function LearnStudyView({
             </button>
             <button
               type="button"
-              onClick={() => setPlyIdx((p) => Math.max(0, p - 1))}
+              onClick={() => {
+                const next = Math.max(0, plyIdx - 1);
+                const nav = getStepNavigationSound(chapter.moves, plyIdx, next);
+                if (nav) playMoveSound(nav);
+                setPlyIdx(next);
+              }}
               disabled={plyIdx === 0}
               aria-label="Previous move"
               className="min-h-[42px] rounded-lg bg-[#2A2824] hover:bg-[#383530] flex items-center justify-center text-white cursor-pointer disabled:opacity-40"
@@ -374,7 +385,12 @@ export function LearnStudyView({
             </button>
             <button
               type="button"
-              onClick={() => setPlyIdx((p) => Math.min(chapter.moves.length, p + 1))}
+              onClick={() => {
+                const next = Math.min(chapter.moves.length, plyIdx + 1);
+                const nav = getStepNavigationSound(chapter.moves, plyIdx, next);
+                if (nav) playMoveSound(nav);
+                setPlyIdx(next);
+              }}
               disabled={plyIdx >= chapter.moves.length}
               aria-label="Next move"
               className="min-h-[42px] rounded-lg bg-[#81B64C] hover:bg-[#8EC556] flex items-center justify-center text-[#191815] font-extrabold cursor-pointer disabled:opacity-40"
@@ -383,7 +399,12 @@ export function LearnStudyView({
             </button>
             <button
               type="button"
-              onClick={() => setPlyIdx(chapter.moves.length)}
+              onClick={() => {
+                const next = chapter.moves.length;
+                const nav = getStepNavigationSound(chapter.moves, plyIdx, next);
+                if (nav) playMoveSound(nav);
+                setPlyIdx(next);
+              }}
               disabled={plyIdx >= chapter.moves.length}
               aria-label="Final move"
               className="min-h-[42px] rounded-lg bg-[#2A2824] hover:bg-[#383530] flex items-center justify-center text-white cursor-pointer disabled:opacity-40"
@@ -474,7 +495,12 @@ export function LearnStudyView({
                 <button
                   key={`${m.ply}-${m.san}`}
                   type="button"
-                  onClick={() => setPlyIdx(idx + 1)}
+                  onClick={() => {
+                    const next = idx + 1;
+                    const nav = getStepNavigationSound(chapter.moves, plyIdx, next);
+                    if (nav) playMoveSound(nav);
+                    setPlyIdx(next);
+                  }}
                   className={`px-2 py-1 rounded cursor-pointer transition-colors ${
                     plyIdx === idx + 1
                       ? 'bg-[#81B64C] text-[#191815] font-extrabold'

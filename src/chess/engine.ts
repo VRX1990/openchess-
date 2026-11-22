@@ -256,11 +256,13 @@ export type MoveQuality =
   | 'Brilliant'
   | 'Great'
   | 'Best'
+  | 'Excellent'
   | 'Good'
+  | 'Book'
   | 'Inaccuracy'
   | 'Mistake'
-  | 'Blunder'
-  | 'Book';
+  | 'Miss'
+  | 'Blunder';
 
 export interface EvaluatedMove {
   ply: number;
@@ -1397,66 +1399,107 @@ export function evaluateSinglePly(move: EvaluatedMove, plyIndex: number): Evalua
   };
 }
 
+const QUALITY_ACCURACY_WEIGHT: Record<MoveQuality, number> = {
+  Book: 0.35,
+  Brilliant: 1.25,
+  Great: 1.25,
+  Best: 1.0,
+  Excellent: 1.0,
+  Good: 1.0,
+  Inaccuracy: 1.05,
+  Mistake: 1.25,
+  Miss: 1.3,
+  Blunder: 1.4,
+};
+
+/**
+ * CAPS2-style volatility-weighted hybrid (weighted mean + damped harmonic mean)
+ * accuracy score (0..99.9) for a single side's moves.
+ */
+export function computeCalibratedSideAccuracy(sideMoves: EvaluatedMove[]): number {
+  if (sideMoves.length === 0) return 100;
+
+  let weightedSum = 0;
+  let harmonicDenom = 0;
+  let weightTotal = 0;
+
+  for (const m of sideMoves) {
+    const moveAcc =
+      typeof m.accuracyPercent === 'number'
+        ? Math.max(0, Math.min(100, m.accuracyPercent))
+        : Math.max(5, Math.min(100, 100 * Math.exp(-0.0038 * Math.min(m.cpLoss, 500))));
+    const w = QUALITY_ACCURACY_WEIGHT[m.quality] ?? 1.0;
+    weightedSum += w * moveAcc;
+    harmonicDenom += w / Math.max(20, moveAcc);
+    weightTotal += w;
+  }
+
+  if (weightTotal <= 0) return 100;
+  const weightedMean = weightedSum / weightTotal;
+  const harmonicMean = weightTotal / harmonicDenom;
+  const blended = 0.65 * weightedMean + 0.35 * harmonicMean;
+  return Math.round(Math.max(5, Math.min(99.9, blended)) * 10) / 10;
+}
+
+const ACCURACY_TO_ELO_CURVE: Array<[number, number]> = [
+  [15, 100],
+  [35, 250],
+  [45, 450],
+  [55, 650],
+  [65, 900],
+  [72, 1150],
+  [78, 1400],
+  [84, 1700],
+  [89, 2000],
+  [93, 2300],
+  [96.5, 2600],
+  [99, 2900],
+  [100, 3100],
+];
+
+export function accuracyToIntrinsicElo(accuracyPct: number): number {
+  const acc = Math.max(0, Math.min(100, accuracyPct));
+  if (acc <= ACCURACY_TO_ELO_CURVE[0][0]) return ACCURACY_TO_ELO_CURVE[0][1];
+  for (let i = 1; i < ACCURACY_TO_ELO_CURVE.length; i++) {
+    const [x1, y1] = ACCURACY_TO_ELO_CURVE[i - 1];
+    const [x2, y2] = ACCURACY_TO_ELO_CURVE[i];
+    if (acc <= x2) {
+      const t = (acc - x1) / Math.max(0.001, x2 - x1);
+      return y1 + t * (y2 - y1);
+    }
+  }
+  return ACCURACY_TO_ELO_CURVE[ACCURACY_TO_ELO_CURVE.length - 1][1];
+}
+
 export function summarizeGameReview(evaluated: EvaluatedMove[]): GameReviewResult {
   const counts: Record<MoveQuality, number> = {
     Brilliant: 0,
     Great: 0,
-    Book: 0,
     Best: 0,
+    Excellent: 0,
     Good: 0,
+    Book: 0,
     Inaccuracy: 0,
     Mistake: 0,
+    Miss: 0,
     Blunder: 0,
   };
-  let whiteLossSum = 0;
-  let whiteMoves = 0;
-  let whiteAccSum = 0;
-  let whiteAccCount = 0;
-  let blackLossSum = 0;
-  let blackMoves = 0;
-  let blackAccSum = 0;
-  let blackAccCount = 0;
+  const whiteMoves: EvaluatedMove[] = [];
+  const blackMoves: EvaluatedMove[] = [];
 
   for (const m of evaluated) {
     counts[m.quality] += 1;
-    const cappedLoss = Math.min(m.cpLoss, 500);
     if (m.color === 'w') {
-      whiteLossSum += cappedLoss;
-      whiteMoves += 1;
-      if (typeof m.accuracyPercent === 'number') {
-        whiteAccSum += m.accuracyPercent;
-        whiteAccCount += 1;
-      }
+      whiteMoves.push(m);
     } else {
-      blackLossSum += cappedLoss;
-      blackMoves += 1;
-      if (typeof m.accuracyPercent === 'number') {
-        blackAccSum += m.accuracyPercent;
-        blackAccCount += 1;
-      }
+      blackMoves.push(m);
     }
   }
 
-  const lossToAccuracy = (avgLoss: number) =>
-    Math.max(15, Math.min(99, Math.round(100 * Math.exp(-0.0038 * avgLoss))));
-
-  const whiteAccuracy =
-    whiteMoves === 0
-      ? 100
-      : whiteAccCount === whiteMoves
-        ? Math.max(12, Math.min(99.9, Math.round((whiteAccSum / whiteMoves) * 10) / 10))
-        : lossToAccuracy(whiteLossSum / whiteMoves);
-  const blackAccuracy =
-    blackMoves === 0
-      ? 100
-      : blackAccCount === blackMoves
-        ? Math.max(12, Math.min(99.9, Math.round((blackAccSum / blackMoves) * 10) / 10))
-        : lossToAccuracy(blackLossSum / blackMoves);
-
   return {
     moves: evaluated,
-    whiteAccuracy,
-    blackAccuracy,
+    whiteAccuracy: computeCalibratedSideAccuracy(whiteMoves),
+    blackAccuracy: computeCalibratedSideAccuracy(blackMoves),
     counts,
   };
 }
@@ -1465,10 +1508,12 @@ export interface SideMoveCounts {
   Brilliant: number;
   Great: number;
   Best: number;
+  Excellent: number;
   Good: number;
   Book: number;
   Inaccuracy: number;
   Mistake: number;
+  Miss: number;
   Blunder: number;
 }
 
@@ -1493,11 +1538,25 @@ export interface PostGameReviewSummary {
   };
 }
 
-function gradeFromAvgLoss(avgLoss: number, hasEnoughMoves: boolean): MoveQuality {
-  if (!hasEnoughMoves) return 'Good';
+function gradeFromPhaseMoves(phaseMoves: EvaluatedMove[]): MoveQuality {
+  if (phaseMoves.length === 0) return 'Good';
+  const hasExplicitAcc = phaseMoves.every((m) => typeof m.accuracyPercent === 'number');
+  if (hasExplicitAcc) {
+    const acc = computeCalibratedSideAccuracy(phaseMoves);
+    const blunders = phaseMoves.filter((m) => m.quality === 'Blunder').length;
+    if (blunders >= 2 || acc < 48) return 'Blunder';
+    if (blunders >= 1 || acc < 62) return 'Mistake';
+    if (acc < 74) return 'Inaccuracy';
+    if (acc < 84) return 'Good';
+    if (acc < 92) return 'Excellent';
+    return 'Best';
+  }
+  const avgLoss =
+    phaseMoves.reduce((s, m) => s + Math.min(m.cpLoss, 500), 0) / phaseMoves.length;
   if (avgLoss <= 12) return 'Best';
-  if (avgLoss <= 34) return 'Good';
-  if (avgLoss <= 78) return 'Inaccuracy';
+  if (avgLoss <= 24) return 'Excellent';
+  if (avgLoss <= 45) return 'Good';
+  if (avgLoss <= 85) return 'Inaccuracy';
   if (avgLoss <= 155) return 'Mistake';
   return 'Blunder';
 }
@@ -1508,101 +1567,104 @@ export function buildPostGameReviewSummary(params: {
   whiteBaseRating?: number;
   blackBaseRating?: number;
 }): PostGameReviewSummary {
-  const { evaluated, resultLabel = '*', whiteBaseRating = 1200, blackBaseRating = 1200 } = params;
+  const { evaluated, resultLabel = '*', whiteBaseRating, blackBaseRating } = params;
 
   const emptyCounts = (): SideMoveCounts => ({
     Brilliant: 0,
     Great: 0,
     Best: 0,
+    Excellent: 0,
     Good: 0,
     Book: 0,
     Inaccuracy: 0,
     Mistake: 0,
+    Miss: 0,
     Blunder: 0,
   });
 
   const whiteCounts = emptyCounts();
   const blackCounts = emptyCounts();
 
-  let wLoss = 0;
-  let wN = 0;
-  let wAccSum = 0;
-  let wAccCount = 0;
-  let bLoss = 0;
-  let bN = 0;
-  let bAccSum = 0;
-  let bAccCount = 0;
-
-  const wOpen: number[] = [];
-  const bOpen: number[] = [];
-  const wStrat: number[] = [];
-  const bStrat: number[] = [];
-  const wEnd: number[] = [];
-  const bEnd: number[] = [];
+  const whiteMoves: EvaluatedMove[] = [];
+  const blackMoves: EvaluatedMove[] = [];
+  const wOpen: EvaluatedMove[] = [];
+  const bOpen: EvaluatedMove[] = [];
+  const wStrat: EvaluatedMove[] = [];
+  const bStrat: EvaluatedMove[] = [];
+  const wEnd: EvaluatedMove[] = [];
+  const bEnd: EvaluatedMove[] = [];
 
   for (let i = 0; i < evaluated.length; i++) {
     const m = evaluated[i];
-    const capped = Math.min(m.cpLoss, 500);
     if (m.color === 'w') {
       whiteCounts[m.quality] += 1;
-      wLoss += capped;
-      wN += 1;
-      if (typeof m.accuracyPercent === 'number') {
-        wAccSum += m.accuracyPercent;
-        wAccCount += 1;
-      }
-      if (i < 16) wOpen.push(capped);
-      else if (i < 46) wStrat.push(capped);
-      else wEnd.push(capped);
+      whiteMoves.push(m);
+      if (i < 16) wOpen.push(m);
+      else if (i < 46) wStrat.push(m);
+      else wEnd.push(m);
     } else {
       blackCounts[m.quality] += 1;
-      bLoss += capped;
-      bN += 1;
-      if (typeof m.accuracyPercent === 'number') {
-        bAccSum += m.accuracyPercent;
-        bAccCount += 1;
-      }
-      if (i < 16) bOpen.push(capped);
-      else if (i < 46) bStrat.push(capped);
-      else bEnd.push(capped);
+      blackMoves.push(m);
+      if (i < 16) bOpen.push(m);
+      else if (i < 46) bStrat.push(m);
+      else bEnd.push(m);
     }
   }
 
-  const exactAcc = (sum: number, count: number, accSum: number, accCount: number) => {
-    if (count === 0) return 99.0;
-    if (accCount === count) {
-      return Math.round(Math.max(12, Math.min(99.9, accSum / count)) * 10) / 10;
-    }
-    const raw = 100 * Math.exp(-0.0038 * (sum / count));
-    return Math.round(Math.max(12, Math.min(99.9, raw)) * 10) / 10;
-  };
-
-  const whiteAccuracyExact = exactAcc(wLoss, wN, wAccSum, wAccCount);
-  const blackAccuracyExact = exactAcc(bLoss, bN, bAccSum, bAccCount);
-
-  const avg = (arr: number[]) =>
-    arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 25;
+  const whiteAccuracyExact =
+    whiteMoves.length === 0 ? 99.0 : computeCalibratedSideAccuracy(whiteMoves);
+  const blackAccuracyExact =
+    blackMoves.length === 0 ? 99.0 : computeCalibratedSideAccuracy(blackMoves);
 
   const computeTacticsGrade = (c: SideMoveCounts, n: number): MoveQuality => {
     if (n === 0) return 'Good';
-    if (c.Blunder >= 2) return 'Blunder';
-    if (c.Blunder === 1 || c.Mistake >= 3) return 'Mistake';
-    if (c.Mistake >= 1 || c.Inaccuracy >= 3) return 'Inaccuracy';
-    if (c.Brilliant > 0 || c.Great >= 2 || (c.Best / n >= 0.45 && c.Mistake === 0)) return 'Best';
+    const blunderRate = c.Blunder / Math.max(12, n);
+    if (c.Blunder >= 2 || blunderRate >= 0.12) return 'Blunder';
+    if (c.Blunder === 1 || c.Miss >= 2 || c.Mistake >= 3) return 'Mistake';
+    if (c.Miss === 1 || c.Mistake >= 1 || c.Inaccuracy >= 3) return 'Inaccuracy';
+    if (
+      c.Brilliant > 0 ||
+      c.Great >= 2 ||
+      ((c.Best + c.Excellent) / n >= 0.55 && c.Mistake === 0)
+    ) {
+      return 'Best';
+    }
+    if ((c.Best + c.Excellent) / n >= 0.4) return 'Excellent';
     return 'Good';
   };
 
+  const hasValidWhiteBase = typeof whiteBaseRating === 'number' && whiteBaseRating > 0;
+  const hasValidBlackBase = typeof blackBaseRating === 'number' && blackBaseRating > 0;
+  const matchContextRating =
+    hasValidWhiteBase && hasValidBlackBase
+      ? (Math.max(200, Math.min(3000, whiteBaseRating)) +
+          Math.max(200, Math.min(3000, blackBaseRating))) /
+        2
+      : hasValidWhiteBase
+        ? Math.max(200, Math.min(3000, whiteBaseRating))
+        : hasValidBlackBase
+          ? Math.max(200, Math.min(3000, blackBaseRating))
+          : null;
+
   const estimatePerfRating = (
-    base: number,
     acc: number,
     c: SideMoveCounts,
+    movesCount: number,
     won: boolean | null,
   ) => {
-    const anchor = Math.max(200, Math.min(2800, base));
-    const accDelta = (acc - 70) * 14;
-    const blunderPenalty = c.Blunder * 140 + c.Mistake * 55;
-    const resultAdj = won === true ? 140 : won === false ? -140 : 0;
-    const raw = anchor + accDelta - blunderPenalty + resultAdj;
+    const denom = Math.max(10, movesCount);
+    const blunderRate = c.Blunder / denom;
+    const missRate = c.Miss / denom;
+    const mistakeRate = c.Mistake / denom;
+    const tacticalBonus = Math.min(180, c.Brilliant * 90 + c.Great * 45);
+    const errorPenalty = Math.min(360, blunderRate * 850 + missRate * 340 + mistakeRate * 220);
+    const resultAdj = won === true ? 85 : won === false ? -85 : 0;
+
+    const intrinsicElo = accuracyToIntrinsicElo(acc) + tacticalBonus - errorPenalty + resultAdj;
+    const raw =
+      matchContextRating !== null
+        ? intrinsicElo * 0.72 + matchContextRating * 0.28
+        : intrinsicElo;
     const clamped = Math.max(100, Math.min(3200, raw));
     return Math.round(clamped / 50) * 50;
   };
@@ -1615,19 +1677,19 @@ export function buildPostGameReviewSummary(params: {
     blackAccuracyExact,
     whiteCounts,
     blackCounts,
-    whiteGameRating: estimatePerfRating(whiteBaseRating, whiteAccuracyExact, whiteCounts, wWon),
-    blackGameRating: estimatePerfRating(blackBaseRating, blackAccuracyExact, blackCounts, bWon),
+    whiteGameRating: estimatePerfRating(whiteAccuracyExact, whiteCounts, whiteMoves.length, wWon),
+    blackGameRating: estimatePerfRating(blackAccuracyExact, blackCounts, blackMoves.length, bWon),
     whitePhases: {
-      opening: gradeFromAvgLoss(avg(wOpen), wOpen.length > 0),
-      tactics: computeTacticsGrade(whiteCounts, wN),
-      strategy: gradeFromAvgLoss(avg(wStrat), wStrat.length > 0),
-      endgame: gradeFromAvgLoss(avg(wEnd), wEnd.length > 0),
+      opening: gradeFromPhaseMoves(wOpen),
+      tactics: computeTacticsGrade(whiteCounts, whiteMoves.length),
+      strategy: gradeFromPhaseMoves(wStrat),
+      endgame: gradeFromPhaseMoves(wEnd),
     },
     blackPhases: {
-      opening: gradeFromAvgLoss(avg(bOpen), bOpen.length > 0),
-      tactics: computeTacticsGrade(blackCounts, bN),
-      strategy: gradeFromAvgLoss(avg(bStrat), bStrat.length > 0),
-      endgame: gradeFromAvgLoss(avg(bEnd), bEnd.length > 0),
+      opening: gradeFromPhaseMoves(bOpen),
+      tactics: computeTacticsGrade(blackCounts, blackMoves.length),
+      strategy: gradeFromPhaseMoves(bStrat),
+      endgame: gradeFromPhaseMoves(bEnd),
     },
   };
 }

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Camera, Check, ImagePlus, Upload, X } from 'lucide-react';
 import {
   AVATAR_PRESETS,
@@ -25,16 +25,11 @@ export interface PlayerAvatarProps {
 }
 
 /**
- * Authentic default player pawn avatar (smooth 3D-shaded classic gray Staunton pawn on light #E6E6E6 square).
- * Uses React useId() per SVG instance + solid paint fallback so Gecko/Firefox never fails to paint
- * when another hidden responsive instance exists earlier in DOM order.
+ * Exact Chess.com default player avatar (matching Play Online / Friends):
+ * Crisp solid #C7C6C4 rounded square with pure white #FFFFFF human head-and-shoulders silhouette.
+ * Zero SVG url(#gradient) references so Firefox Android, Safari, and Chrome always render 100% cleanly.
  */
-function DefaultPawnAvatar({ title }: { title?: string }) {
-  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
-  const bodyId = `${uid}-pawn-body`;
-  const headId = `${uid}-pawn-head`;
-  const baseId = `${uid}-pawn-base`;
-
+function DefaultPlayerAvatar({ title }: { title?: string }) {
   return (
     <svg
       viewBox="0 0 100 100"
@@ -42,58 +37,72 @@ function DefaultPawnAvatar({ title }: { title?: string }) {
       role="img"
       aria-label={title || 'Default player avatar'}
     >
-      <defs>
-        <linearGradient id={bodyId} x1="18%" y1="10%" x2="84%" y2="92%">
-          <stop offset="0%" stopColor="#C4C4C4" />
-          <stop offset="48%" stopColor="#9E9E9E" />
-          <stop offset="100%" stopColor="#777777" />
-        </linearGradient>
-        <radialGradient id={headId} cx="36%" cy="30%" r="68%">
-          <stop offset="0%" stopColor="#D4D4D4" />
-          <stop offset="52%" stopColor="#A2A2A2" />
-          <stop offset="100%" stopColor="#7A7A7A" />
-        </radialGradient>
-        <linearGradient id={baseId} x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="#B2B2B2" />
-          <stop offset="50%" stopColor="#929292" />
-          <stop offset="100%" stopColor="#737373" />
-        </linearGradient>
-      </defs>
-      <rect width="100" height="100" fill="#E6E6E6" />
-      {/* Subtle contact shadow under base */}
-      <ellipse cx="50" cy="86.2" rx="28" ry="3.2" fill="#CECECE" />
-      {/* Smooth flared Staunton pawn body & curved dome base */}
+      <rect width="100" height="100" fill="#C7C6C4" />
+      <circle cx="50" cy="36" r="17.5" fill="#FFFFFF" />
       <path
-        d="M50 37.5
-           C42.5 37.5 38.2 39.8 38.2 42.8
-           C38.2 45 39.9 46.5 41.8 47.2
-           C40.9 54.8 37.9 62.8 31.8 68.5
-           C26.2 73.4 22.4 77.2 22.4 81.8
-           C22.4 84 24.3 85.4 27.6 85.4
-           L72.4 85.4
-           C75.7 85.4 77.6 84 77.6 81.8
-           C77.6 77.2 73.8 73.4 68.2 68.5
-           C62.1 62.8 59.1 54.8 58.2 47.2
-           C60.1 46.5 61.8 45 61.8 42.8
-           C61.8 39.8 57.5 37.5 50 37.5 Z"
-        fill={`url(#${bodyId}) #9A9A9A`}
+        d="M16 94 C16 69.5 30 58.5 50 58.5 C70 58.5 84 69.5 84 94 L84 100 L16 100 Z"
+        fill="#FFFFFF"
       />
-      {/* Gentle curved bottom rim shading */}
-      <path
-        d="M24.2 82.4 C32.8 80.7 67.2 80.7 75.8 82.4 C76.4 84.2 75 85.4 72.4 85.4 L27.6 85.4 C25 85.4 23.6 84.2 24.2 82.4 Z"
-        fill={`url(#${baseId}) #8C8C8C`}
-        opacity="0.55"
-      />
-      {/* Smooth spherical pawn head */}
-      <circle cx="50" cy="25.8" r="13.4" fill={`url(#${headId}) #9E9E9E`} />
-      {/* Soft top-left specular gleam on head */}
-      <ellipse cx="45.4" cy="21" rx="4.5" ry="3" transform="rotate(-24 45.4 21)" fill="#FFFFFF" opacity="0.22" />
     </svg>
   );
 }
 
 /**
- * Unmatched Opponent silhouette avatar (dark charcoal bust on muted slate square).
+ * Exact Chess.com Guest default pawn avatar (matching Play Bots Guest seat):
+ * Crisp flat-shaded gray Staunton pawn on #DFDFDD square using pure solid fills (zero SVG gradients).
+ */
+function DefaultGuestPawnAvatar({ title }: { title?: string }) {
+  return (
+    <svg
+      viewBox="0 0 100 100"
+      className="w-full h-full block"
+      role="img"
+      aria-label={title || 'Guest avatar'}
+    >
+      <rect width="100" height="100" fill="#DFDFDD" />
+      <ellipse cx="50" cy="86.5" rx="27" ry="3" fill="#C7C6C3" />
+      {/* Base & body (solid crisp mid-gray) */}
+      <path
+        d="M50 38.5
+           C43 38.5 39 40.6 39 43.4
+           C39 45.4 40.5 46.8 42.3 47.4
+           C41.4 55 38.4 63 32.2 68.7
+           C26.8 73.5 23.2 77.2 23.2 81.8
+           C23.2 84 25 85.4 28.2 85.4
+           L71.8 85.4
+           C75 85.4 76.8 84 76.8 81.8
+           C76.8 77.2 73.2 73.5 67.8 68.7
+           C61.6 63 58.6 55 57.7 47.4
+           C59.5 46.8 61 45.4 61 43.4
+           C61 40.6 57 38.5 50 38.5 Z"
+        fill="#969592"
+      />
+      {/* Right-half subtle 3D shading (pure solid path, no gradient) */}
+      <path
+        d="M50 38.5
+           L50 85.4
+           L71.8 85.4
+           C75 85.4 76.8 84 76.8 81.8
+           C76.8 77.2 73.2 73.5 67.8 68.7
+           C61.6 63 58.6 55 57.7 47.4
+           C59.5 46.8 61 45.4 61 43.4
+           C61 40.6 57 38.5 50 38.5 Z"
+        fill="#82817E"
+      />
+      {/* Pawn head */}
+      <circle cx="50" cy="26.5" r="13.2" fill="#9A9996" />
+      <path
+        d="M50 13.3 A13.2 13.2 0 0 1 50 39.7 Z"
+        fill="#858481"
+      />
+      <circle cx="45.8" cy="22.4" r="3.2" fill="#B6B5B2" />
+    </svg>
+  );
+}
+
+/**
+ * Exact Chess.com Opponent placeholder silhouette avatar (matching Play Online top seat):
+ * Solid #3C3A38 rounded square with #252321 human head-and-shoulders bust silhouette.
  */
 function DefaultOpponentAvatar({ title }: { title?: string }) {
   return (
@@ -103,11 +112,11 @@ function DefaultOpponentAvatar({ title }: { title?: string }) {
       role="img"
       aria-label={title || 'Opponent avatar'}
     >
-      <rect width="100" height="100" fill="#4B4845" />
-      <circle cx="50" cy="36" r="17" fill="#2A2825" />
+      <rect width="100" height="100" fill="#3C3A38" />
+      <circle cx="50" cy="36" r="17.5" fill="#252321" />
       <path
-        d="M18 90 C18 68 31 58 50 58 C69 58 82 68 82 90 L82 100 L18 100 Z"
-        fill="#2A2825"
+        d="M16 94 C16 69.5 30 58.5 50 58.5 C70 58.5 84 69.5 84 94 L84 100 L16 100 Z"
+        fill="#252321"
       />
     </svg>
   );
@@ -232,10 +241,24 @@ export function PlayerAvatar({
     );
   }
 
-  // 5. All human players without a custom photo or explicit preset display the iconic shaded gray pawn
+  const isGuestSeat =
+    normalizedName === 'guest' ||
+    normalizedName === 'guest player' ||
+    normalizedName === 'anonymous (guest)' ||
+    normalizedName === 'anonymous';
+
+  if (isGuestSeat) {
+    return (
+      <div style={sizeStyle} className={wrapperClass}>
+        <DefaultGuestPawnAvatar title={cleanName ? `${cleanName} avatar` : 'Guest avatar'} />
+      </div>
+    );
+  }
+
+  // 5. All human players/friends without a custom photo display Chess.com's crisp white-on-gray bust silhouette
   return (
     <div style={sizeStyle} className={wrapperClass}>
-      <DefaultPawnAvatar title={cleanName ? `${cleanName} avatar` : 'Default player avatar'} />
+      <DefaultPlayerAvatar title={cleanName ? `${cleanName} avatar` : 'Default player avatar'} />
     </div>
   );
 }

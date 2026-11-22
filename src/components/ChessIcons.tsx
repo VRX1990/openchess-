@@ -2,24 +2,23 @@ import { useId, type SVGProps } from 'react';
 
 type IconProps = SVGProps<SVGSVGElement> & { className?: string };
 
-/** Iconic 3D-shaded green Chess Pawn brand mark (standing free beside OpenChess wordmark) */
+/** Iconic 2-tone 3D green Chess Pawn brand mark (pure solid fills, zero gradients for universal browser rendering) */
 export function BrandPawnIcon({ className = 'w-7 h-7', ...props }: IconProps) {
-  const gradId = useId();
   return (
     <svg viewBox="0 0 32 32" className={className} aria-hidden="true" {...props}>
-      <defs>
-        <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="#95CC56" />
-          <stop offset="52%" stopColor="#81B64C" />
-          <stop offset="52%" stopColor="#699B39" />
-          <stop offset="100%" stopColor="#56832D" />
-        </linearGradient>
-      </defs>
-      <circle cx="16" cy="8.2" r="4.8" fill={`url(#${gradId})`} />
-      <rect x="10.2" y="12.6" width="11.6" height="2.8" rx="1.4" fill={`url(#${gradId})`} />
+      {/* Left lit half */}
+      <circle cx="16" cy="8.2" r="4.8" fill="#81B64C" />
+      <rect x="10.2" y="12.6" width="11.6" height="2.8" rx="1.4" fill="#81B64C" />
       <path
         d="M12.4 15.2h7.2l1.8 7.5c2.2 1 3.6 2.5 3.8 4.8H6.8c.2-2.3 1.6-3.8 3.8-4.8l1.8-7.5z"
-        fill={`url(#${gradId})`}
+        fill="#81B64C"
+      />
+      {/* Right shaded 3D half */}
+      <path d="M16 3.4a4.8 4.8 0 0 1 0 9.6V3.4z" fill="#639434" />
+      <path d="M16 12.6h4.4a1.4 1.4 0 0 1 0 2.8H16v-2.8z" fill="#639434" />
+      <path
+        d="M16 15.2h3.6l1.8 7.5c2.2 1 3.6 2.5 3.8 4.8H16V15.2z"
+        fill="#639434"
       />
       <rect x="6" y="26.4" width="20" height="3.2" rx="1.6" fill="#4B7426" />
     </svg>
@@ -54,23 +53,49 @@ export function NavPlayIcon({ className = 'w-6 h-6', ...props }: IconProps) {
   );
 }
 
-/** 3D Orange Jigsaw Puzzle Piece (Puzzles) */
+/** Exact Chess.com 2026 Angled 3D Vibrant Orange Jigsaw Puzzle Piece (Puzzles) */
 export function NavPuzzlesIcon({ className = 'w-6 h-6', ...props }: IconProps) {
   return (
     <svg viewBox="0 0 32 32" className={className} aria-hidden="true" {...props}>
+      <g transform="rotate(-12 16 16)">
+        {/* 3D extruded dark-orange underside */}
+        <path
+          d="M8.5 11h3.8a2.6 2.6 0 1 1 5.2 0h4c1.1 0 2 .9 2 2v3.8a2.6 2.6 0 1 1 0 5.2v3.2c0 1.1-.9 2-2 2h-3.8a2.5 2.5 0 1 0-5 0h-4.2c-1.1 0-2-.9-2-2v-3.8a2.5 2.5 0 1 0 0-5V13c0-1.1.9-2 2-2z"
+          fill="#C8530E"
+          transform="translate(0 2.1)"
+        />
+        {/* Bright orange top face */}
+        <path
+          d="M8.5 9.6h3.8a2.6 2.6 0 1 1 5.2 0h4c1.1 0 2 .9 2 2v3.8a2.6 2.6 0 1 1 0 5.2v3.2c0 1.1-.9 2-2 2h-3.8a2.5 2.5 0 1 0-5 0h-4.2c-1.1 0-2-.9-2-2V20a2.5 2.5 0 1 0 0-5v-3.4c0-1.1.9-2 2-2z"
+          fill="#FA8022"
+        />
+        {/* Crisp top highlight bevel */}
+        <path
+          d="M9.4 11h3.3a2.2 2.2 0 0 1 4.4 0h3.5c.6 0 1.1.5 1.1 1.1v1.8H8.3v-1.8c0-.6.5-1.1 1.1-1.1z"
+          fill="#FFAE54"
+          opacity="0.6"
+        />
+      </g>
+    </svg>
+  );
+}
+
+/** Exact Chess.com 2026 Green Calendar-Puzzle Icon (Daily Puzzle) */
+export function DailyPuzzleIcon({ className = 'w-6 h-6', ...props }: IconProps) {
+  return (
+    <svg viewBox="0 0 32 32" className={className} aria-hidden="true" {...props}>
+      {/* Calendar body */}
+      <rect x="4" y="6" width="24" height="22" rx="4" fill="#5D9231" />
+      <rect x="4" y="5" width="24" height="21" rx="4" fill="#81B64C" />
+      {/* Top dark green header strip */}
+      <path d="M4 9a4 4 0 0 1 4-4h16a4 4 0 0 1 4 4v3H4V9z" fill="#56872B" />
+      {/* Two calendar binding pegs */}
+      <rect x="9" y="2.5" width="3.2" height="6" rx="1.6" fill="#D5D4D0" />
+      <rect x="19.8" y="2.5" width="3.2" height="6" rx="1.6" fill="#D5D4D0" />
+      {/* White mini jigsaw piece centered */}
       <path
-        d="M7.5 11.5h4.2a2.6 2.6 0 1 1 5 0h4.8c1.1 0 2 .9 2 2v4.3a2.6 2.6 0 1 1 0 5v3.7c0 1.1-.9 2-2 2h-4.3a2.5 2.5 0 1 0-4.8 0H7.5c-1.1 0-2-.9-2-2v-4.2a2.5 2.5 0 1 0 0-4.8v-4c0-1.1.9-2 2-2z"
-        fill="#C95E12"
-        transform="translate(0 1.8)"
-      />
-      <path
-        d="M7.5 10h4.2a2.6 2.6 0 1 1 5 0h4.8c1.1 0 2 .9 2 2v4.3a2.6 2.6 0 1 1 0 5V25c0 1.1-.9 2-2 2h-4.3a2.5 2.5 0 1 0-4.8 0H7.5c-1.1 0-2-.9-2-2v-4.2a2.5 2.5 0 1 0 0-4.8v-4c0-1.1.9-2 2-2z"
-        fill="#F28C28"
-      />
-      <path
-        d="M8.5 11.5h3.8a2.3 2.3 0 0 1 4.2 0h4.2c.6 0 1 .4 1 1v2.2H7.5v-2.2c0-.6.4-1 1-1z"
-        fill="#FFA84C"
-        opacity="0.55"
+        d="M12 14.5h2.4a1.6 1.6 0 1 1 3.2 0H20c.6 0 1 .4 1 1v2.2a1.6 1.6 0 1 1 0 3.2v2c0 .6-.4 1-1 1h-2.4a1.5 1.5 0 1 0-3 0H12c-.6 0-1-.4-1-1v-2.2a1.5 1.5 0 1 0 0-3v-2.2c0-.6.4-1 1-1z"
+        fill="#FFFFFF"
       />
     </svg>
   );

@@ -32,6 +32,7 @@ const decodedBuffers = new Map<ChessSoundKey, AudioBuffer>();
 const decodePromises = new Map<ChessSoundKey, Promise<AudioBuffer | null>>();
 const htmlAudioTemplates = new Map<ChessSoundKey, HTMLAudioElement>();
 let lastPlayedSound: { key: ChessSoundKey; src: string; ts: number } | null = null;
+let playedSoundCount = 0;
 
 function ensureAudioContext(): AudioContext | null {
   if (typeof window === 'undefined' || !userUnlocked) return null;
@@ -168,6 +169,10 @@ export function playRealSoundSample(
   const src = REAL_CHESS_SOUND_FILES[key];
   lastPlayedSound = { key, src, ts: Date.now() };
   if (muted || typeof window === 'undefined') return;
+  playedSoundCount += 1;
+  if (!userUnlocked) {
+    unlockAudioOnGesture();
+  }
 
   const trigger = () => {
     const ctx = ensureAudioContext();
@@ -338,6 +343,7 @@ declare global {
       files: Record<ChessSoundKey, string>;
       playSample: typeof playRealSoundSample;
       getLastPlayed: () => typeof lastPlayedSound;
+      getPlayedCount: () => number;
       isUnlocked: () => boolean;
     };
   }
@@ -349,6 +355,7 @@ if (typeof window !== 'undefined') {
     files: REAL_CHESS_SOUND_FILES,
     playSample: playRealSoundSample,
     getLastPlayed: () => lastPlayedSound,
+    getPlayedCount: () => playedSoundCount,
     isUnlocked: () => userUnlocked,
   };
 }

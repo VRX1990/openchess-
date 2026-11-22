@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, type Color } from 'chess.js';
 import {
   AlertTriangle,
+  BarChart3,
   ChevronFirst,
   ChevronLast,
   ChevronLeft,
@@ -10,6 +11,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import {
+  buildPostGameReviewSummary,
   evaluateMovesBatch,
   extractGameSkeleton,
   summarizeGameReview,
@@ -32,6 +34,8 @@ import { EvalAdvantageChart } from './EvalAdvantageChart';
 import { MOVE_QUALITY_META, MoveBadge } from './MoveBadge';
 import { TutorPanel } from './TutorPanel';
 import { BotAvatar } from './BotAvatar';
+import { playMoveSound } from '../chess/sound';
+import { getStepNavigationSound } from '../chess/boardMotion';
 
 export interface AiDebrief {
   headline: string;
@@ -70,6 +74,11 @@ export interface CoachWorkspaceProps {
   defaultTab?: 'report' | 'tutor';
   onMoveStepCloseSheet?: () => void;
   coachId?: CoachPersonaId;
+  whiteName?: string;
+  blackName?: string;
+  whiteRating?: number;
+  blackRating?: number;
+  onOpenFullReport?: () => void;
 }
 
 export function CoachWorkspace({
@@ -94,6 +103,11 @@ export function CoachWorkspace({
   defaultTab = 'report',
   onMoveStepCloseSheet,
   coachId = 'viktor',
+  whiteName,
+  blackName,
+  whiteRating,
+  blackRating,
+  onOpenFullReport,
 }: CoachWorkspaceProps) {
   const [activeTab, setActiveTab] = useState<'report' | 'tutor'>(defaultTab);
   const [internalMoves, setInternalMoves] = useState<EvaluatedMove[]>([]);
@@ -186,10 +200,22 @@ export function CoachWorkspace({
       if (onSelectPly) {
         onSelectPly(clamped);
       } else {
+        if (clamped !== activePly) {
+          const navSound = getStepNavigationSound(moves, activePly, clamped);
+          if (navSound) {
+            playMoveSound({
+              capture: navSound.capture,
+              check: navSound.check,
+              castle: navSound.castle,
+              promotion: navSound.promotion,
+              toSquare: navSound.toSquare,
+            });
+          }
+        }
         setInternalPly(clamped);
       }
     },
-    [moves.length, onSelectPly],
+    [activePly, moves, onSelectPly],
   );
 
   const moveListRef = useRef<HTMLDivElement | null>(null);
@@ -202,6 +228,16 @@ export function CoachWorkspace({
   }, [activePly]);
 
   const analysis = useMemo(() => summarizeGameReview(moves), [moves]);
+  const postGameSummary = useMemo(
+    () =>
+      buildPostGameReviewSummary({
+        evaluated: analysis.moves,
+        resultLabel,
+        whiteBaseRating: whiteRating,
+        blackBaseRating: blackRating,
+      }),
+    [analysis.moves, blackRating, resultLabel, whiteRating],
+  );
   const isAnalyzing = moves.length > 0 && analyzedCount < moves.length;
 
   const currentMove =
@@ -239,7 +275,11 @@ export function CoachWorkspace({
   const criticalMoves = useMemo(
     () =>
       analysis.moves.filter(
-        (m) => m.quality === 'Blunder' || m.quality === 'Mistake' || m.quality === 'Inaccuracy',
+        (m) =>
+          m.quality === 'Blunder' ||
+          m.quality === 'Miss' ||
+          m.quality === 'Mistake' ||
+          m.quality === 'Inaccuracy',
       ),
     [analysis.moves],
   );
@@ -347,6 +387,7 @@ export function CoachWorkspace({
   );
 
   // Auto-load real Stockfish 19 WASM Multi-PV lines whenever Report tab & position settle
+  // Avoid spawning a competing worker while the full-game review scan is actively running
   useEffect(() => {
     if (activeTab !== 'report') return;
     latestCloudFenRef.current = activeFen;
@@ -367,6 +408,11 @@ export function CoachWorkspace({
       }
       return;
     }
+    if (isAnalyzing && !isExploring) {
+      liveAbortRef.current?.abort();
+      setCloudLoading(false);
+      return;
+    }
     const timer = window.setTimeout(() => {
       void fetchCloudEval(activeFen);
     }, isExploring ? 60 : 120);
@@ -374,7 +420,7 @@ export function CoachWorkspace({
       window.clearTimeout(timer);
       liveAbortRef.current?.abort();
     };
-  }, [activeFen, activeTab, fetchCloudEval, isExploring, onLiveEvalUpdate]);
+  }, [activeFen, activeTab, fetchCloudEval, isAnalyzing, isExploring, onLiveEvalUpdate]);
 
   const runAiDebrief = async () => {
     if (debriefLoading) return;
@@ -385,6 +431,7 @@ export function CoachWorkspace({
         .filter(
           (m) =>
             m.quality === 'Mistake' ||
+            m.quality === 'Miss' ||
             m.quality === 'Blunder' ||
             m.quality === 'Inaccuracy',
         )
@@ -447,6 +494,7 @@ export function CoachWorkspace({
     currentMove &&
     (currentMove.quality === 'Inaccuracy' ||
       currentMove.quality === 'Mistake' ||
+      currentMove.quality === 'Miss' ||
       currentMove.quality === 'Blunder') &&
     currentMove.bestMoveSan !== currentMove.san;
 
@@ -455,10 +503,15 @@ export function CoachWorkspace({
     {
       quality: 'Best',
       label: 'Best',
-      count: analysis.counts.Best + analysis.counts.Book + analysis.counts.Great,
+      count:
+        analysis.counts.Best +
+        analysis.counts.Excellent +
+        analysis.counts.Book +
+        analysis.counts.Great,
     },
     { quality: 'Inaccuracy', label: 'Inacc', count: analysis.counts.Inaccuracy },
     { quality: 'Mistake', label: 'Mist', count: analysis.counts.Mistake },
+    { quality: 'Miss', label: 'Miss', count: analysis.counts.Miss },
     { quality: 'Blunder', label: 'Blun', count: analysis.counts.Blunder },
   ];
 
@@ -503,20 +556,67 @@ export function CoachWorkspace({
       {activeTab === 'report' ? (
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <div className="p-2 border-b border-white/10 space-y-1.5 bg-[#1A1917] shrink-0 overflow-y-auto max-h-[72%]">
-            {/* 2-col Accuracy Cards */}
-            <div className="grid grid-cols-2 gap-1.5">
-              <div className="px-2 py-1.5 rounded bg-[#262421] border border-white/8 flex items-center justify-between">
-                <span className="text-xs text-[#B8B4AC]">White Acc.</span>
-                <span className="font-mono text-sm font-bold text-[#F2F0EC] tabular-nums">
-                  {analysis.whiteAccuracy}%
-                </span>
+            {/* Compact Chess.com Accuracy + Game Rating Strip */}
+            <div className="space-y-1.5">
+              <div className="grid grid-cols-2 gap-1.5">
+                <div
+                  data-testid="coach-white-summary"
+                  className="px-2.5 py-1.5 rounded-lg bg-[#262421] flex items-center justify-between gap-2"
+                >
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-bold text-white truncate">
+                      {whiteName || 'White'}
+                    </div>
+                    <div className="text-[10px] font-semibold text-[#9E998F]">
+                      Rating{' '}
+                      <span
+                        data-testid="coach-white-game-rating"
+                        className="font-extrabold text-white tabular-nums"
+                      >
+                        {postGameSummary.whiteGameRating}
+                      </span>
+                    </div>
+                  </div>
+                  <span className="px-2 py-1 rounded-[5px] bg-white text-[#262421] text-[13px] font-extrabold tabular-nums shrink-0">
+                    {postGameSummary.whiteAccuracyExact.toFixed(1)}
+                  </span>
+                </div>
+
+                <div
+                  data-testid="coach-black-summary"
+                  className="px-2.5 py-1.5 rounded-lg bg-[#262421] flex items-center justify-between gap-2"
+                >
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-bold text-white truncate">
+                      {blackName || 'Black'}
+                    </div>
+                    <div className="text-[10px] font-semibold text-[#9E998F]">
+                      Rating{' '}
+                      <span
+                        data-testid="coach-black-game-rating"
+                        className="font-extrabold text-white tabular-nums"
+                      >
+                        {postGameSummary.blackGameRating}
+                      </span>
+                    </div>
+                  </div>
+                  <span className="px-2 py-1 rounded-[5px] bg-[#3C3A37] text-white text-[13px] font-extrabold tabular-nums shrink-0">
+                    {postGameSummary.blackAccuracyExact.toFixed(1)}
+                  </span>
+                </div>
               </div>
-              <div className="px-2 py-1.5 rounded bg-[#262421] border border-white/8 flex items-center justify-between">
-                <span className="text-xs text-[#B8B4AC]">Black Acc.</span>
-                <span className="font-mono text-sm font-bold text-[#F2F0EC] tabular-nums">
-                  {analysis.blackAccuracy}%
-                </span>
-              </div>
+
+              {onOpenFullReport && analysis.moves.length > 0 && (
+                <button
+                  type="button"
+                  data-testid="coach-open-full-report-btn"
+                  onClick={onOpenFullReport}
+                  className="w-full py-1.5 px-2.5 rounded-lg bg-[#312F2C] hover:bg-[#3C3A37] text-[11px] font-extrabold text-[#E6E2DA] flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <BarChart3 className="w-3.5 h-3.5 text-[#81B64C]" />
+                  <span>Open Game Review Report</span>
+                </button>
+              )}
             </div>
 
             {/* Active Move Verdict Card + Master Cloud Multi-PV */}
@@ -797,9 +897,12 @@ export function CoachWorkspace({
             />
 
             {/* Move Quality Counts Strip */}
-            <div className="flex items-center justify-between gap-1 text-[11px] font-mono tabular-nums text-[#C8C4BC]">
+            <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] font-mono tabular-nums text-[#C8C4BC]">
               {summaryItems
-                .filter((item) => item.quality !== 'Brilliant' || item.count > 0)
+                .filter(
+                  (item) =>
+                    (item.quality !== 'Brilliant' && item.quality !== 'Miss') || item.count > 0,
+                )
                 .map((item) => (
                   <div key={item.quality} className="flex items-center gap-1">
                     <MoveBadge quality={item.quality} size="sm" />
@@ -901,7 +1004,9 @@ export function CoachWorkspace({
                         {m.color === 'w' ? '.' : '...'}
                       </span>
                       <span className="font-semibold">{m.san}</span>
-                      {(m.quality === 'Mistake' || m.quality === 'Blunder') &&
+                      {(m.quality === 'Mistake' ||
+                        m.quality === 'Miss' ||
+                        m.quality === 'Blunder') &&
                         m.bestMoveSan !== m.san && (
                           <span className="text-[11px] text-[#9E998F] truncate">
                             (best {m.bestMoveSan})

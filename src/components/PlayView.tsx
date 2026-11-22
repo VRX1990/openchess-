@@ -27,6 +27,8 @@ import {
   LogOut,
   GraduationCap,
   RotateCw,
+  Compass,
+  BookOpen,
 } from 'lucide-react';
 import {
   BOT_PROFILES,
@@ -75,6 +77,7 @@ import {
   playMoveSound,
   playPremoveSound,
 } from '../chess/sound';
+import { getStepNavigationSound } from '../chess/boardMotion';
 import { ChessBoard, type BoardTheme } from './ChessBoard';
 import { ChessPiece } from './ChessPiece';
 import { EvaluationBar } from './EvaluationBar';
@@ -82,9 +85,11 @@ import { CoachWorkspace } from './CoachWorkspace';
 import { GameOverModal } from './GameOverModal';
 import { GameReviewSummaryScreen } from './GameReviewSummaryScreen';
 import { BottomSheet } from './BottomSheet';
+import { BoardExplorerModal } from './BoardExplorerModal';
 import { BotAvatar } from './BotAvatar';
 import { PlayerAvatar } from './PlayerAvatar';
 import { MoveSanText } from './MoveSanText';
+import { BrandPawnIcon } from './ChessIcons';
 import { loadUserAvatar } from '../chess/avatars';
 import {
   computeLiveInterpolatedClockMs,
@@ -102,6 +107,9 @@ import {
 } from '../chess/onlineHelpers';
 import { MOVE_QUALITY_META, MoveBadge } from './MoveBadge';
 import { CoachPickerModal } from './CoachPickerModal';
+import { NavBotsIcon } from './ChessIcons';
+import { BOT_FLAGS, computeBotThinkDelayMs, pickBotReaction } from '../chess/botSpeech';
+import { detectOpeningForPosition } from '../chess/explorer';
 
 export interface TimeControl {
   id: string;
@@ -140,6 +148,7 @@ export interface PlayPreset {
   lichessGameId?: string;
   wsRoomId?: string;
   wsAction?: 'create' | 'join';
+  initialMove?: { from: string; to: string; promotion?: PieceSymbol };
   nonce: number;
 }
 
@@ -216,6 +225,12 @@ export function PlayView({
   const [timeControlId, setTimeControlId] = useState<string>(preset?.timeId ?? '10+0');
   const [playerColor, setPlayerColor] = useState<Color>('w');
   const [flipped, setFlipped] = useState(false);
+  const [explorerOpen, setExplorerOpen] = useState(false);
+
+  const openBoardExplorer = useCallback(() => {
+    setMobileSheet('none');
+    setExplorerOpen(true);
+  }, []);
 
   const isOnlineMode = opponentType === 'online-ws' || opponentType === 'online-lichess';
   const isCoachMode = opponentType === 'coach';
@@ -329,6 +344,61 @@ export function PlayView({
   } | null>(null);
   const [hintSquares, setHintSquares] = useState<{ from?: string; to?: string } | null>(null);
 
+  const navigateViewPly = useCallback(
+    (next: number | null | ((currentPly: number, totalPlies: number) => number | null)) => {
+      const total = history.length;
+      const currentPly = viewPly ?? total;
+      const rawNext = typeof next === 'function' ? next(currentPly, total) : next;
+      const resolvedNext =
+        rawNext === null ? total : Math.max(0, Math.min(total, rawNext));
+      if (resolvedNext !== currentPly) {
+        const navSound = getStepNavigationSound(history, currentPly, resolvedNext);
+        if (navSound) {
+          playMoveSound({
+            capture: navSound.capture,
+            check: navSound.check,
+            castle: navSound.castle,
+            promotion: navSound.promotion,
+            toSquare: navSound.toSquare,
+          });
+        }
+      }
+      setViewPly(resolvedNext >= total ? null : resolvedNext);
+    },
+    [history, viewPly],
+  );
+
+  // Keyboard ArrowLeft/ArrowRight/Home/End navigation through game history with piece sounds
+  useEffect(() => {
+    if (history.length === 0 || explorerOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement ||
+        (e.target instanceof HTMLElement && e.target.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        navigateViewPly((cur) => Math.max(0, cur - 1));
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        navigateViewPly((cur, total) => (cur + 1 >= total ? null : cur + 1));
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        navigateViewPly(0);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        navigateViewPly(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [explorerOpen, history.length, navigateViewPly]);
+
   const tc = useMemo(
     () => TIME_CONTROLS.find((t) => t.id === timeControlId) ?? TIME_CONTROLS.find((t) => t.id === '10+0') ?? TIME_CONTROLS[0],
     [timeControlId],
@@ -441,6 +511,16 @@ export function PlayView({
   const [cloudArrow, setCloudArrow] = useState<{ from: string; to: string } | null>(null);
   const [hintLoading, setHintLoading] = useState(false);
   const [hintSan, setHintSan] = useState<string | null>(null);
+  const [isBotThinking, setIsBotThinking] = useState(false);
+  const [botSpeech, setBotSpeech] = useState<string | null>(() => {
+    const initialProfile =
+      BOT_PROFILES.find((b) => b.id === (preset?.botId ?? 'viktor')) ?? BOT_PROFILES[2];
+    return pickBotReaction({
+      botId: initialProfile.id,
+      botName: initialProfile.name,
+      event: 'game_start',
+    });
+  });
 
   const botTimeoutRef = useRef<number | null>(null);
   const hintAbortRef = useRef<AbortController | null>(null);
@@ -538,6 +618,10 @@ export function PlayView({
   }, [displayedFen]);
 
   const material = useMemo(() => getMaterialBalance(displayedFen), [displayedFen]);
+  const liveOpening = useMemo(
+    () => detectOpeningForPosition(displayedFen, history.map((m) => m.san)),
+    [displayedFen, history],
+  );
 
   useEffect(() => {
     hintAbortRef.current?.abort();
@@ -749,6 +833,15 @@ export function PlayView({
           savePlayedGame(record);
           onSavePlayedGame?.(record);
         }
+      }
+      if (opponentType === 'bot') {
+        const endLine = pickBotReaction({
+          botId,
+          botName: activeOpponentName,
+          event: playerWon === true ? 'bot_loss' : playerWon === false ? 'bot_win' : 'draw',
+        });
+        if (endLine) setBotSpeech(endLine);
+        setIsBotThinking(false);
       }
       if (recordedStatsNonceRef.current !== matchNonceRef.current) {
         recordedStatsNonceRef.current = matchNonceRef.current;
@@ -1080,6 +1173,46 @@ export function PlayView({
           castle: move.flags.includes('k') || move.flags.includes('q'),
         });
 
+        // Live Chess.com-style contextual bot speech reaction
+        if (opponentType === 'bot' && !game.isGameOver()) {
+          const plyNow = game.history().length;
+          if (move.color === playerColor) {
+            const evt = game.inCheck()
+              ? 'player_check'
+              : move.captured
+                ? 'player_capture'
+                : move.flags.includes('k') || move.flags.includes('q')
+                  ? 'player_castle'
+                  : null;
+            if (evt) {
+              const line = pickBotReaction({
+                botId,
+                botName: activeOpponentName,
+                event: evt,
+                moveSan: move.san,
+                capturedPiece: move.captured,
+                ply: plyNow,
+              });
+              if (line) setBotSpeech(line);
+            }
+          } else {
+            const evt = game.inCheck()
+              ? 'bot_check'
+              : move.captured
+                ? 'bot_capture'
+                : 'bot_move';
+            const line = pickBotReaction({
+              botId,
+              botName: activeOpponentName,
+              event: evt,
+              moveSan: move.san,
+              capturedPiece: move.captured,
+              ply: plyNow,
+            });
+            if (line) setBotSpeech(line);
+          }
+        }
+
         checkEndConditions(game);
         return true;
       } catch {
@@ -1188,6 +1321,15 @@ export function PlayView({
       setGameOverState(null);
       setClockRunning(false);
       setFlipped(false);
+      setIsBotThinking(false);
+      const resetBotProfile = BOT_PROFILES.find((b) => b.id === botId) ?? activeBot;
+      setBotSpeech(
+        pickBotReaction({
+          botId: resetBotProfile.id,
+          botName: resetBotProfile.name,
+          event: 'game_start',
+        }),
+      );
       const resetMs = chosenTc.initialSeconds * 1000;
       setWhiteClockMs(resetMs);
       setBlackClockMs(resetMs);
@@ -1338,6 +1480,24 @@ export function PlayView({
           : 'b'
         : preset.color ?? 'w';
     startNewGame(chosenColor, chosenTc, nextMode === 'online-ws' || nextMode === 'online-lichess');
+    if (preset.botId) {
+      const nextBotProfile = BOT_PROFILES.find((b) => b.id === preset.botId);
+      if (nextBotProfile) {
+        setBotSpeech(
+          pickBotReaction({
+            botId: nextBotProfile.id,
+            botName: nextBotProfile.name,
+            event: 'game_start',
+          }),
+        );
+      }
+    }
+    if (preset.initialMove && nextMode === 'bot' && chosenColor === 'w') {
+      const { from, to, promotion } = preset.initialMove;
+      window.setTimeout(() => {
+        applyMoveOnBoardRef.current(from, to, promotion);
+      }, 50);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset?.nonce]);
 
@@ -2119,53 +2279,30 @@ export function PlayView({
       }
     };
 
+    setIsBotThinking(true);
+    const botDelayMs = computeBotThinkDelayMs({
+      botElo: effectiveBotElo,
+      ply: chessRef.current.history().length,
+      isCapture: Boolean(lastMove?.captured),
+      isCheck: liveChess.inCheck(),
+    });
+
     botTimeoutRef.current = window.setTimeout(async () => {
       if (cancelled) return;
-      if (useStockfish) {
-        // 1. Run Client-Side Stockfish 19 NNUE Multi-PV directly in the browser (calibrated depth & PV selection)
-        const clientSf19 = await analyzeClientStockfish19Nnue(
-          fen,
-          sfDepth >= 16 ? 19 : sfDepth,
-          5,
-        );
-        if (!cancelled && clientSf19.available && clientSf19.lines.length > 0) {
-          const picked =
-            pickCalibratedEngineLine(clientSf19.lines, effectiveBotElo, Math.random) ??
-            clientSf19.lines[0];
-          const chosenFrom = picked?.firstMoveFrom;
-          const chosenTo = picked?.firstMoveTo;
-
-          if (chosenFrom && chosenTo) {
-            recordCoachExplanation(fen, chosenFrom, chosenTo);
-            const applied = applyMoveOnBoard(chosenFrom, chosenTo);
-            if (applied) return;
-          }
-        }
-
-        const controller = new AbortController();
-        const timer = window.setTimeout(() => controller.abort(), 2200);
-        try {
-          const res = await fetch('/api/engine/move', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ fen, depth: sfDepth }),
-            signal: controller.signal,
-          });
-          window.clearTimeout(timer);
-          if (!cancelled && res.ok) {
-            const data = await res.json();
-            const lines: Array<{
-              evalCp: number;
-              firstMoveFrom: string;
-              firstMoveTo: string;
-            }> = Array.isArray(data.lines) ? data.lines : [];
-
+      try {
+        if (useStockfish) {
+          // 1. Run Client-Side Stockfish 19 NNUE Multi-PV directly in the browser (calibrated depth & PV selection)
+          const clientSf19 = await analyzeClientStockfish19Nnue(
+            fen,
+            sfDepth >= 16 ? 19 : sfDepth,
+            5,
+          );
+          if (!cancelled && clientSf19.available && clientSf19.lines.length > 0) {
             const picked =
-              lines.length > 0
-                ? pickCalibratedEngineLine(lines, effectiveBotElo, Math.random)
-                : null;
-            const chosenFrom: string | undefined = picked?.firstMoveFrom ?? data.bestMoveFrom;
-            const chosenTo: string | undefined = picked?.firstMoveTo ?? data.bestMoveTo;
+              pickCalibratedEngineLine(clientSf19.lines, effectiveBotElo, Math.random) ??
+              clientSf19.lines[0];
+            const chosenFrom = picked?.firstMoveFrom;
+            const chosenTo = picked?.firstMoveTo;
 
             if (chosenFrom && chosenTo) {
               recordCoachExplanation(fen, chosenFrom, chosenTo);
@@ -2173,31 +2310,67 @@ export function PlayView({
               if (applied) return;
             }
           }
-        } catch {
-          window.clearTimeout(timer);
-        }
-      }
 
-      if (cancelled) return;
-      const botMove = chooseBotMove(
-        fen,
-        isCoachMode ? activeCoach.id : botId,
-        Math.random,
-        effectiveBotElo,
-      );
-      if (botMove) {
-        recordCoachExplanation(fen, botMove.from, botMove.to, botMove.promotion);
-        applyMoveOnBoard(botMove.from, botMove.to, botMove.promotion);
+          const controller = new AbortController();
+          const timer = window.setTimeout(() => controller.abort(), 2200);
+          try {
+            const res = await fetch('/api/engine/move', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ fen, depth: sfDepth }),
+              signal: controller.signal,
+            });
+            window.clearTimeout(timer);
+            if (!cancelled && res.ok) {
+              const data = await res.json();
+              const lines: Array<{
+                evalCp: number;
+                firstMoveFrom: string;
+                firstMoveTo: string;
+              }> = Array.isArray(data.lines) ? data.lines : [];
+
+              const picked =
+                lines.length > 0
+                  ? pickCalibratedEngineLine(lines, effectiveBotElo, Math.random)
+                  : null;
+              const chosenFrom: string | undefined = picked?.firstMoveFrom ?? data.bestMoveFrom;
+              const chosenTo: string | undefined = picked?.firstMoveTo ?? data.bestMoveTo;
+
+              if (chosenFrom && chosenTo) {
+                recordCoachExplanation(fen, chosenFrom, chosenTo);
+                const applied = applyMoveOnBoard(chosenFrom, chosenTo);
+                if (applied) return;
+              }
+            }
+          } catch {
+            window.clearTimeout(timer);
+          }
+        }
+
+        if (cancelled) return;
+        const botMove = chooseBotMove(
+          fen,
+          isCoachMode ? activeCoach.id : botId,
+          Math.random,
+          effectiveBotElo,
+        );
+        if (botMove) {
+          recordCoachExplanation(fen, botMove.from, botMove.to, botMove.promotion);
+          applyMoveOnBoard(botMove.from, botMove.to, botMove.promotion);
+        }
+      } finally {
+        if (!cancelled) setIsBotThinking(false);
       }
-    }, 320);
+    }, botDelayMs);
 
     return () => {
       cancelled = true;
+      setIsBotThinking(false);
       if (botTimeoutRef.current) {
         window.clearTimeout(botTimeoutRef.current);
       }
     };
-  }, [activeCoach.id, applyMoveOnBoard, botId, effectiveBotElo, fen, gameOverState, isBotOrCoach, isCoachMode, liveChess, playerColor]);
+  }, [activeCoach.id, applyMoveOnBoard, botId, effectiveBotElo, fen, gameOverState, isBotOrCoach, isCoachMode, lastMove?.captured, liveChess, playerColor]);
 
   // Smooth 100ms server-anchored clock interpolation with tenths display under 20s
   useEffect(() => {
@@ -2240,11 +2413,13 @@ export function PlayView({
   const handleTakeback = () => {
     if (isOnlineMode || gameOverState || history.length === 0) return;
     const stepsBack = isBotOrCoach && history.length >= 2 ? 2 : 1;
+    const undoneMove = history[history.length - 1];
     const targetHistory = history.slice(0, history.length - stepsBack);
     const rebuilt = new Chess();
     for (const m of targetHistory) {
       rebuilt.move(m.san);
     }
+    playMoveSound({ toSquare: undoneMove?.from });
     chessRef.current = rebuilt;
     setFen(rebuilt.fen());
     setPgn(rebuilt.pgn());
@@ -2695,11 +2870,11 @@ export function PlayView({
                 {isBotSide ? `(${effectiveBotElo})` : formattedPlayer.ratingBadge}
               </span>
             )}
-            {isOnlineMode && sideFlag && (
+            {(isOnlineMode && sideFlag) || (isBotSide && !isCoachMode && BOT_FLAGS[activeBot.id]) ? (
               <span className="text-xs leading-none shrink-0" aria-hidden="true">
-                {sideFlag}
+                {isBotSide ? BOT_FLAGS[activeBot.id] : sideFlag}
               </span>
-            )}
+            ) : null}
             {presenceMeta ? (
               <span
                 data-testid="opponent-presence-badge"
@@ -2833,6 +3008,26 @@ export function PlayView({
   const renderSetupForm = () => (
     <div className="flex flex-col flex-1 overflow-hidden">
       <div className="p-3 space-y-2.5 overflow-y-auto flex-1">
+        <button
+          type="button"
+          onClick={openBoardExplorer}
+          data-testid="options-explorer-btn"
+          className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl bg-[#312E2A] hover:bg-[#3B3833] border border-[#81B64C]/45 flex items-center justify-between gap-2 text-left transition-colors cursor-pointer"
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-[#81B64C]/18 flex items-center justify-center shrink-0">
+              <Compass className="w-4 h-4 text-[#81B64C]" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-xs font-extrabold text-white">Explorer</div>
+              <div className="text-[11px] text-[#A8A49E] truncate">
+                Explore lines, Master Games &amp; win rates
+              </div>
+            </div>
+          </div>
+          <ChevronRight className="w-4 h-4 text-[#A8A49E] shrink-0" />
+        </button>
+
         <div>
           <div className="text-xs font-semibold text-[#B8B4AC] mb-1.5">
             Opponent Mode
@@ -3410,6 +3605,26 @@ export function PlayView({
         </button>
       </div>
 
+      <button
+        type="button"
+        onClick={openBoardExplorer}
+        data-testid="options-explorer-btn"
+        className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl bg-[#262421] hover:bg-[#312E2A] border border-[#81B64C]/45 flex items-center justify-between gap-2 text-left transition-colors cursor-pointer"
+      >
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-8 h-8 rounded-lg bg-[#81B64C]/18 flex items-center justify-center shrink-0">
+            <Compass className="w-4 h-4 text-[#81B64C]" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-xs font-extrabold text-white">Explorer</div>
+            <div className="text-[11px] text-[#A8A49E] truncate">
+              Open Board Explorer at current position
+            </div>
+          </div>
+        </div>
+        <ChevronRight className="w-4 h-4 text-[#A8A49E] shrink-0" />
+      </button>
+
       {history.length > 0 && (
         <button
           type="button"
@@ -3439,10 +3654,10 @@ export function PlayView({
     <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_370px] xl:grid-cols-[minmax(0,1fr)_410px] gap-4 lg:gap-5 items-start">
       {/* Left/Center Arena */}
       <div className="flex justify-center">
-        <div className="w-full max-w-[min(560px,100vw)] lg:max-w-[min(calc(100dvh-112px),750px)] lg:min-h-0 flex flex-col lg:justify-between pb-[118px] lg:pb-0">
+        <div className="w-full max-w-[min(560px,100vw)] lg:max-w-[min(calc(100dvh-112px),750px)] min-h-[calc(100dvh-100px)] lg:min-h-0 flex flex-col lg:justify-between pb-[106px] lg:pb-0">
           <div>
-            {/* Chess.com Mobile Play Top Header (← · OpenChess · Options/Gear) */}
-            <div className="lg:hidden flex items-center justify-between h-10 px-0.5 mb-1">
+            {/* Chess.com Mobile Native Play Top Header (← · OpenChess · Explorer / Options) */}
+            <div className="lg:hidden -mx-2.5 px-2 flex items-center justify-between h-11 bg-[#21201D] border-b border-white/[0.07] mb-1.5">
               <button
                 type="button"
                 onClick={requestLeaveGame}
@@ -3452,28 +3667,32 @@ export function PlayView({
                 <ArrowLeft className="w-5 h-5" />
               </button>
 
-              <div className="flex items-center gap-1.5">
-                <svg viewBox="0 0 28 28" className="w-5 h-5 shrink-0" aria-hidden="true">
-                  <circle cx="14" cy="8.5" r="3.4" fill="#81B64C" />
-                  <path
-                    d="M11 12.2c.8-.5 5.2-.5 6 0l-1.1 5.2c1.4 1 2.4 2.3 2.6 3.9H9.5c.2-1.6 1.2-2.9 2.6-3.9L11 12.2z"
-                    fill="#81B64C"
-                  />
-                  <rect x="8" y="21.8" width="12" height="2.2" rx="1.1" fill="#81B64C" />
-                </svg>
-                <span className="text-base font-extrabold tracking-tight font-display text-white">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <BrandPawnIcon className="w-5 h-5 shrink-0" />
+                <span className="text-[15px] font-extrabold tracking-tight font-display text-white truncate">
                   OpenChess
                 </span>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setMobileSheet(isOnlineMode ? 'options' : 'setup')}
-                aria-label="Game Options"
-                className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-lg text-[#C8C4BC] hover:text-white cursor-pointer"
-              >
-                <Settings className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-0.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={openBoardExplorer}
+                  aria-label="Board Explorer"
+                  title="Explorer"
+                  className="min-w-[38px] min-h-[38px] flex items-center justify-center rounded-lg text-[#81B64C] hover:bg-white/[0.06] cursor-pointer"
+                >
+                  <Compass className="w-[19px] h-[19px]" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileSheet(isOnlineMode ? 'options' : 'setup')}
+                  aria-label="Game Options"
+                  className="min-w-[38px] min-h-[38px] flex items-center justify-center rounded-lg text-[#C8C4BC] hover:text-white hover:bg-white/[0.06] cursor-pointer"
+                >
+                  <Settings className="w-[19px] h-[19px]" />
+                </button>
+              </div>
             </div>
 
             {/* Live WebSocket Friend Room Invite Banner (pre-start only) */}
@@ -3674,6 +3893,7 @@ export function PlayView({
                       {coachFeedback &&
                         (coachFeedback.quality === 'Inaccuracy' ||
                           coachFeedback.quality === 'Mistake' ||
+                          coachFeedback.quality === 'Miss' ||
                           coachFeedback.quality === 'Blunder') &&
                         coachFeedback.bestSan !== coachFeedback.san && (
                           <div className="pt-0.5 flex items-center justify-between gap-2 text-[11px] text-[#635D53] border-t border-[#E1DBD0]">
@@ -3697,6 +3917,7 @@ export function PlayView({
                           coachFeedback.bestSan !== coachFeedback.san &&
                           (coachFeedback.quality === 'Inaccuracy' ||
                             coachFeedback.quality === 'Mistake' ||
+                            coachFeedback.quality === 'Miss' ||
                             coachFeedback.quality === 'Blunder') && (
                             <button
                               type="button"
@@ -3723,53 +3944,39 @@ export function PlayView({
                   )}
                 </div>
               </div>
-            ) : opponentType === 'bot' ? (
-              <div className="lg:hidden flex items-center gap-2.5 px-1.5 py-2 mb-1">
-                <div className="w-[54px] h-[54px] rounded-[6px] overflow-hidden bg-[#262421] shrink-0">
-                  <BotAvatar id={activeBot.id} />
-                </div>
-                <div className="relative flex-1 min-w-0 cc-speech-bubble px-3.5 py-2.5 min-h-[52px] flex items-center">
-                  <svg
-                    viewBox="0 0 10 14"
-                    className="w-2.5 h-3.5 absolute -left-2 top-1/2 -translate-y-1/2 text-white fill-current"
-                    aria-hidden="true"
-                  >
-                    <path d="M10 0 L0 7 L10 14 Z" />
-                  </svg>
-                  <p className="text-[13.5px] font-semibold text-[#262421] leading-snug">
-                    {history.length === 0
-                      ? `Hi, I'm ${activeBot.name}! Let's play!`
-                      : lastMove?.san?.startsWith('O-O')
-                        ? 'Making your king safer, smart.'
-                        : lastMove?.san?.includes('+')
-                          ? 'Whoa, nice check! Let me find a way out.'
-                          : lastMove?.captured
-                            ? "Interesting exchange—I'll have to stay sharp!"
-                            : history.length === 4
-                              ? "Don't forget, you can use hints and takebacks during our game. Good luck!"
-                              : liveChess.turn() !== playerColor
-                                ? 'Hmm, let me think about this position...'
-                                : [
-                                    'Nice move! Let me see how to respond.',
-                                    'Good development! Your turn.',
-                                    'Interesting idea—keep up the pressure!',
-                                    'Steady play! Watch the center squares.',
-                                  ][history.length % 4]}
-                  </p>
-                </div>
-              </div>
             ) : null}
           </div>
 
-          <div className="lg:my-auto py-0.5 lg:py-1">
-            <div className={opponentType === 'bot' ? 'hidden lg:block' : ''}>
+          <div className="my-auto py-0.5 lg:py-1">
+            {opponentType === 'bot' && !isCoachMode && !pendingBlunder && (
+              <div className="lg:hidden px-1 pb-2">
+                <div className="relative cc-speech-bubble px-3.5 py-2 min-h-[38px] flex items-center">
+                  <p className="text-[12.5px] font-semibold text-[#262421] leading-snug line-clamp-2">
+                    {botSpeech ||
+                      (history.length === 0
+                        ? `Hi, I'm ${activeBot.name}! Let's play!`
+                        : liveChess.turn() !== playerColor
+                          ? 'Hmm, let me think about this position...'
+                          : 'Your move!')}
+                  </p>
+                  <svg
+                    viewBox="0 0 14 8"
+                    className="w-3.5 h-2 absolute left-[15px] -bottom-[7px] text-white fill-current drop-shadow-[0_1px_1px_rgba(0,0,0,0.12)]"
+                    aria-hidden="true"
+                  >
+                    <path d="M0 0 L7 8 L14 0 Z" />
+                  </svg>
+                </div>
+              </div>
+            )}
+            <div>
               {renderPlayerStrip(topColor, 'top')}
             </div>
 
             {/* Edge-to-Edge Full-Width Chessboard on Mobile (Image 2 Reference) */}
             <div className="-mx-2.5 sm:mx-0 flex items-stretch gap-0 sm:gap-2.5">
               <div className="hidden sm:flex">
-                {!isOnlineMode && (
+                {!isOnlineMode && (isCoachMode || coachGuard) && (
                   <EvaluationBar evalCp={displayedEval} orientation={orientation} />
                 )}
               </div>
@@ -3865,7 +4072,7 @@ export function PlayView({
               </div>
             )}
 
-            <div className={opponentType === 'bot' ? 'hidden lg:block' : ''}>
+            <div>
               {renderPlayerStrip(bottomColor, 'bottom')}
             </div>
           </div>
@@ -3873,16 +4080,14 @@ export function PlayView({
           {/* Chess.com Mobile < 1. e4 > Horizontal Move Stepper */}
           <div
             data-testid="mobile-move-stepper"
-            className="lg:hidden fixed bottom-14 left-0 right-0 z-20 h-11 bg-[#2B2926]/95 border-t border-white/5 flex items-center justify-between gap-2 px-2.5"
+            className="lg:hidden fixed bottom-[56px] left-0 right-0 z-20 h-[42px] bg-[#262421]/95 backdrop-blur-sm border-t border-white/[0.07] flex items-center justify-between gap-1.5 px-2"
           >
             <button
               type="button"
               aria-label="Previous move"
               disabled={history.length === 0 || viewPly === 0}
-              onClick={() =>
-                setViewPly((p) => Math.max(0, (p ?? history.length) - 1))
-              }
-              className="w-9 h-9 flex items-center justify-center rounded-lg text-[#C8C4BC] hover:text-white disabled:opacity-35 cursor-pointer shrink-0"
+              onClick={() => navigateViewPly((cur) => Math.max(0, cur - 1))}
+              className="w-10 h-9 flex items-center justify-center rounded-lg text-[#C8C4BC] hover:text-white active:bg-white/10 disabled:opacity-30 cursor-pointer shrink-0"
             >
               <ChevronLeft className="w-5 h-5" />
             </button>
@@ -3896,7 +4101,9 @@ export function PlayView({
               }`}
             >
               {movePairs.length === 0 ? (
-                <span className="text-[#847F76] font-sans" />
+                <span className="text-[11.5px] font-semibold text-[#847F76] font-sans">
+                  {liveChess.turn() === 'w' ? 'White to move' : 'Black to move'}
+                </span>
               ) : (
                 movePairs.map((p) => (
                   <span key={p.moveNumber} className="inline-flex items-center gap-1.5 whitespace-nowrap">
@@ -3904,10 +4111,10 @@ export function PlayView({
                     {p.white && (
                       <button
                         type="button"
-                        onClick={() => setViewPly(p.whitePly)}
+                        onClick={() => navigateViewPly(p.whitePly)}
                         className={`px-1.5 py-0.5 rounded-[4px] font-sans text-[13px] font-bold cursor-pointer ${
                           (viewPly ?? history.length) === p.whitePly
-                            ? 'bg-[#4B4844] text-white border-b-2 border-[#767470]'
+                            ? 'bg-[#4B4844] text-white border-b-2 border-[#81B64C]'
                             : 'text-[#DEDCD8]'
                         }`}
                       >
@@ -3917,10 +4124,10 @@ export function PlayView({
                     {p.black && (
                       <button
                         type="button"
-                        onClick={() => setViewPly(p.blackPly)}
+                        onClick={() => navigateViewPly(p.blackPly)}
                         className={`px-1.5 py-0.5 rounded-[4px] font-sans text-[13px] font-bold cursor-pointer ${
                           (viewPly ?? history.length) === p.blackPly
-                            ? 'bg-[#4B4844] text-white border-b-2 border-[#767470]'
+                            ? 'bg-[#4B4844] text-white border-b-2 border-[#81B64C]'
                             : 'text-[#DEDCD8]'
                         }`}
                       >
@@ -3937,11 +4144,9 @@ export function PlayView({
               aria-label="Next move"
               disabled={history.length === 0 || viewPly === null || viewPly === history.length}
               onClick={() =>
-                setViewPly((p) =>
-                  p === null ? null : p + 1 >= history.length ? null : p + 1,
-                )
+                navigateViewPly((cur, total) => (cur + 1 >= total ? null : cur + 1))
               }
-              className="w-9 h-9 flex items-center justify-center rounded-lg text-[#C8C4BC] hover:text-white disabled:opacity-35 cursor-pointer shrink-0"
+              className="w-10 h-9 flex items-center justify-center rounded-lg text-[#C8C4BC] hover:text-white active:bg-white/10 disabled:opacity-30 cursor-pointer shrink-0"
             >
               <ChevronRight className="w-5 h-5" />
             </button>
@@ -3950,7 +4155,7 @@ export function PlayView({
           {/* Mobile Pinned Flat Action Bar (Bot/Local: 4-col Options/Abort-Resign/Hint/Undo; Online: 5-col) */}
           <div
             data-testid="mobile-action-bar"
-            className={`lg:hidden fixed bottom-0 left-0 right-0 z-30 h-14 bg-[#262421] border-t border-white/10 grid items-center ${
+            className={`lg:hidden fixed bottom-0 left-0 right-0 z-30 h-[56px] pb-[env(safe-area-inset-bottom)] bg-[#21201D] border-t border-white/[0.08] grid items-center ${
               isOnlineMode ? 'grid-cols-5' : 'grid-cols-4'
             }`}
           >
@@ -4053,14 +4258,14 @@ export function PlayView({
           </div>
 
           {viewPly !== null && viewPly !== history.length && (
-            <div className="mt-1.5 flex items-center justify-between px-3 py-1.5 rounded bg-[#E59A28]/15 border border-[#E59A28]/35 text-xs text-[#F2D199]">
-              <span>
-                Inspecting move {viewPly} of {history.length} — jump to live board to play.
+            <div className="fixed bottom-[102px] left-2.5 right-2.5 z-25 lg:static lg:mt-1.5 flex items-center justify-between px-3 py-1.5 rounded-lg lg:rounded bg-[#262421]/95 lg:bg-[#E59A28]/15 backdrop-blur-sm lg:backdrop-blur-none border border-[#E59A28]/45 lg:border-[#E59A28]/35 shadow-lg lg:shadow-none text-xs text-[#F2D199]">
+              <span className="truncate">
+                Move {viewPly} of {history.length} — jump to live to play.
               </span>
               <button
                 type="button"
-                onClick={() => setViewPly(null)}
-                className="font-semibold underline cursor-pointer ml-2"
+                onClick={() => navigateViewPly(null)}
+                className="font-bold text-[#81B64C] lg:text-[#F2D199] lg:underline cursor-pointer ml-2 shrink-0"
               >
                 Return to Live
               </button>
@@ -4121,73 +4326,166 @@ export function PlayView({
 
       {/* Desktop Right Dock — Flush #262421 Panel */}
       <aside className="hidden lg:flex bg-[#262421] rounded-[5px] shadow-[0_6px_22px_rgba(0,0,0,0.28)] overflow-hidden flex-col lg:h-[min(calc(100dvh-2rem),836px)]">
-        <div
-          role="tablist"
-          aria-label="Play workspace panels"
-          className="grid grid-cols-3 bg-[#1F1E1B] shrink-0"
-        >
-          {(isOnlineMode
-            ? ([
-                { id: 'chat', label: unreadChat > 0 ? `Chat (${unreadChat})` : 'Chat' },
-                { id: 'moves', label: `Moves (${history.length})` },
-                { id: 'match', label: 'Options' },
-              ] as const)
-            : ([
-                { id: 'match', label: 'Setup' },
-                { id: 'moves', label: `Moves (${history.length})` },
-                { id: 'tutor', label: 'Coach' },
-              ] as const)
-          ).map((tab) => (
+        {/* Exact Chess.com Play Bots Clean Header (no cluttered 3-tab bar) */}
+        {opponentType === 'bot' ? (
+          <div className="h-[48px] bg-[#1F1E1B] px-3 border-b border-white/[0.05] flex items-center justify-between gap-2 shrink-0">
             <button
-              key={tab.id}
               type="button"
-              role="tab"
-              aria-selected={rightTab === tab.id}
-              onClick={() => {
-                if (tab.id === 'chat') setUnreadChat(0);
-                setRightTab(tab.id);
-              }}
-              className={`py-3 px-2 text-[12px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
-                rightTab === tab.id
-                  ? 'bg-[#262421] text-white'
-                  : 'text-[#9B9A97] hover:text-white'
+              onClick={() => setRightTab((t) => (t === 'match' ? 'moves' : 'match'))}
+              aria-label="Match Options"
+              title="Match Options"
+              className={`w-8 h-8 rounded flex items-center justify-center transition-colors cursor-pointer ${
+                rightTab === 'match'
+                  ? 'bg-[#363431] text-white'
+                  : 'text-[#9B9A97] hover:text-white hover:bg-white/5'
               }`}
             >
-              {tab.label}
+              <Settings className="w-4 h-4" />
             </button>
-          ))}
-        </div>
+            <button
+              type="button"
+              onClick={() => setRightTab('moves')}
+              className="flex items-center gap-2 cursor-pointer"
+            >
+              <NavBotsIcon className="w-5 h-5 shrink-0" />
+              <span className="text-[16px] font-extrabold text-white font-display tracking-tight">
+                Play Bots
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setRightTab((t) => (t === 'tutor' ? 'moves' : 'tutor'))}
+              aria-label="Coach Analysis"
+              title="Coach Analysis"
+              className={`w-8 h-8 rounded flex items-center justify-center transition-colors cursor-pointer ${
+                rightTab === 'tutor'
+                  ? 'bg-[#363431] text-[#81B64C]'
+                  : 'text-[#9B9A97] hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <GraduationCap className="w-4 h-4" />
+            </button>
+          </div>
+        ) : (
+          <div
+            role="tablist"
+            aria-label="Play workspace panels"
+            className="grid grid-cols-3 bg-[#1F1E1B] shrink-0"
+          >
+            {(isOnlineMode
+              ? ([
+                  { id: 'chat', label: unreadChat > 0 ? `Chat (${unreadChat})` : 'Chat' },
+                  { id: 'moves', label: `Moves (${history.length})` },
+                  { id: 'match', label: 'Options' },
+                ] as const)
+              : ([
+                  { id: 'match', label: 'Options' },
+                  { id: 'moves', label: `Moves (${history.length})` },
+                  { id: 'tutor', label: 'Coach' },
+                ] as const)
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={rightTab === tab.id}
+                onClick={() => {
+                  if (tab.id === 'chat') setUnreadChat(0);
+                  setRightTab(tab.id);
+                }}
+                className={`py-2.5 px-2 text-[12px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
+                  rightTab === tab.id
+                    ? 'bg-[#262421] text-white'
+                    : 'text-[#9B9A97] hover:text-white'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {rightTab === 'match' && (isOnlineMode ? renderOnlineOptions() : renderSetupForm())}
         {rightTab === 'chat' && renderOnlineChat()}
 
         {rightTab === 'moves' && (
           <div className="flex flex-col flex-1 overflow-hidden">
-            {/* Opening / Status Subheader + Compact Guard Toggle */}
-            <div className="px-3 py-2 border-b border-white/[0.06] flex items-center justify-between gap-2 shrink-0 bg-[#23211E]">
-              <span className="text-[12px] font-semibold text-[#A9A6A0] truncate">
-                {history.length === 0 ? 'Starting Position' : coachStatusLine}
+            {/* Exact Chess.com In-Game Bot Portrait + Live Speech Bubble */}
+            {opponentType === 'bot' && (
+              <div className="px-3.5 py-3 border-b border-white/[0.06] bg-[#262421] shrink-0">
+                <div className="flex items-start gap-2.5">
+                  <div className="flex flex-col items-center gap-1 shrink-0">
+                    <div className="w-[54px] h-[54px] rounded-[6px] overflow-hidden bg-[#1F1E1B]">
+                      <BotAvatar id={activeBot.id} />
+                    </div>
+                    <div className="flex items-center gap-1 text-[11px] font-bold text-[#C8C6C2] leading-none">
+                      <span>{activeBot.name}</span>
+                      {BOT_FLAGS[activeBot.id] && (
+                        <span aria-hidden="true">{BOT_FLAGS[activeBot.id]}</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="relative flex-1 cc-speech-bubble rounded-[10px] px-3 py-2.5 min-h-[54px] flex items-center">
+                    <svg
+                      viewBox="0 0 10 14"
+                      className="w-2.5 h-3.5 absolute -left-2 top-5 text-white fill-current"
+                      aria-hidden="true"
+                    >
+                      <path d="M10 0 L0 7 L10 14 Z" />
+                    </svg>
+                    {isBotThinking ? (
+                      <div
+                        className="flex items-center gap-1.5 text-[13px] font-semibold text-[#5E5C58]"
+                        aria-label={`${activeBot.name} is thinking`}
+                      >
+                        <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#81B64C] animate-bounce [animation-delay:0ms]" />
+                        <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#81B64C] animate-bounce [animation-delay:120ms]" />
+                        <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#81B64C] animate-bounce [animation-delay:240ms]" />
+                      </div>
+                    ) : (
+                      <p className="text-[12.5px] font-semibold leading-snug text-[#262421]">
+                        {botSpeech || `${activeBot.name} (${effectiveBotElo}) is ready.`}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Opening Name Strip + Quick Book & Compass (Explorer) Icons — exact Chess.com 03-bots-ingame */}
+            <div className="px-3.5 py-2 border-b border-white/[0.06] flex items-center justify-between gap-2 shrink-0 bg-[#23211E]">
+              <span className="text-[12.5px] font-semibold text-[#B8B6B2] truncate">
+                {history.length === 0
+                  ? 'Starting Position'
+                  : liveOpening?.name && liveOpening.name !== 'Starting Position'
+                    ? liveOpening.name
+                    : coachStatusLine}
               </span>
-              {opponentType === 'bot' && (
+              <div className="flex items-center gap-1.5 shrink-0">
                 <button
                   type="button"
-                  onClick={() => setCoachGuard((g) => !g)}
-                  aria-pressed={coachGuard}
-                  className={`text-[10px] font-bold px-2 py-0.5 rounded-[4px] border whitespace-nowrap cursor-pointer shrink-0 ${
-                    coachGuard
-                      ? 'bg-[#81B64C]/20 border-[#81B64C]/60 text-[#AEE076]'
-                      : 'bg-[#1A1917] border-white/10 text-[#9B9A97] hover:text-white'
-                  }`}
-                  title="Instant warning before hanging pieces or mate"
+                  onClick={() => setRightTab('tutor')}
+                  aria-label="Open Coach Analysis"
+                  title="Coach Analysis"
+                  className="w-6 h-6 rounded hover:bg-white/10 flex items-center justify-center text-[#9B9A97] hover:text-white cursor-pointer"
                 >
-                  Guard {coachGuard ? 'On' : 'Off'}
+                  <BookOpen className="w-4 h-4" />
                 </button>
-              )}
+                <button
+                  type="button"
+                  onClick={openBoardExplorer}
+                  aria-label="Open Board Explorer"
+                  title="Opening Explorer"
+                  className="w-6 h-6 rounded hover:bg-white/10 flex items-center justify-center text-[#9B9A97] hover:text-white cursor-pointer"
+                >
+                  <Compass className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto">
               {movePairs.length === 0 ? (
-                <div className="text-center py-12 px-4 text-xs text-[#9B9A97]">
+                <div className="text-center py-10 px-4 text-xs text-[#9B9A97]">
                   Play your opening move on the board to record notation.
                 </div>
               ) : (
@@ -4207,7 +4505,7 @@ export function PlayView({
                         </span>
                         <button
                           type="button"
-                          onClick={() => setViewPly(pair.whitePly)}
+                          onClick={() => navigateViewPly(pair.whitePly)}
                           className="px-2 py-1 text-left cursor-pointer hover:bg-white/[0.04] transition-colors"
                         >
                           <span
@@ -4223,7 +4521,7 @@ export function PlayView({
                         {pair.black ? (
                           <button
                             type="button"
-                            onClick={() => setViewPly(pair.blackPly)}
+                            onClick={() => navigateViewPly(pair.blackPly)}
                             className="px-2 py-1 text-left cursor-pointer hover:bg-white/[0.04] transition-colors"
                           >
                             <span
@@ -4247,24 +4545,58 @@ export function PlayView({
             </div>
 
             <div className="p-3 bg-[#1F1E1B] border-t border-white/[0.06] space-y-2 shrink-0">
+              {/* Exact Chess.com Play Bots 3-Button Action Bar: Flag (Resign) | Undo | Lightbulb (Hint) */}
+              {opponentType === 'bot' && (
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    aria-label="Resign game"
+                    title="Resign"
+                    disabled={Boolean(gameOverState) || history.length === 0}
+                    onClick={handleResign}
+                    className="h-[42px] rounded-[7px] bg-[#363431] hover:bg-[#43403C] text-[#DEDAD2] hover:text-white flex items-center justify-center cursor-pointer disabled:opacity-40 transition-colors"
+                  >
+                    <Flag className="w-[18px] h-[18px] fill-current" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Take back move"
+                    title="Takeback"
+                    disabled={history.length === 0 || Boolean(gameOverState)}
+                    onClick={handleTakeback}
+                    className="h-[42px] rounded-[7px] bg-[#363431] hover:bg-[#43403C] text-[#DEDAD2] hover:text-white flex items-center justify-center cursor-pointer disabled:opacity-40 transition-colors"
+                  >
+                    <Undo2 className="w-[18px] h-[18px]" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Show move hint"
+                    title="Hint"
+                    disabled={Boolean(gameOverState) || hintLoading}
+                    onClick={() => void handleHint()}
+                    className="h-[42px] rounded-[7px] bg-[#363431] hover:bg-[#43403C] text-[#DEDAD2] hover:text-white flex items-center justify-center cursor-pointer disabled:opacity-40 transition-colors"
+                  >
+                    <Lightbulb className={`w-[18px] h-[18px] ${hintLoading ? 'animate-pulse text-[#F7C045]' : ''}`} />
+                  </button>
+                </div>
+              )}
+
               <div className="grid grid-cols-4 gap-1.5">
                 <button
                   type="button"
                   aria-label="First move"
-                  onClick={() => setViewPly(0)}
+                  onClick={() => navigateViewPly(0)}
                   disabled={history.length === 0}
-                  className="py-2 rounded-[5px] cc-btn-secondary flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                  className="py-1.5 rounded-[5px] bg-[#2D2B28] hover:bg-[#383633] text-[#C8C6C2] hover:text-white flex items-center justify-center disabled:opacity-35 cursor-pointer"
                 >
                   <ChevronFirst className="w-4 h-4" />
                 </button>
                 <button
                   type="button"
                   aria-label="Previous move"
-                  onClick={() =>
-                    setViewPly((p) => Math.max(0, (p ?? history.length) - 1))
-                  }
+                  onClick={() => navigateViewPly((cur) => Math.max(0, cur - 1))}
                   disabled={history.length === 0}
-                  className="py-2 rounded-[5px] cc-btn-secondary flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                  className="py-1.5 rounded-[5px] bg-[#2D2B28] hover:bg-[#383633] text-[#C8C6C2] hover:text-white flex items-center justify-center disabled:opacity-35 cursor-pointer"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
@@ -4272,41 +4604,49 @@ export function PlayView({
                   type="button"
                   aria-label="Next move"
                   onClick={() =>
-                    setViewPly((p) =>
-                      p === null ? null : Math.min(history.length, p + 1),
-                    )
+                    navigateViewPly((cur, total) => (cur + 1 >= total ? null : cur + 1))
                   }
                   disabled={history.length === 0}
-                  className="py-2 rounded-[5px] cc-btn-secondary flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                  className="py-1.5 rounded-[5px] bg-[#2D2B28] hover:bg-[#383633] text-[#C8C6C2] hover:text-white flex items-center justify-center disabled:opacity-35 cursor-pointer"
                 >
                   <ChevronRight className="w-4 h-4" />
                 </button>
                 <button
                   type="button"
                   aria-label="Latest move"
-                  onClick={() => setViewPly(null)}
+                  onClick={() => navigateViewPly(null)}
                   disabled={history.length === 0}
-                  className="py-2 rounded-[5px] cc-btn-secondary flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                  className="py-1.5 rounded-[5px] bg-[#2D2B28] hover:bg-[#383633] text-[#C8C6C2] hover:text-white flex items-center justify-center disabled:opacity-35 cursor-pointer"
                 >
                   <ChevronLast className="w-4 h-4" />
                 </button>
               </div>
 
-              <button
-                type="button"
-                disabled={history.length === 0}
-                onClick={() =>
-                  onSendToReview(
-                    pgn,
-                    playerColor,
-                    gameOverState?.resultLabel ?? '*',
-                  )
-                }
-                className="w-full h-[40px] px-3 rounded-[6px] cc-btn-secondary text-[13px] font-extrabold text-white flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40"
-              >
-                <SearchCheck className="w-4 h-4 text-[#81B64C]" />
-                <span>Game Review</span>
-              </button>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={openBoardExplorer}
+                  className="h-[38px] px-3 rounded-[6px] cc-btn-secondary text-[13px] font-extrabold text-white flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Compass className="w-4 h-4 text-[#81B64C]" />
+                  <span>Explorer</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={history.length === 0}
+                  onClick={() =>
+                    onSendToReview(
+                      pgn,
+                      playerColor,
+                      gameOverState?.resultLabel ?? '*',
+                    )
+                  }
+                  className="h-[38px] px-3 rounded-[6px] cc-btn-secondary text-[13px] font-extrabold text-white flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40"
+                >
+                  <SearchCheck className="w-4 h-4 text-[#81B64C]" />
+                  <span>Review</span>
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -4337,7 +4677,7 @@ export function PlayView({
                     : `Pass & Play ${tc.id} game.`
               }
               selectedPly={viewPly ?? history.length}
-              onSelectPly={(p) => setViewPly(p === history.length ? null : p)}
+              onSelectPly={(p) => navigateViewPly(p === history.length ? null : p)}
               onHighlightArrow={setCloudArrow}
               queuedPrompt={queuedCoachPrompt}
               defaultTab={queuedCoachPrompt ? 'tutor' : 'report'}
@@ -4350,7 +4690,7 @@ export function PlayView({
       {/* Mobile Bottom Sheets */}
       <BottomSheet
         open={mobileSheet === 'setup'}
-        title="Match Setup & Coach"
+        title="Game Options"
         onClose={() => setMobileSheet('none')}
       >
         {renderSetupForm()}
@@ -4399,7 +4739,7 @@ export function PlayView({
                   : `Pass & Play ${tc.id} game.`
             }
             selectedPly={viewPly ?? history.length}
-            onSelectPly={(p) => setViewPly(p === history.length ? null : p)}
+            onSelectPly={(p) => navigateViewPly(p === history.length ? null : p)}
             onHighlightArrow={(arrow) => {
               setCloudArrow(arrow);
               setMobileSheet('none');
@@ -4654,6 +4994,63 @@ export function PlayView({
           saveSelectedCoachStrength(s);
           setCoachPickerOpen(false);
         }}
+      />
+      <BoardExplorerModal
+        open={explorerOpen}
+        onClose={() => setExplorerOpen(false)}
+        boardTheme={boardTheme}
+        initialHistory={history}
+        initialViewPly={viewPly}
+        initialOrientation={orientation}
+        playerColor={playerColor}
+        whiteName={
+          isOnlineMode
+            ? onlineInfo.whiteName
+            : isBotOrCoach
+              ? playerColor === 'w'
+                ? lichessUsername || 'You'
+                : activeOpponentName
+              : 'White'
+        }
+        blackName={
+          isOnlineMode
+            ? onlineInfo.blackName
+            : isBotOrCoach
+              ? playerColor === 'b'
+                ? lichessUsername || 'You'
+                : activeOpponentName
+              : 'Black'
+        }
+        whiteRating={
+          isOnlineMode
+            ? onlineInfo.whiteRating
+            : isBotOrCoach && playerColor === 'b'
+              ? effectiveBotElo
+              : undefined
+        }
+        blackRating={
+          isOnlineMode
+            ? onlineInfo.blackRating
+            : isBotOrCoach && playerColor === 'w'
+              ? effectiveBotElo
+              : undefined
+        }
+        whiteAvatarUrl={
+          isOnlineMode
+            ? onlineInfo.whiteAvatarUrl
+            : playerColor === 'w'
+              ? loadUserAvatar() ?? undefined
+              : undefined
+        }
+        blackAvatarUrl={
+          isOnlineMode
+            ? onlineInfo.blackAvatarUrl
+            : playerColor === 'b'
+              ? loadUserAvatar() ?? undefined
+              : undefined
+        }
+        isLiveOnlineGame={isOnlineMode && !gameOverState}
+        onOpenReview={onSendToReview}
       />
     </div>
   );

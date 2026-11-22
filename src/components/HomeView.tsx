@@ -63,11 +63,18 @@ import { PlayerAvatar } from './PlayerAvatar';
 import { CoachPickerModal } from './CoachPickerModal';
 import { ChessBoard } from './ChessBoard';
 import {
+  BlitzBoltIcon,
+  BulletIcon,
+  DailyPuzzleIcon,
   GoldMedalIcon,
   HandshakeIllustratedIcon,
+  NavBotsIcon,
   NavLearnIcon,
   NavPlayIcon,
+  NavPuzzlesIcon,
+  NavReviewIcon,
   PuzzleNumberBadgeIcon,
+  RapidStopwatchIcon,
 } from './ChessIcons';
 
 interface HomeViewProps {
@@ -849,393 +856,424 @@ export function HomeView({
         </section>
       </div>
 
-      {/* Mobile Compact Hub (< lg) */}
-      <div className="lg:hidden space-y-5">
-      {/* Top 3-Card Chess.com Action Strip */}
-      <section className="grid grid-cols-3 gap-2.5">
-        <button
-          type="button"
-          onClick={() => onNavigate('puzzles')}
-          className="rounded-xl bg-[#393734] hover:bg-[#43403C] p-3.5 flex flex-col items-center text-center gap-2 transition-colors cursor-pointer"
-        >
-          <div className="w-12 h-12 rounded-xl bg-[#262421] flex items-center justify-center">
-            <Puzzle className="w-6 h-6 text-[#81B64C]" />
-          </div>
-          <div className="min-w-0 w-full">
-            <div className="text-sm font-extrabold text-white truncate">Daily Puzzle</div>
-            <div className="text-xs text-[#9E998F] truncate tabular-nums">
-              {rushBest > 0 ? `Storm ${rushBest}` : `${puzzleRating}`}
-            </div>
-          </div>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => onNavigate('bots')}
-          className="rounded-xl bg-[#393734] hover:bg-[#43403C] p-3.5 flex flex-col items-center text-center gap-2 transition-colors cursor-pointer"
-        >
-          <div className="w-12 h-12 rounded-xl overflow-hidden bg-[#262421]">
-            <BotAvatar id={'milo' as BotId} />
-          </div>
-          <div className="min-w-0 w-full">
-            <div className="text-sm font-extrabold text-white truncate">Play Bots</div>
-            <div className="text-xs text-[#9E998F] truncate tabular-nums">100–3200</div>
-          </div>
-        </button>
-
-        <div className="rounded-xl bg-[#393734] hover:bg-[#43403C] p-3.5 flex flex-col items-center text-center gap-2 transition-colors relative">
-          <button
-            type="button"
-            onClick={() => setCoachModalOpen(true)}
-            aria-label="Choose Coach"
-            title="Switch Coach"
-            className="absolute top-2 right-2 w-6 h-6 rounded-md bg-[#262421]/80 hover:bg-[#262421] flex items-center justify-center text-[#B8B6B2] hover:text-white cursor-pointer"
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              onQuickPlay({
-                timeId: '10+0',
-                mode: 'coach',
-                coachGuard: false,
-                coachId: activeCoachId,
-                coachStrength,
-              })
-            }
-            className="w-full flex flex-col items-center gap-2 cursor-pointer"
-          >
-            <div className="w-12 h-12 rounded-xl overflow-hidden bg-[#262421]">
-              <BotAvatar id={activeCoach.id} />
-            </div>
-            <div className="min-w-0 w-full">
-              <div className="text-sm font-extrabold text-white truncate">Play Coach</div>
-              <div className="text-xs text-[#9E998F] truncate">
-                {activeCoach.name.replace('Coach ', '')} · {activeStrengthObj.elo}
-              </div>
-            </div>
-          </button>
-        </div>
-      </section>
-
-      {/* Ratings 4-Column Row */}
-      <section className="space-y-2.5">
-        <div className="flex items-center justify-between px-0.5">
-          <div className="flex items-center gap-3">
-            <h2 className="text-base font-extrabold text-white font-display">Ratings</h2>
-            <button
-              type="button"
-              onClick={onConnectLichess}
-              disabled={lichessConnecting}
-              className="px-2 py-0.5 rounded bg-[#262421] hover:bg-[#312E2A] border border-white/10 text-[11px] font-bold text-[#81B64C] flex items-center gap-1 cursor-pointer"
-            >
-              <Link2 className="w-3 h-3" />
-              <span>
-                {lichessConnecting
-                  ? 'Signing in...'
-                  : lichessSession
-                    ? 'Account'
-                    : 'Sign in'}
-              </span>
-            </button>
-          </div>
-          <button
-            type="button"
-            onClick={() => onNavigate('profile')}
-            className="text-xs font-bold text-[#DEDAD2] hover:text-white flex items-center gap-0.5 cursor-pointer"
-          >
-            <span>View All</span>
-            <ChevronRight className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        <div className="grid grid-cols-4 gap-2">
-          <button
-            type="button"
-            onClick={() => openNewGameWithTime('10+0')}
-            className="rounded-xl bg-[#393734] hover:bg-[#43403C] py-3 px-1.5 flex flex-col items-center text-center gap-1 cursor-pointer transition-colors"
-          >
-            <Clock className="w-5 h-5 text-[#81B64C]" />
-            <div className="text-lg sm:text-xl font-extrabold font-mono text-white tabular-nums leading-none mt-1">
-              {rapidRating}
-            </div>
-            <div className="text-[11px] text-[#9E998F] font-semibold">Rapid</div>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => openNewGameWithTime('3+2')}
-            className="rounded-xl bg-[#393734] hover:bg-[#43403C] py-3 px-1.5 flex flex-col items-center text-center gap-1 cursor-pointer transition-colors"
-          >
-            <Zap className="w-5 h-5 text-[#F7C045]" />
-            <div className="text-lg sm:text-xl font-extrabold font-mono text-white tabular-nums leading-none mt-1">
-              {blitzRating}
-            </div>
-            <div className="text-[11px] text-[#9E998F] font-semibold">Blitz</div>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => openNewGameWithTime('1+0')}
-            className="rounded-xl bg-[#393734] hover:bg-[#43403C] py-3 px-1.5 flex flex-col items-center text-center gap-1 cursor-pointer transition-colors"
-          >
-            <Rocket className="w-5 h-5 text-[#E59A28]" />
-            <div className="text-lg sm:text-xl font-extrabold font-mono text-white tabular-nums leading-none mt-1">
-              {bulletRating}
-            </div>
-            <div className="text-[11px] text-[#9E998F] font-semibold">Bullet</div>
-          </button>
-
+      {/* Chess.com Mobile Native Hub (< lg) */}
+      <div className="lg:hidden space-y-4">
+        {/* Top 3-Card Illustrated Chess.com Feature Strip */}
+        <section className="grid grid-cols-3 gap-2.5">
           <button
             type="button"
             onClick={() => onNavigate('puzzles')}
-            className="rounded-xl bg-[#393734] hover:bg-[#43403C] py-3 px-1.5 flex flex-col items-center text-center gap-1 cursor-pointer transition-colors"
+            className="rounded-[12px] bg-[#262421] hover:bg-[#312E2B] border border-white/[0.05] p-3 flex flex-col items-center text-center gap-2 transition-colors cursor-pointer shadow-[0_2px_8px_rgba(0,0,0,0.2)]"
           >
-            <Puzzle className="w-5 h-5 text-[#E06C5A]" />
-            <div className="text-lg sm:text-xl font-extrabold font-mono text-white tabular-nums leading-none mt-1">
-              {puzzleRating}
+            <div className="w-12 h-12 rounded-[10px] bg-[#1F1E1B] flex items-center justify-center">
+              <DailyPuzzleIcon className="w-9 h-9" />
             </div>
-            <div className="text-[11px] text-[#9E998F] font-semibold">Puzzles</div>
+            <div className="min-w-0 w-full">
+              <div className="text-[13px] font-extrabold text-white truncate">Daily Puzzle</div>
+              <div className="text-[11px] font-semibold text-[#9B9A97] truncate tabular-nums">
+                {rushBest > 0 ? `Storm ${rushBest}` : `${puzzleRating}`}
+              </div>
+            </div>
           </button>
-        </div>
-      </section>
 
-      {/* Friends Strip */}
-      <section className="space-y-2.5">
-        <div className="flex items-center justify-between px-0.5">
-          <div className="flex items-baseline gap-2">
-            <h2 className="text-base font-extrabold text-white font-display">Friends</h2>
-            <span className="text-xs font-mono font-bold text-[#9E998F] tabular-nums">
-              {friends.length}
-            </span>
-          </div>
           <button
             type="button"
-            onClick={() => onNavigate('friends')}
-            className="text-xs font-bold text-[#DEDAD2] hover:text-white flex items-center gap-0.5 cursor-pointer"
+            onClick={() => onNavigate('bots')}
+            className="rounded-[12px] bg-[#262421] hover:bg-[#312E2B] border border-white/[0.05] p-3 flex flex-col items-center text-center gap-2 transition-colors cursor-pointer shadow-[0_2px_8px_rgba(0,0,0,0.2)]"
           >
-            <span>View All</span>
-            <ChevronRight className="w-3.5 h-3.5" />
+            <div className="w-12 h-12 rounded-[10px] overflow-hidden bg-[#1F1E1B]">
+              <BotAvatar id={'milo' as BotId} />
+            </div>
+            <div className="min-w-0 w-full">
+              <div className="text-[13px] font-extrabold text-white truncate">Play Bots</div>
+              <div className="text-[11px] font-semibold text-[#9B9A97] truncate tabular-nums">
+                100–3200
+              </div>
+            </div>
           </button>
-        </div>
 
-        {friends.length > 0 ? (
-          <div className="flex gap-2.5 overflow-x-auto pb-1">
-            {friends.map((fname) => {
-              const st = friendStatuses[fname.toLowerCase()];
-              const flag = countryCodeToFlagEmoji(st?.flag);
-              const seenLabel = st?.online ? 'Online now' : formatLastSeenAgo(st?.seenAt);
-              return (
-                <div
-                  key={fname}
-                  className="w-[162px] shrink-0 rounded-xl bg-[#393734] p-3 flex flex-col items-center text-center gap-2"
-                >
-                  <button
-                    type="button"
-                    onClick={() => onOpenPlayerProfile?.(fname)}
-                    className="flex flex-col items-center gap-1.5 min-w-0 w-full cursor-pointer hover:opacity-90"
-                  >
-                    <div className="relative w-14 h-14 rounded-xl bg-[#262421] overflow-hidden flex items-center justify-center">
-                      <PlayerAvatar
-                        username={fname}
-                        avatarUrl={st?.avatarUrl}
-                        size={56}
-                        rounded="rounded-xl"
-                      />
-                      {st?.online && (
-                        <span className="absolute bottom-0.5 right-0.5 w-3 h-3 rounded-full bg-[#81B64C] border-2 border-[#393734]" />
-                      )}
-                    </div>
-                    <div className="min-w-0 w-full">
-                      <div className="text-xs font-extrabold text-white truncate">
-                        {fname} {flag}
-                      </div>
-                      <div className="text-[11px] text-[#9E998F] truncate mt-0.5">{seenLabel}</div>
-                    </div>
-                  </button>
-                  <div className="w-full flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => challengeFriend(fname)}
-                      className="flex-1 py-1.5 rounded-lg bg-[#4A4742] hover:bg-[#57544E] text-white text-xs font-bold cursor-pointer"
-                    >
-                      Challenge
-                    </button>
-                    {onMessageFriend && (
-                      <button
-                        type="button"
-                        onClick={() => onMessageFriend(fname)}
-                        aria-label={`Message ${fname}`}
-                        className="p-1.5 rounded-lg bg-[#262421] hover:bg-[#312E2A] text-[#C8C4BC] hover:text-white cursor-pointer"
-                      >
-                        <MessageSquare className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      data-testid={`home-remove-friend-${fname}`}
-                      onClick={() => handleRemoveFriendCard(fname)}
-                      aria-label={`Remove ${fname} from friends`}
-                      title={`Remove ${fname} from friends`}
-                      className="p-1.5 rounded-lg bg-[#3B2320] hover:bg-[#4F2D28] text-[#F5B8B0] hover:text-white cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+          <div className="rounded-[12px] bg-[#262421] hover:bg-[#312E2B] border border-white/[0.05] p-3 flex flex-col items-center text-center gap-2 transition-colors relative shadow-[0_2px_8px_rgba(0,0,0,0.2)]">
+            <button
+              type="button"
+              onClick={() => setCoachModalOpen(true)}
+              aria-label="Choose Coach"
+              title="Switch Coach"
+              className="absolute top-1.5 right-1.5 w-6 h-6 rounded-[6px] bg-[#1F1E1B]/90 hover:bg-[#383633] flex items-center justify-center text-[#B8B6B2] hover:text-white cursor-pointer"
+            >
+              <SlidersHorizontal className="w-3 h-3" />
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                onQuickPlay({
+                  timeId: '10+0',
+                  mode: 'coach',
+                  coachGuard: false,
+                  coachId: activeCoachId,
+                  coachStrength,
+                })
+              }
+              className="w-full flex flex-col items-center gap-2 cursor-pointer"
+            >
+              <div className="w-12 h-12 rounded-[10px] overflow-hidden bg-[#1F1E1B]">
+                <BotAvatar id={activeCoach.id} />
+              </div>
+              <div className="min-w-0 w-full">
+                <div className="text-[13px] font-extrabold text-white truncate">Play Coach</div>
+                <div className="text-[11px] font-semibold text-[#9B9A97] truncate tabular-nums">
+                  {activeCoach.name.replace('Coach ', '')} · {activeStrengthObj.elo}
                 </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-2.5">
-            <button
-              type="button"
-              onClick={() => onNavigate('friends')}
-              className="rounded-xl bg-[#393734] hover:bg-[#43403C] p-3.5 text-left space-y-1.5 cursor-pointer"
-            >
-              <div className="w-9 h-9 rounded-lg bg-[#262421] flex items-center justify-center">
-                <Link2 className="w-4 h-4 text-[#81B64C]" />
-              </div>
-              <div className="text-xs font-extrabold text-white">Send Challenge Link</div>
-              <div className="text-[11px] text-[#9E998F]">Play any friend immediately</div>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => (lichessSession ? onNavigate('friends') : onConnectLichess())}
-              className="rounded-xl bg-[#393734] hover:bg-[#43403C] p-3.5 text-left space-y-1.5 cursor-pointer"
-            >
-              <div className="w-9 h-9 rounded-lg bg-[#262421] flex items-center justify-center">
-                {lichessSession ? (
-                  <UserPlus className="w-4 h-4 text-[#6FB3E0]" />
-                ) : (
-                  <User className="w-4 h-4 text-[#F7C045]" />
-                )}
-              </div>
-              <div className="text-xs font-extrabold text-white">
-                {lichessSession ? 'Find Friends' : 'Sign In & Sync'}
-              </div>
-              <div className="text-[11px] text-[#9E998F]">
-                {lichessSession
-                  ? 'Search players & challenge live'
-                  : 'Save ratings & friends list'}
               </div>
             </button>
           </div>
-        )}
-      </section>
+        </section>
 
-      {/* Recent Games List */}
-      <section className="space-y-2 pb-28 lg:pb-4">
-        <div className="flex items-center justify-between px-0.5">
-          <h2 className="text-base font-extrabold text-white font-display">
-            Recent Games
-          </h2>
+        {/* Quick-Play Modes & Live Shortcuts */}
+        <section className="grid grid-cols-2 gap-2.5">
+          <button
+            type="button"
+            onClick={() => openNewGameWithTime('10+0')}
+            className="rounded-[11px] bg-[#262421] hover:bg-[#312E2B] border border-white/[0.05] px-3 py-2.5 flex items-center gap-2.5 text-left transition-colors cursor-pointer"
+          >
+            <NavPlayIcon className="w-7 h-7 shrink-0" />
+            <div className="min-w-0">
+              <div className="text-[13px] font-extrabold text-white truncate">Play Online</div>
+              <div className="text-[11px] text-[#9B9A97] truncate">10 min · Rapid</div>
+            </div>
+          </button>
+
           <button
             type="button"
             onClick={() => onNavigate('review')}
-            className="text-xs font-bold text-[#DEDAD2] hover:text-white flex items-center gap-0.5 cursor-pointer shrink-0"
+            className="rounded-[11px] bg-[#262421] hover:bg-[#312E2B] border border-white/[0.05] px-3 py-2.5 flex items-center gap-2.5 text-left transition-colors cursor-pointer"
           >
-            <span>View All</span>
-            <ChevronRight className="w-3.5 h-3.5" />
+            <NavReviewIcon className="w-7 h-7 shrink-0" />
+            <div className="min-w-0">
+              <div className="text-[13px] font-extrabold text-white truncate">Game Review</div>
+              <div className="text-[11px] text-[#9B9A97] truncate">Analyze mistakes</div>
+            </div>
           </button>
-        </div>
 
-        <div className="rounded-xl bg-[#262421] divide-y divide-white/[0.06] overflow-hidden">
-          {(recentGames.length > 0 ? recentGames : featuredGames).map((g) => {
-            const isUserGame = recentGames.length > 0;
-            const isBlack = isUserGame
-              ? isGamePlayedAsBlack(g, playerDisplayName)
-              : false;
-            const opponent = isUserGame ? (isBlack ? g.white : g.black) : g.black;
-            const primaryPlayer = isUserGame ? (isBlack ? g.black : g.white) : g.white;
-            const oppIsGuest =
-              opponent.name === 'Guest Opponent' ||
-              opponent.name === 'Anonymous (Guest)' ||
-              opponent.name === 'Anonymous';
-            const showOppRating =
-              typeof opponent.rating === 'number' && !oppIsGuest && g.rated !== false;
-            const won =
-              g.winner === 'white' ? !isBlack : g.winner === 'black' ? isBlack : null;
-            const SpeedIcon =
-              g.speed === 'blitz' ? Zap : g.speed === 'bullet' ? Rocket : Clock;
-            const speedColor =
-              g.speed === 'blitz'
-                ? 'text-[#F7C045]'
-                : g.speed === 'bullet'
-                  ? 'text-[#E59A28]'
-                  : 'text-[#81B64C]';
-            const resLabel =
-              g.winner === 'white'
-                ? '1-0'
-                : g.winner === 'black'
-                  ? '0-1'
-                  : '1/2-1/2';
+          <button
+            type="button"
+            onClick={() => onNavigate('friends')}
+            className="rounded-[11px] bg-[#262421] hover:bg-[#312E2B] border border-white/[0.05] px-3 py-2.5 flex items-center gap-2.5 text-left transition-colors cursor-pointer"
+          >
+            <HandshakeIllustratedIcon className="w-7 h-7 shrink-0" />
+            <div className="min-w-0">
+              <div className="text-[13px] font-extrabold text-white truncate">Play a Friend</div>
+              <div className="text-[11px] text-[#9B9A97] truncate">Send challenge link</div>
+            </div>
+          </button>
 
-            return (
-              <div
-                key={g.id}
-                className="w-full px-3.5 py-2.5 flex items-center justify-between gap-2.5 hover:bg-[#33302C] transition-colors"
+          <button
+            type="button"
+            onClick={() => onNavigate('learn')}
+            className="rounded-[11px] bg-[#262421] hover:bg-[#312E2B] border border-white/[0.05] px-3 py-2.5 flex items-center gap-2.5 text-left transition-colors cursor-pointer"
+          >
+            <NavLearnIcon className="w-7 h-7 shrink-0" />
+            <div className="min-w-0">
+              <div className="text-[13px] font-extrabold text-white truncate">Lessons</div>
+              <div className="text-[11px] text-[#9B9A97] truncate">Openings &amp; drills</div>
+            </div>
+          </button>
+        </section>
+
+        {/* Chess.com Mobile Featured Daily Puzzle Preview Card */}
+        <section>
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => onNavigate('puzzles')}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onNavigate('puzzles');
+              }
+            }}
+            className="rounded-[12px] bg-[#262421] hover:bg-[#2F2C28] border border-white/[0.05] p-3 flex items-center gap-3.5 transition-colors cursor-pointer shadow-[0_2px_10px_rgba(0,0,0,0.22)]"
+          >
+            <div className="w-[78px] h-[78px] rounded-[7px] overflow-hidden shrink-0 pointer-events-none shadow-md">
+              <ChessBoard
+                fen={PUZZLES[0]?.fen ?? 'r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4'}
+                orientation="w"
+                interactive={false}
+                hideCoordinates
+                theme={boardTheme}
+                onMove={() => false}
+              />
+            </div>
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <div className="flex items-center gap-1.5">
+                <NavPuzzlesIcon className="w-4 h-4 shrink-0" />
+                <span className="text-[14px] font-extrabold text-white font-display truncate">
+                  Solve Daily Puzzle
+                </span>
+              </div>
+              <p className="text-[12px] text-[#9B9A97] leading-snug line-clamp-1">
+                {PUZZLES[0]?.motif ?? 'Sharpen your tactical vision today'}
+              </p>
+              <span className="inline-flex items-center gap-1 px-3 py-1 rounded-[7px] bg-[#81B64C] border-b-2 border-[#457524] text-[12px] font-extrabold text-white">
+                <span>Solve Now</span>
+                <ChevronRight className="w-3.5 h-3.5 stroke-[3]" />
+              </span>
+            </div>
+          </div>
+        </section>
+
+        {/* Ratings 4-Column Row with Bespoke Illustrated Category Icons */}
+        <section className="space-y-2">
+          <div className="flex items-center justify-between px-0.5">
+            <div className="flex items-center gap-2.5">
+              <h2 className="text-[15px] font-extrabold text-white font-display">Stats</h2>
+              <button
+                type="button"
+                onClick={onConnectLichess}
+                disabled={lichessConnecting}
+                className="px-2 py-0.5 rounded-[5px] bg-[#262421] hover:bg-[#312E2A] border border-white/10 text-[11px] font-bold text-[#81B64C] flex items-center gap-1 cursor-pointer"
               >
-                <button
-                  type="button"
-                  onClick={() =>
-                    onSendToReview(
-                      enrichGamePgnWithHeaders(g),
-                      isBlack ? 'b' : 'w',
-                      resLabel,
-                    )
-                  }
-                  className="flex items-center gap-2.5 min-w-0 flex-1 text-left cursor-pointer"
-                >
-                  <SpeedIcon className={`w-4 h-4 ${speedColor} shrink-0`} />
-                  <PlayerAvatar
-                    username={opponent.name}
-                    avatarUrl={opponent.avatarUrl}
-                    size={32}
-                    rounded="rounded-lg"
-                  />
-                  <div className="min-w-0">
-                    <div className="text-xs sm:text-sm font-bold text-white truncate">
-                      {isUserGame ? (
-                        <>
-                          {opponent.name}{' '}
-                          {showOppRating ? (
-                            <span className="font-mono text-xs text-[#9E998F] tabular-nums">
-                              ({opponent.rating})
-                            </span>
-                          ) : g.rated === false || oppIsGuest ? (
-                            <span className="font-mono text-xs text-[#9E998F]">
-                              (Unrated)
-                            </span>
-                          ) : null}
-                        </>
-                      ) : (
-                        <>
-                          {primaryPlayer.name} ({primaryPlayer.rating}) vs {opponent.name} ({opponent.rating})
-                        </>
-                      )}
-                    </div>
-                    <div className="text-[11px] text-[#9E998F] truncate">
-                      {g.opening ? `${g.opening} · ` : ''}
-                      {formatGamePlayedAgo(g.lastMoveAt ?? g.createdAt) || g.speed}
-                    </div>
-                  </div>
-                </button>
+                <Link2 className="w-3 h-3" />
+                <span>
+                  {lichessConnecting
+                    ? 'Signing in...'
+                    : lichessSession
+                      ? 'Synced'
+                      : 'Sign in'}
+                </span>
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate('profile')}
+              className="text-xs font-bold text-[#B8B6B2] hover:text-white flex items-center gap-0.5 cursor-pointer"
+            >
+              <span>View All</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
 
-                <div className="flex items-center gap-2 shrink-0">
-                  {onOpenPlayerProfile && (
+          <div className="grid grid-cols-4 gap-2">
+            <button
+              type="button"
+              onClick={() => openNewGameWithTime('10+0')}
+              className="rounded-[11px] bg-[#262421] hover:bg-[#312E2B] border border-white/[0.05] py-3 px-1.5 flex flex-col items-center text-center gap-1 cursor-pointer transition-colors"
+            >
+              <RapidStopwatchIcon className="w-5 h-5" />
+              <div className="text-[17px] font-extrabold font-mono text-white tabular-nums leading-none mt-1">
+                {rapidRating}
+              </div>
+              <div className="text-[11px] text-[#9B9A97] font-semibold">Rapid</div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openNewGameWithTime('3+2')}
+              className="rounded-[11px] bg-[#262421] hover:bg-[#312E2B] border border-white/[0.05] py-3 px-1.5 flex flex-col items-center text-center gap-1 cursor-pointer transition-colors"
+            >
+              <BlitzBoltIcon className="w-5 h-5" />
+              <div className="text-[17px] font-extrabold font-mono text-white tabular-nums leading-none mt-1">
+                {blitzRating}
+              </div>
+              <div className="text-[11px] text-[#9B9A97] font-semibold">Blitz</div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openNewGameWithTime('1+0')}
+              className="rounded-[11px] bg-[#262421] hover:bg-[#312E2B] border border-white/[0.05] py-3 px-1.5 flex flex-col items-center text-center gap-1 cursor-pointer transition-colors"
+            >
+              <BulletIcon className="w-5 h-5" />
+              <div className="text-[17px] font-extrabold font-mono text-white tabular-nums leading-none mt-1">
+                {bulletRating}
+              </div>
+              <div className="text-[11px] text-[#9B9A97] font-semibold">Bullet</div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onNavigate('puzzles')}
+              className="rounded-[11px] bg-[#262421] hover:bg-[#312E2B] border border-white/[0.05] py-3 px-1.5 flex flex-col items-center text-center gap-1 cursor-pointer transition-colors"
+            >
+              <NavPuzzlesIcon className="w-5 h-5" />
+              <div className="text-[17px] font-extrabold font-mono text-white tabular-nums leading-none mt-1">
+                {puzzleRating}
+              </div>
+              <div className="text-[11px] text-[#9B9A97] font-semibold">Puzzles</div>
+            </button>
+          </div>
+        </section>
+
+        {/* Friends Strip */}
+        <section className="space-y-2">
+          <div className="flex items-center justify-between px-0.5">
+            <div className="flex items-baseline gap-2">
+              <h2 className="text-[15px] font-extrabold text-white font-display">Friends</h2>
+              <span className="text-xs font-mono font-bold text-[#9B9A97] tabular-nums">
+                {friends.length}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate('friends')}
+              className="text-xs font-bold text-[#B8B6B2] hover:text-white flex items-center gap-0.5 cursor-pointer"
+            >
+              <span>View All</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {friends.length > 0 ? (
+            <div className="flex gap-2.5 overflow-x-auto pb-1 no-scrollbar">
+              {friends.map((fname) => {
+                const st = friendStatuses[fname.toLowerCase()];
+                const flag = countryCodeToFlagEmoji(st?.flag);
+                const seenLabel = st?.online ? 'Online now' : formatLastSeenAgo(st?.seenAt);
+                return (
+                  <div
+                    key={fname}
+                    className="w-[158px] shrink-0 rounded-[11px] bg-[#262421] border border-white/[0.05] p-3 flex flex-col items-center text-center gap-2"
+                  >
                     <button
                       type="button"
-                      onClick={() => onOpenPlayerProfile(opponent.name)}
-                      aria-label={`View ${opponent.name} profile`}
-                      title={`View ${opponent.name} profile`}
-                      className="p-1.5 rounded-lg bg-[#34322E] hover:bg-[#413E39] text-[#C8C4BC] hover:text-white cursor-pointer"
+                      onClick={() => onOpenPlayerProfile?.(fname)}
+                      className="flex flex-col items-center gap-1.5 min-w-0 w-full cursor-pointer hover:opacity-90"
                     >
-                      <User className="w-3.5 h-3.5" />
+                      <div className="relative w-12 h-12 rounded-[9px] bg-[#1F1E1B] overflow-hidden flex items-center justify-center">
+                        <PlayerAvatar
+                          username={fname}
+                          avatarUrl={st?.avatarUrl}
+                          size={48}
+                          rounded="rounded-[9px]"
+                        />
+                        {st?.online && (
+                          <span className="absolute bottom-0.5 right-0.5 w-3 h-3 rounded-full bg-[#81B64C] border-2 border-[#262421]" />
+                        )}
+                      </div>
+                      <div className="min-w-0 w-full">
+                        <div className="text-xs font-extrabold text-white truncate">
+                          {fname} {flag}
+                        </div>
+                        <div className="text-[11px] text-[#9B9A97] truncate mt-0.5">{seenLabel}</div>
+                      </div>
                     </button>
+                    <div className="w-full flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => challengeFriend(fname)}
+                        className="flex-1 py-1.5 rounded-[7px] bg-[#3A3834] hover:bg-[#494642] text-white text-xs font-bold cursor-pointer"
+                      >
+                        Challenge
+                      </button>
+                      {onMessageFriend && (
+                        <button
+                          type="button"
+                          onClick={() => onMessageFriend(fname)}
+                          aria-label={`Message ${fname}`}
+                          className="p-1.5 rounded-[7px] bg-[#1F1E1B] hover:bg-[#312E2A] text-[#C8C4BC] hover:text-white cursor-pointer"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        data-testid={`home-remove-friend-${fname}`}
+                        onClick={() => handleRemoveFriendCard(fname)}
+                        aria-label={`Remove ${fname} from friends`}
+                        title={`Remove ${fname} from friends`}
+                        className="p-1.5 rounded-[7px] bg-[#3B2320] hover:bg-[#4F2D28] text-[#F5B8B0] hover:text-white cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={() => onNavigate('friends')}
+                className="rounded-[11px] bg-[#262421] hover:bg-[#312E2B] border border-white/[0.05] p-3 text-left flex items-center gap-2.5 cursor-pointer"
+              >
+                <div className="w-9 h-9 rounded-[8px] bg-[#1F1E1B] flex items-center justify-center shrink-0">
+                  <Link2 className="w-4 h-4 text-[#81B64C]" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-extrabold text-white truncate">Challenge Link</div>
+                  <div className="text-[11px] text-[#9B9A97] truncate">Invite instantly</div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => (lichessSession ? onNavigate('friends') : onConnectLichess())}
+                className="rounded-[11px] bg-[#262421] hover:bg-[#312E2B] border border-white/[0.05] p-3 text-left flex items-center gap-2.5 cursor-pointer"
+              >
+                <div className="w-9 h-9 rounded-[8px] bg-[#1F1E1B] flex items-center justify-center shrink-0">
+                  {lichessSession ? (
+                    <UserPlus className="w-4 h-4 text-[#6FB3E0]" />
+                  ) : (
+                    <NavBotsIcon className="w-5 h-5" />
                   )}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-extrabold text-white truncate">
+                    {lichessSession ? 'Find Friends' : 'Sign In & Sync'}
+                  </div>
+                  <div className="text-[11px] text-[#9B9A97] truncate">
+                    {lichessSession ? 'Search live players' : 'Save your ratings'}
+                  </div>
+                </div>
+              </button>
+            </div>
+          )}
+        </section>
+
+        {/* Recent Games List */}
+        <section className="space-y-2 pb-[76px]">
+          <div className="flex items-center justify-between px-0.5">
+            <h2 className="text-[15px] font-extrabold text-white font-display">
+              Completed Games
+            </h2>
+            <button
+              type="button"
+              onClick={() => onNavigate('review')}
+              className="text-xs font-bold text-[#B8B6B2] hover:text-white flex items-center gap-0.5 cursor-pointer shrink-0"
+            >
+              <span>View All</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <div className="rounded-[12px] bg-[#262421] border border-white/[0.05] divide-y divide-white/[0.06] overflow-hidden">
+            {(recentGames.length > 0 ? recentGames : featuredGames).slice(0, 6).map((g) => {
+              const isUserGame = recentGames.length > 0;
+              const isBlack = isUserGame
+                ? isGamePlayedAsBlack(g, playerDisplayName)
+                : false;
+              const opponent = isUserGame ? (isBlack ? g.white : g.black) : g.black;
+              const primaryPlayer = isUserGame ? (isBlack ? g.black : g.white) : g.white;
+              const oppIsGuest =
+                opponent.name === 'Guest Opponent' ||
+                opponent.name === 'Anonymous (Guest)' ||
+                opponent.name === 'Anonymous';
+              const showOppRating =
+                typeof opponent.rating === 'number' && !oppIsGuest && g.rated !== false;
+              const won =
+                g.winner === 'white' ? !isBlack : g.winner === 'black' ? isBlack : null;
+              const resLabel =
+                g.winner === 'white'
+                  ? '1-0'
+                  : g.winner === 'black'
+                    ? '0-1'
+                    : '1/2-1/2';
+
+              return (
+                <div
+                  key={g.id}
+                  className="w-full px-3 py-2.5 flex items-center justify-between gap-2.5 hover:bg-[#312E2B] transition-colors"
+                >
                   <button
                     type="button"
                     onClick={() =>
@@ -1245,48 +1283,112 @@ export function HomeView({
                         resLabel,
                       )
                     }
-                    aria-label={`Review game vs ${opponent.name}`}
-                    className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[#34322E] hover:bg-[#413E39] text-xs font-extrabold text-white cursor-pointer"
+                    className="flex items-center gap-2.5 min-w-0 flex-1 text-left cursor-pointer"
                   >
-                    <span
-                      aria-label={won === true ? 'Win' : won === false ? 'Loss' : 'Draw'}
-                      className={`w-5 h-5 rounded flex items-center justify-center text-white ${
-                        won === true
-                          ? 'bg-[#81B64C]'
-                          : won === false
-                            ? 'bg-[#CA3431]'
-                            : 'bg-[#6D6961]'
-                      }`}
-                    >
-                      {won === true ? (
-                        <Plus className="w-3.5 h-3.5 stroke-[3]" />
-                      ) : won === false ? (
-                        <Minus className="w-3.5 h-3.5 stroke-[3]" />
-                      ) : (
-                        <Equal className="w-3.5 h-3.5 stroke-[3]" />
-                      )}
-                    </span>
-                    <SearchCheck className="w-4 h-4 text-[#81B64C]" />
-                    <span className="hidden sm:inline">View</span>
+                    {g.speed === 'blitz' ? (
+                      <BlitzBoltIcon className="w-4 h-4 shrink-0" />
+                    ) : g.speed === 'bullet' ? (
+                      <BulletIcon className="w-4 h-4 shrink-0" />
+                    ) : (
+                      <RapidStopwatchIcon className="w-4 h-4 shrink-0" />
+                    )}
+                    <PlayerAvatar
+                      username={opponent.name}
+                      avatarUrl={opponent.avatarUrl}
+                      size={32}
+                      rounded="rounded-[6px]"
+                    />
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-bold text-white truncate">
+                        {isUserGame ? (
+                          <>
+                            {opponent.name}{' '}
+                            {showOppRating ? (
+                              <span className="font-mono text-xs text-[#9B9A97] tabular-nums">
+                                ({opponent.rating})
+                              </span>
+                            ) : g.rated === false || oppIsGuest ? (
+                              <span className="font-mono text-xs text-[#9B9A97]">
+                                (Unrated)
+                              </span>
+                            ) : null}
+                          </>
+                        ) : (
+                          <>
+                            {primaryPlayer.name} vs {opponent.name}
+                          </>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-[#9B9A97] truncate">
+                        {g.opening ? `${g.opening} · ` : ''}
+                        {formatGamePlayedAgo(g.lastMoveAt ?? g.createdAt) || g.speed}
+                      </div>
+                    </div>
                   </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
 
-      {/* Primary Play Button */}
-      <div className="fixed lg:static bottom-14 left-0 right-0 z-30 px-2.5 pb-2.5 pt-2 bg-[#302E2B]/95 backdrop-blur-sm lg:p-0 lg:bg-transparent">
-        <button
-          type="button"
-          data-start="true"
-          onClick={() => openNewGameWithTime('10+0')}
-          className="w-full min-h-[52px] rounded-[10px] bg-[#81B64C] border-b-[4px] border-[#457524] cc-btn-primary text-white font-extrabold font-display text-xl cursor-pointer"
-        >
-          Play
-        </button>
-      </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {onOpenPlayerProfile && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenPlayerProfile(opponent.name)}
+                        aria-label={`View ${opponent.name} profile`}
+                        title={`View ${opponent.name} profile`}
+                        className="p-1.5 rounded-[7px] bg-[#1F1E1B] hover:bg-[#383633] text-[#B8B6B2] hover:text-white cursor-pointer"
+                      >
+                        <User className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onSendToReview(
+                          enrichGamePgnWithHeaders(g),
+                          isBlack ? 'b' : 'w',
+                          resLabel,
+                        )
+                      }
+                      aria-label={`Review game vs ${opponent.name}`}
+                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-[7px] bg-[#1F1E1B] hover:bg-[#383633] text-xs font-extrabold text-white cursor-pointer"
+                    >
+                      <span
+                        aria-label={won === true ? 'Win' : won === false ? 'Loss' : 'Draw'}
+                        className={`w-[18px] h-[18px] rounded-[4px] flex items-center justify-center text-white ${
+                          won === true
+                            ? 'bg-[#81B64C]'
+                            : won === false
+                              ? 'bg-[#CA3431]'
+                              : 'bg-[#6D6961]'
+                        }`}
+                      >
+                        {won === true ? (
+                          <Plus className="w-3 h-3 stroke-[3]" />
+                        ) : won === false ? (
+                          <Minus className="w-3 h-3 stroke-[3]" />
+                        ) : (
+                          <Equal className="w-3 h-3 stroke-[3]" />
+                        )}
+                      </span>
+                      <NavReviewIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* Chess.com Mobile Pinned Tactile 3D Green Play Button */}
+        <div className="fixed bottom-[60px] left-0 right-0 z-30 px-3 py-2 bg-[#302E2B]/95 backdrop-blur-sm border-t border-white/[0.06]">
+          <button
+            type="button"
+            data-start="true"
+            onClick={() => openNewGameWithTime('10+0')}
+            className="w-full h-[50px] rounded-[10px] bg-[#81B64C] border-b-[4px] border-[#457524] cc-btn-primary text-white font-extrabold font-display text-[19px] flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <NavPlayIcon className="w-6 h-6 shrink-0" />
+            <span>Play</span>
+          </button>
+        </div>
       </div>
 
       <CoachPickerModal

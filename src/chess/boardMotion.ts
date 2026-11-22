@@ -222,3 +222,217 @@ export function computeBoardTransitions(
 
   return { slides, captured };
 }
+
+export interface PieceAnimationTiming {
+  durationMs: number;
+  easing: string;
+  captureDelayMs: number;
+  captureFadeMs: number;
+  trailDurationMs: number;
+}
+
+/**
+ * Chess.com Arcade / Natural (~185ms) & Fast (~115ms) GPU glide timing.
+ */
+export function getPieceAnimationTiming(
+  speed: 'smooth' | 'fast' | 'none',
+): PieceAnimationTiming {
+  if (speed === 'none') {
+    return {
+      durationMs: 0,
+      easing: 'linear',
+      captureDelayMs: 0,
+      captureFadeMs: 0,
+      trailDurationMs: 0,
+    };
+  }
+  if (speed === 'fast') {
+    return {
+      durationMs: 115,
+      easing: 'cubic-bezier(0.22, 0.85, 0.32, 1)',
+      captureDelayMs: 45,
+      captureFadeMs: 70,
+      trailDurationMs: 165,
+    };
+  }
+  return {
+    durationMs: 185,
+    easing: 'cubic-bezier(0.22, 0.85, 0.32, 1)',
+    captureDelayMs: 85,
+    captureFadeMs: 95,
+    trailDurationMs: 245,
+  };
+}
+
+export interface MotionTrailPolygon {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  points: string;
+  length: number;
+}
+
+/**
+ * Computes a tapered white comet/motion streak quad in 800x800 SVG board coordinates
+ * trailing behind a gliding piece (matches Chess.com Arcade motion streak).
+ */
+export function computeMotionTrailPolygon(
+  fromCol: number,
+  fromRow: number,
+  toCol: number,
+  toRow: number,
+): MotionTrailPolygon | null {
+  const x1 = fromCol * 100 + 50;
+  const y1 = fromRow * 100 + 50;
+  const x2 = toCol * 100 + 50;
+  const y2 = toRow * 100 + 50;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const length = Math.hypot(dx, dy);
+  if (length < 1) return null;
+
+  // Unit perpendicular vector
+  const px = -dy / length;
+  const py = dx / length;
+
+  // Narrow glowing tail at origin, wider piece-matched head at destination
+  const tailHalfW = 11;
+  const headHalfW = 34;
+
+  const p1x = x1 + px * tailHalfW;
+  const p1y = y1 + py * tailHalfW;
+  const p2x = x2 + px * headHalfW;
+  const p2y = y2 + py * headHalfW;
+  const p3x = x2 - px * headHalfW;
+  const p3y = y2 - py * headHalfW;
+  const p4x = x1 - px * tailHalfW;
+  const p4y = y1 - py * tailHalfW;
+
+  const fmt = (n: number) => n.toFixed(1);
+  return {
+    x1,
+    y1,
+    x2,
+    y2,
+    length,
+    points: `${fmt(p1x)},${fmt(p1y)} ${fmt(p2x)},${fmt(p2y)} ${fmt(p3x)},${fmt(p3y)} ${fmt(p4x)},${fmt(p4y)}`,
+  };
+}
+
+/**
+ * Computes smooth horizontal drag tilt in degrees (clamped to [-10, +10])
+ * so dragged pieces lean naturally into pointer motion and settle back to 0°.
+ */
+export function computeDragTiltDeg(vxPx: number, prevTiltDeg: number): number {
+  const target = Math.max(-10, Math.min(10, vxPx * 0.42));
+  const next = prevTiltDeg + (target - prevTiltDeg) * 0.34;
+  return Math.abs(next) < 0.08 && Math.abs(vxPx) < 0.2 ? 0 : Number(next.toFixed(2));
+}
+
+export interface StepSoundMoveLike {
+  san?: string;
+  from?: string;
+  to?: string;
+  captured?: unknown;
+  flags?: string;
+  promotion?: unknown;
+}
+
+export interface StepNavigationSound {
+  capture: boolean;
+  check: boolean;
+  castle: boolean;
+  promotion: boolean;
+  toSquare?: string;
+  direction: 'forward' | 'backward';
+}
+
+/**
+ * Resolves exact piece sound options when stepping forward OR backward through move history.
+ * Stepping backward always produces a crisp piece move sound; stepping forward plays the
+ * landed move's exact sound (capture, check, castle, promotion, or standard move).
+ */
+export function getStepNavigationSound(
+  moves: readonly StepSoundMoveLike[],
+  fromPly: number,
+  toPly: number,
+): StepNavigationSound | null {
+  if (fromPly === toPly) return null;
+
+  if (toPly > fromPly) {
+    const landed = moves[toPly - 1];
+    if (!landed) {
+      return {
+        capture: false,
+        check: false,
+        castle: false,
+        promotion: false,
+        direction: 'forward',
+      };
+    }
+    const san = landed.san ?? '';
+    const flags = landed.flags ?? '';
+    return {
+      capture: Boolean(landed.captured) || flags.includes('e') || san.includes('x'),
+      check: san.includes('+') || san.includes('#'),
+      castle: flags.includes('k') || flags.includes('q') || san.startsWith('O-O'),
+      promotion: Boolean(landed.promotion) || san.includes('='),
+      toSquare: landed.to,
+      direction: 'forward',
+    };
+  }
+
+  // Stepping backward (including jumping to ply 0): always emit crisp piece return sound
+  const undone = moves[fromPly - 1];
+  return {
+    capture: false,
+    check: false,
+    castle: false,
+    promotion: false,
+    toSquare: undone?.from ?? undone?.to,
+    direction: 'backward',
+  };
+}
+
+export interface OverlaySlideGeometry {
+  leftPct: number;
+  topPct: number;
+  fromXPercent: number;
+  fromYPercent: number;
+  midXPercent: number;
+  midYPercent: number;
+}
+
+/**
+ * Computes exact CSS overlay placement and starting transform offsets for a
+ * board-level floating piece glide. Because the overlay sits outside `<button>`
+ * squares, pieces glide across the entire 8x8 board without browser paint clipping.
+ */
+export function computeOverlaySlideGeometry(
+  fromCol: number,
+  fromRow: number,
+  toCol: number,
+  toRow: number,
+): OverlaySlideGeometry | null {
+  const dx = (fromCol - toCol) * 100;
+  const dy = (fromRow - toRow) * 100;
+  if (dx === 0 && dy === 0) return null;
+  return {
+    leftPct: toCol * 12.5,
+    topPct: toRow * 12.5,
+    fromXPercent: dx,
+    fromYPercent: dy,
+    midXPercent: Number((dx * 0.46).toFixed(2)),
+    midYPercent: Number((dy * 0.46).toFixed(2)),
+  };
+}
+
+/**
+ * Returns pointer-aware pixel threshold before a press turns into a piece drag.
+ * Touchscreens use an 8px threshold so normal finger taps never jitter into drag
+ * mode while deliberate piece drags lift smoothly right away.
+ */
+export function getDragActivationThreshold(pointerType?: string): number {
+  return pointerType === 'touch' ? 8 : 5;
+}

@@ -8,6 +8,7 @@ interface EvalAdvantageChartProps {
   selectedPly: number;
   analyzedCount?: number;
   heightClass?: string;
+  showActiveCursor?: boolean;
   onSelectPly?: (ply: number) => void;
 }
 
@@ -16,6 +17,7 @@ export function EvalAdvantageChart({
   selectedPly,
   analyzedCount,
   heightClass = 'h-[72px]',
+  showActiveCursor = true,
   onSelectPly,
 }: EvalAdvantageChartProps) {
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -59,6 +61,7 @@ export function EvalAdvantageChart({
           c.move.quality === 'Great' ||
           c.move.quality === 'Inaccuracy' ||
           c.move.quality === 'Mistake' ||
+          c.move.quality === 'Miss' ||
           c.move.quality === 'Blunder'),
     );
 
@@ -114,10 +117,10 @@ export function EvalAdvantageChart({
         }}
       >
         {/* Black side dark canvas */}
-        <rect x="0" y="0" width={w} height={h} fill="#252320" />
+        <rect x="0" y="0" width={w} height={h} fill="#3B3936" />
 
         {/* White advantage fill */}
-        <path d={areaPath} fill="#EEECE6" />
+        <path d={areaPath} fill="#FFFFFF" />
 
         {/* Unscanned overlay when Stockfish 19 is progressively evaluating */}
         {isScanning && scanX < w && (
@@ -161,7 +164,7 @@ export function EvalAdvantageChart({
         )}
 
         {/* Active selected ply cursor */}
-        {moves.length > 0 && activePoint && (
+        {showActiveCursor && moves.length > 0 && activePoint && (
           <>
             <line
               x1={activePoint.x}

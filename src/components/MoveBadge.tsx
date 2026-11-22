@@ -2,7 +2,7 @@ import type { MoveQuality } from '../chess/engine';
 
 interface MoveBadgeProps {
   quality: MoveQuality;
-  size?: 'board' | 'sm' | 'md';
+  size?: 'board' | 'sm' | 'md' | 'lg';
   className?: string;
 }
 
@@ -17,18 +17,18 @@ export const MOVE_QUALITY_META: Record<
   }
 > = {
   Brilliant: {
-    bg: '#1BADA6',
+    bg: '#26C2A3',
     fg: '#FFFFFF',
     label: 'Brilliant',
     symbol: '!!',
-    textColor: 'text-[#26C6BE]',
+    textColor: 'text-[#26C2A3]',
   },
   Great: {
-    bg: '#5C8BB0',
+    bg: '#749BBF',
     fg: '#FFFFFF',
     label: 'Great',
     symbol: '!',
-    textColor: 'text-[#74A7CE]',
+    textColor: 'text-[#749BBF]',
   },
   Best: {
     bg: '#81B64C',
@@ -37,40 +37,54 @@ export const MOVE_QUALITY_META: Record<
     symbol: '★',
     textColor: 'text-[#81B64C]',
   },
-  Good: {
+  Excellent: {
     bg: '#96BC4B',
+    fg: '#FFFFFF',
+    label: 'Excellent',
+    symbol: '👍',
+    textColor: 'text-[#96BC4B]',
+  },
+  Good: {
+    bg: '#819E6F',
     fg: '#FFFFFF',
     label: 'Good',
     symbol: '✓',
-    textColor: 'text-[#A5CA5C]',
+    textColor: 'text-[#8DA87B]',
   },
   Book: {
-    bg: '#A88865',
+    bg: '#C9A77C',
     fg: '#FFFFFF',
     label: 'Book',
     symbol: '📖',
-    textColor: 'text-[#C2A07C]',
+    textColor: 'text-[#C9A77C]',
   },
   Inaccuracy: {
-    bg: '#F7C045',
-    fg: '#1D1B18',
+    bg: '#F7C631',
+    fg: '#FFFFFF',
     label: 'Inaccuracy',
     symbol: '?!',
-    textColor: 'text-[#F7C045]',
+    textColor: 'text-[#F7C631]',
   },
   Mistake: {
-    bg: '#E68F3C',
+    bg: '#FFA459',
     fg: '#FFFFFF',
     label: 'Mistake',
     symbol: '?',
-    textColor: 'text-[#E68F3C]',
+    textColor: 'text-[#FFA459]',
+  },
+  Miss: {
+    bg: '#FF7769',
+    fg: '#FFFFFF',
+    label: 'Miss',
+    symbol: '×',
+    textColor: 'text-[#FF7769]',
   },
   Blunder: {
-    bg: '#CA3431',
+    bg: '#FA412D',
     fg: '#FFFFFF',
     label: 'Blunder',
     symbol: '??',
-    textColor: 'text-[#E0524B]',
+    textColor: 'text-[#FA412D]',
   },
 };
 
@@ -80,9 +94,11 @@ export function MoveBadge({ quality, size = 'sm', className = '' }: MoveBadgePro
   const sizeClass =
     size === 'board'
       ? 'w-[36%] h-[36%] min-w-[17px] min-h-[17px] max-w-[26px] max-h-[26px] shadow-[0_3px_10px_rgba(0,0,0,0.45)]'
-      : size === 'md'
-        ? 'w-6 h-6 ring-1 ring-black/30 shadow-sm'
-        : 'w-[18px] h-[18px] ring-1 ring-black/25';
+      : size === 'lg'
+        ? 'w-[26px] h-[26px] shadow-xs'
+        : size === 'md'
+          ? 'w-6 h-6 ring-1 ring-black/25 shadow-sm'
+          : 'w-[18px] h-[18px] ring-1 ring-black/20';
 
   return (
     <span
@@ -96,6 +112,11 @@ export function MoveBadge({ quality, size = 'sm', className = '' }: MoveBadgePro
       {quality === 'Best' && (
         <svg viewBox="0 0 24 24" className="w-[64%] h-[64%]" fill="currentColor" aria-hidden="true">
           <path d="M12 2.6l2.7 5.6 6.2.9-4.5 4.4 1.1 6.2L12 16.8l-5.5 2.9 1.1-6.2L3.1 9.1l6.2-.9L12 2.6z" />
+        </svg>
+      )}
+      {quality === 'Excellent' && (
+        <svg viewBox="0 0 24 24" className="w-[64%] h-[64%]" fill="currentColor" aria-hidden="true">
+          <path d="M9 21H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h4v11zm2-11l3.6-7.2a1.5 1.5 0 0 1 2.7.9V9h3.1a2 2 0 0 1 1.9 2.5l-1.5 7A2 2 0 0 1 18.8 20H11V10z" />
         </svg>
       )}
       {quality === 'Good' && (
@@ -115,6 +136,19 @@ export function MoveBadge({ quality, size = 'sm', className = '' }: MoveBadgePro
       {quality === 'Book' && (
         <svg viewBox="0 0 24 24" className="w-[62%] h-[62%]" fill="currentColor" aria-hidden="true">
           <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5V5.5zm16 0A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5V5.5z" />
+        </svg>
+      )}
+      {quality === 'Miss' && (
+        <svg
+          viewBox="0 0 24 24"
+          className="w-[62%] h-[62%]"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="3.4"
+          strokeLinecap="round"
+          aria-hidden="true"
+        >
+          <path d="M6.5 6.5L17.5 17.5M17.5 6.5L6.5 17.5" />
         </svg>
       )}
       {(quality === 'Blunder' ||
